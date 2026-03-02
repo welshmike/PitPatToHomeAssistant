@@ -78,6 +78,10 @@ Each correct input will be confirmed by a short, happy sound. Each incorrect inp
 Source:  
 <https://www.reddit.com/r/treadmills/comments/1jtuwix/heres_how_you_unlock_superun_treadmills_without/>
 
+## Fork
+
+This project is a fork of [peteh/pacekeeper](https://github.com/peteh/pacekeeper), extended with support for the DeerRun Q1 Classic Pro, session delta tracking, mph units, step estimation, and Strava integration.
+
 ## Acknowledgements
 
 I built this with the help of many other people who put effort into reverse-engineering the Bluetooth protocol.
