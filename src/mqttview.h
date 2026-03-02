@@ -151,9 +151,9 @@ public:
     void publishState(TreadMillData data)
     {
         JsonDocument state;
-        state["speed_cmd"] = data.speedCmd;
-        state["speed_feedback"] = data.speedFeedback;
-        state["speed_max"] = data.speedMax;
+        state["speed_cmd"]      = roundf(data.speedCmd      * 10) / 10.0f;
+        state["speed_feedback"] = roundf(data.speedFeedback * 10) / 10.0f;
+        state["speed_max"]      = roundf(data.speedMax      * 10) / 10.0f;
         state["distance_km"] = data.distanceKm;
         state["duration_sec"] = data.durationSec;
         state["calories"] = data.calories;
