@@ -113,7 +113,8 @@ void callback(char *topic, byte *payload, unsigned int length)
     {
       if (treadmill.getLastData().status == TreadMillData::RUNNING)
         treadmill.pause();
-      else if (treadmill.getLastData().status == TreadMillData::PAUSED)
+      else if (treadmill.getLastData().status == TreadMillData::PAUSED ||
+               treadmill.getLastData().status == TreadMillData::STOPPED)
         treadmill.start();
     }
   }
