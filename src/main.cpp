@@ -105,6 +105,12 @@ void callback(char *topic, byte *payload, unsigned int length)
       speed = 6080;
     }
     treadmill.setSpeed(speed);
+    // Immediately reflect the new commanded speed in HA — don't wait for the
+    // next BLE notification from the belt (can be 3-5s). speed_feedback still
+    // lags until the belt confirms, but the command value updates instantly.
+    TreadMillData updated = treadmill.getLastData();
+    updated.speedCmd = roundf((speed / 1600.0f) * 10) / 10.0f;
+    g_mqttView.publishState(updated);
   }
   else if (strcmp(topic, g_mqttView.getStartButton().getCommandTopic()) == 0)
   {
