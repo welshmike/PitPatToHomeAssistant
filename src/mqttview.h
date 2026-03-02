@@ -40,7 +40,7 @@ public:
                                // The command handler already treats speed<=100 raw as stop.
         m_speed.setMax(3.8f);
         m_speed.setStep(0.1f);
-        m_speed.setMode(NumberMode::SLIDER);
+        m_speed.setMode(NumberMode::BOX);
         m_speed.setValueTemplate("{{ value_json.speed_cmd }}");
 
         m_speedFeedback.setCustomStateTopic(m_state.getStateTopic());
