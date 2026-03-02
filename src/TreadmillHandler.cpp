@@ -205,7 +205,9 @@ void TreadmillHandler::handle()
     // Check for connection timeout and send state updates if needed
     if (millis() - m_lastDataTimestamp > CONNECTION_TIMEOUT * 1000)
     {
-        log_w("No data received from treadmill for %d seconds, marking as disconnected.", CONNECTION_TIMEOUT);
+        unsigned long elapsedSec = (millis() - m_lastDataTimestamp) / 1000;
+        log_w("No data received for %lus (threshold %ds) - marking disconnected.",
+              elapsedSec, CONNECTION_TIMEOUT);
         m_lastData.status = TreadMillData::DISCONNECTED;
         m_lastDataTimestamp = millis(); // prevent repeated updates
         if (m_onDataUpdate)

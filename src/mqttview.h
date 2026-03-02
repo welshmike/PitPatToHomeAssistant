@@ -34,7 +34,10 @@ public:
         m_speed.setCustomStateTopic(m_state.getStateTopic());
         m_speed.setUnit("mph");
         m_speed.setDeviceClass("speed");
-        m_speed.setMin(0.6f);
+        m_speed.setMin(0.0f);  // Must be 0.0 — HA ignores state updates where value < min,
+                               // so min=0.6 caused the slider to be permanently unavailable
+                               // when the belt stopped (speed_cmd publishes as 0.0).
+                               // The command handler already treats speed<=100 raw as stop.
         m_speed.setMax(3.8f);
         m_speed.setStep(0.1f);
         m_speed.setMode(NumberMode::SLIDER);
@@ -213,15 +216,18 @@ private:
     {
         String payload = entity.getHomeAssistantConfigPayload();
         char topic[255];
+        // retain=true is required for HA MQTT discovery — without it, config messages
+        // are lost on any MQTT reconnect and HA won't rediscover entities until the
+        // next HA "homeassistant/status: online" birth message triggers a re-publish.
         entity.getHomeAssistantConfigTopic(topic, sizeof(topic));
-        if (!m_client->publish(topic, payload.c_str()))
+        if (!m_client->publish(topic, payload.c_str(), true))
         {
-            log_e("Failed to publish config to %s", entity.getStateTopic());
+            log_e("Failed to publish config (%d bytes) to %s", payload.length(), topic);
         }
         entity.getHomeAssistantConfigTopicAlt(topic, sizeof(topic));
-        if (!m_client->publish(topic, payload.c_str()))
+        if (!m_client->publish(topic, payload.c_str(), true))
         {
-            log_e("Failed to publish config to %s", entity.getStateTopic());
+            log_e("Failed to publish config (%d bytes) to %s", payload.length(), topic);
         }
     }
 

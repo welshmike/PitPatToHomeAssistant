@@ -98,7 +98,20 @@ private:
 
     void onDisconnect(BLEClient *pClient, int reason) override
     {
-        log_w("Disconnected (reason=%d) - will attempt reconnect...", reason);
+        // NimBLE reason = 512 + HCI error code. Common codes:
+        //   0x08 (520) = connection timeout       — radio loss / device out of range
+        //   0x13 (531) = remote user terminated   — device actively closed the connection
+        //   0x16 (534) = local host terminated    — we called disconnect()
+        //   0x3E (574) = failed to establish      — connect() timed out
+        const char* desc = "unknown";
+        switch (reason - 512) {
+            case 0x08: desc = "connection timeout";             break;
+            case 0x13: desc = "remote user terminated";         break;
+            case 0x16: desc = "local host terminated";          break;
+            case 0x3E: desc = "failed to establish connection"; break;
+        }
+        log_w("Disconnected reason=%d (HCI 0x%02X: %s) - will reconnect...",
+              reason, reason - 512, desc);
         m_doConnect = true; // Trigger reconnect in loop
     }
 
