@@ -63,11 +63,13 @@ private:
     TreadMillData::Status m_lastStatus = TreadMillData::DISCONNECTED;
 
     // BA05 protocol state
-    static constexpr uint16_t START_SPEED = 994;           // ~1.0 km/h in mph×1600 encoding
-    static constexpr unsigned long KEEPALIVE_INTERVAL = 200; // ms — matches QZ poll rate;
-                                                              // 500ms was too slow (reason=531)
+    static constexpr uint16_t START_SPEED = 994;             // ~1.0 km/h in mph×1600 encoding
+    static constexpr unsigned long KEEPALIVE_INTERVAL  = 200;  // ms — matches QZ poll rate
+    static constexpr unsigned long POST_CONNECT_COOLDOWN = 3000; // ms — block commands after
+                                                                  // reconnect until device settles
     uint8_t m_seqCounter = 0;
     unsigned long m_lastKeepalive = 0;
+    unsigned long m_lastConnectTime = 0;  // set on successful connect, gates command sending
     uint16_t m_lastSpeed = 0;  // last commanded speed, preserved for pause/resume
     void notifyCallback(
         NimBLERemoteCharacteristic *pBLERemoteCharacteristic,

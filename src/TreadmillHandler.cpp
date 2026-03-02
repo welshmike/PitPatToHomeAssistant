@@ -154,6 +154,18 @@ bool TreadmillHandler::sendCommand(const uint8_t *data, size_t length)
         return false;
     }
 
+    // Block speed-set commands (27-byte packets) during post-connect cooldown.
+    // Sending a queued speed command immediately after reconnect causes reason=531:
+    // the device needs time to settle after the init sequence. Start/stop/pause
+    // (also 27-byte but with cmd1=0x05) and keepalives (9-byte) are always allowed.
+    bool isSpeedSet = (length == 27 && data[12] == 0x01); // cmd1=0x01 = running/speed
+    if (isSpeedSet && (millis() - m_lastConnectTime < POST_CONNECT_COOLDOWN))
+    {
+        log_w("Speed command blocked - post-connect cooldown (%lums remaining)",
+              POST_CONNECT_COOLDOWN - (millis() - m_lastConnectTime));
+        return false;
+    }
+
     bool success = m_pWriteCharacteristic->writeValue(data, length, true);
     if (!success)
     {
@@ -174,7 +186,8 @@ void TreadmillHandler::handle()
         {
             log_i("Connection successful.");
             m_doConnect = false;
-            m_lastKeepalive = millis();  // Reset keepalive timer on connect
+            m_lastKeepalive = millis();   // Reset keepalive timer on connect
+            m_lastConnectTime = millis(); // Start post-connect cooldown
         }
         else
         {
@@ -480,7 +493,7 @@ void TreadmillHandler::notifyCallback(
         }
         // else: keep m_lastData values (distance/calories/duration/steps from last running packet)
 
-        log_i("speed=%.2f mph target=%.2f dist=%.3f km cal=%u dur=%u:%02u status=%d",
+        log_d("speed=%.2f mph target=%.2f dist=%.3f km cal=%u dur=%u:%02u status=%d",
               data.speedFeedback, data.speedCmd, data.distanceKm,
               data.calories, data.durationSec / 60, data.durationSec % 60, (int)data.status);
     }
