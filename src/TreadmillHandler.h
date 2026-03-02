@@ -53,13 +53,6 @@ private:
     void sendInitSequence();
     bool connectToDevice();
 
-    // Session delta tracking
-    // The Q1 accumulates distance/calories/duration across sessions without resetting
-    // until powered off. We record baselines when a new session starts (STOPPED→RUNNING)
-    // and publish deltas so HA sees per-session values that reset each walk.
-    uint16_t m_baselineDistance = 0;  // distance_m at session start
-    uint8_t  m_baselineCalories = 0;  // calories at session start
-    uint32_t m_baselineDuration = 0;  // duration_sec at session start
     TreadMillData::Status m_lastStatus = TreadMillData::DISCONNECTED;
 
     // BA05 protocol state

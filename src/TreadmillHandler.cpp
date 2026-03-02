@@ -459,41 +459,23 @@ void TreadmillHandler::notifyCallback(
         else if (flags == 0x10) data.status = TreadMillData::PAUSED;
         else                    data.status = TreadMillData::RUNNING;  // 0x06, 0x08, etc.
 
-        // Detect new session: STOPPED/DISCONNECTED → RUNNING.
-        // PAUSED → RUNNING is a resume - don't reset baselines.
-        bool newSession = (data.status == TreadMillData::RUNNING &&
-                           m_lastStatus != TreadMillData::RUNNING &&
-                           m_lastStatus != TreadMillData::PAUSED &&
-                           m_lastStatus != TreadMillData::COUNTDOWN);
-        if (newSession)
-        {
-            m_baselineDistance = distance_m;
-            m_baselineCalories = calories;
-            m_baselineDuration = duration_total_sec;
-            log_i("New session started - baselines: dist=%u cal=%u dur=%u",
-                  m_baselineDistance, m_baselineCalories, m_baselineDuration);
-        }
         m_lastStatus = data.status;
 
-        // Publish session deltas so HA values reset to 0 at the start of each walk.
-        // When STOPPED, the device resets its counters to 0 in the stopped packet.
-        // To preserve the final session values for HA automations (e.g. Strava post),
-        // we keep the last running values rather than overwriting with 0.
+        // Use raw values from the belt as source of truth — no session delta tracking.
+        // The belt accumulates distance/calories/duration until powered off, matching
+        // its own display exactly regardless of ESP32 reconnects or reflashes.
+        //
+        // When STOPPED the belt resets its counters to 0 in the stopped packet.
+        // We preserve the last running values so HA automations (e.g. Strava) can
+        // still read the final session totals after the belt stops.
         if (data.status != TreadMillData::STOPPED)
         {
-            uint16_t session_distance = (distance_m >= m_baselineDistance)
-                                        ? distance_m - m_baselineDistance : distance_m;
-            uint8_t  session_calories = (calories >= m_baselineCalories)
-                                        ? calories - m_baselineCalories : calories;
-            uint32_t session_duration = (duration_total_sec >= m_baselineDuration)
-                                        ? duration_total_sec - m_baselineDuration : duration_total_sec;
-
-            data.distanceKm  = session_distance / 1000.0f;
-            data.calories    = session_calories;
-            data.durationSec = session_duration;
-            data.steps       = (uint32_t)(session_distance / STRIDE_LENGTH_M);
+            data.distanceKm  = distance_m / 1000.0f;
+            data.calories    = calories;
+            data.durationSec = duration_total_sec;
+            data.steps       = (uint32_t)(distance_m / STRIDE_LENGTH_M);
         }
-        // else: keep m_lastData values (distance/calories/duration/steps from last running packet)
+        // else: preserve m_lastData values (belt has reset counters to 0)
 
         log_d("speed=%.2f mph target=%.2f dist=%.3f km cal=%u dur=%u:%02u status=%d",
               data.speedFeedback, data.speedCmd, data.distanceKm,
