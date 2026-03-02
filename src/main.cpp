@@ -114,6 +114,11 @@ void callback(char *topic, byte *payload, unsigned int length)
     {
       log_i("Start command received");
       treadmill.start();
+      // Optimistic update: reflect countdown immediately rather than waiting
+      // for the belt's first BLE notification (typically 3-5s into startup)
+      TreadMillData optimistic = treadmill.getLastData();
+      optimistic.status = TreadMillData::COUNTDOWN;
+      g_mqttView.publishState(optimistic);
     }
   }
   else if (strcmp(topic, g_mqttView.getPauseButton().getCommandTopic()) == 0)
@@ -124,6 +129,9 @@ void callback(char *topic, byte *payload, unsigned int length)
     {
       log_i("Pause command received");
       treadmill.pause();
+      TreadMillData optimistic = treadmill.getLastData();
+      optimistic.status = TreadMillData::PAUSED;
+      g_mqttView.publishState(optimistic);
     }
   }
   else if (strcmp(topic, g_mqttView.getStopButton().getCommandTopic()) == 0)
@@ -134,6 +142,9 @@ void callback(char *topic, byte *payload, unsigned int length)
     {
       log_i("Stop command received");
       treadmill.stop();
+      TreadMillData optimistic = treadmill.getLastData();
+      optimistic.status = TreadMillData::STOPPED;
+      g_mqttView.publishState(optimistic);
     }
   }
   else if (strcmp(topic, g_mqttView.getAutoReconnectSwitch().getCommandTopic()) == 0)
