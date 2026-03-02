@@ -401,6 +401,26 @@ void TreadmillHandler::notifyCallback(
         return;
     }
 
+    // Full packet hex dump — fires once per minute to aid field mapping.
+    // Enable with CORE_DEBUG_LEVEL=4 (debug) or promote to log_i temporarily.
+    // Look for a value matching the belt's displayed duration in seconds.
+    static unsigned long s_lastDump = 0;
+    if (millis() - s_lastDump > 60000)
+    {
+        s_lastDump = millis();
+        char hex[length * 3 + 1];
+        for (size_t i = 0; i < length; i++)
+            sprintf(hex + i * 3, "%02X ", pData[i]);
+        hex[length * 3] = '\0';
+        log_i("PKT[%d]: %s", length, hex);
+        // Also log uint16 BE values for every pair of bytes to help spot duration fields
+        log_i("PKT u16-BE pairs:");
+        for (size_t i = 0; i + 1 < length; i += 2)
+            log_i("  [%02d-%02d] = %5u  (0x%02X%02X)", i, i+1,
+                  ((uint16_t)pData[i] << 8) | pData[i+1],
+                  pData[i], pData[i+1]);
+    }
+
     // Use last known data as starting point
     TreadMillData data = m_lastData;
 
