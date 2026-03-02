@@ -13,11 +13,25 @@
 //   CHARACTERISTIC: 00002b10-0000-1000-8000-00805f9b34fb [read,notify]
 //   CHARACTERISTIC: 00002b11-0000-1000-8000-00805f9b34fb [read,write-without-response,write]
 // SERVICE: 0000fba0-0000-1000-8000-00805f9b34fb (Vendor specific)
-#define SERVICE_PAD_UUID "0000fba0-0000-1000-8000-00805f9b34fb"
-//  CHARACTERISTIC: 0000fba1-0000-1000-8000-00805f9b34fb [read,write]
-#define CHARACTERISTIC_WRITE_UUID "0000fba1-0000-1000-8000-00805f9b34fb"
-//  CHARACTERISTIC: 0000fba2-0000-1000-8000-00805f9b34fb [read,notify]
-#define CHARACTERISTIC_NOTIFY_STATE_UUID "0000fba2-0000-1000-8000-00805f9b34fb"
+#define SERVICE_PAD_UUID "0000ffff-0000-1000-8000-00805f9b34fb"
+//  CHARACTERISTIC: 0000ff01-0000-1000-8000-00805f9b34fb [read,write]
+#define CHARACTERISTIC_WRITE_UUID "0000ff01-0000-1000-8000-00805f9b34fb"
+//  CHARACTERISTIC: 0000ff02-0000-1000-8000-00805f9b34fb [read,notify]
+#define CHARACTERISTIC_NOTIFY_STATE_UUID "0000ff02-0000-1000-8000-00805f9b34fb"
+
+// Stride length used to estimate step count from distance (no step sensor in PitPat protocol).
+// Adjust in config.h if desired: #define STRIDE_LENGTH_M 0.70f (shorter) or 0.80f (taller)
+#ifndef STRIDE_LENGTH_M
+#define STRIDE_LENGTH_M 0.60f   // ~24 inches — calibrated for slow walking pad speeds (1–4 mph)
+                                // Standard adult stride is ~0.762m but pads at desk speed
+                                // produce shorter, shuffling steps. Override in config.h.
+#endif
+
+// Secondary service used for unlock handshake (best-effort, optional)
+// The Q1 Classic Pro exposes this service; QZ writes the PitPat unlock bytes here
+// to complete the connection handshake before data flows reliably.
+#define SERVICE_UNLOCK_UUID "00001910-0000-1000-8000-00805f9b34fb"
+#define CHARACTERISTIC_UNLOCK_UUID "00002b11-0000-1000-8000-00805f9b34fb"
 
 // Declare strings as extern to avoid multiple-definition linker errors
 extern const char* HOMEASSISTANT_STATUS_TOPIC;

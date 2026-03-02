@@ -32,13 +32,6 @@ public:
         return m_pClient && m_pClient->isConnected();
     }
 
-    enum CommandType
-    {
-        CMD_START_SET_SPEED = 4,
-        CMD_PAUSE = 2,
-        CMD_STOP = 0
-    };
-
     TreadMillData getLastData() const
     {
         return m_lastData;
@@ -52,8 +45,30 @@ public:
 
 private:
     bool sendCommand(const uint8_t *data, size_t length);
-    void makePacket(CommandType command, uint16_t speed, uint8_t *outPacket);
+    void makePacket(uint16_t speed, uint8_t cmd1, uint8_t mode, uint8_t *outPacket);
+    void makeKeepalive(uint8_t *outPacket);
+    void sendKeepalive();
+    // Sent immediately after notification subscription to prevent reason=531 disconnect.
+    // The Q1 expects a response within ~300ms of connect or it terminates the session.
+    void sendInitSequence();
     bool connectToDevice();
+
+    // Session delta tracking
+    // The Q1 accumulates distance/calories/duration across sessions without resetting
+    // until powered off. We record baselines when a new session starts (STOPPED→RUNNING)
+    // and publish deltas so HA sees per-session values that reset each walk.
+    uint16_t m_baselineDistance = 0;  // distance_m at session start
+    uint8_t  m_baselineCalories = 0;  // calories at session start
+    uint32_t m_baselineDuration = 0;  // duration_sec at session start
+    TreadMillData::Status m_lastStatus = TreadMillData::DISCONNECTED;
+
+    // BA05 protocol state
+    static constexpr uint16_t START_SPEED = 994;           // ~1.0 km/h in mph×1600 encoding
+    static constexpr unsigned long KEEPALIVE_INTERVAL = 200; // ms — matches QZ poll rate;
+                                                              // 500ms was too slow (reason=531)
+    uint8_t m_seqCounter = 0;
+    unsigned long m_lastKeepalive = 0;
+    uint16_t m_lastSpeed = 0;  // last commanded speed, preserved for pause/resume
     void notifyCallback(
         NimBLERemoteCharacteristic *pBLERemoteCharacteristic,
         uint8_t *pData,
@@ -63,24 +78,25 @@ private:
     NimBLEClient *m_pClient = nullptr;
     NimBLERemoteCharacteristic *m_pNotifyCharacteristic = nullptr;
     NimBLERemoteCharacteristic *m_pWriteCharacteristic = nullptr;
+    NimBLERemoteCharacteristic *m_pUnlockCharacteristic = nullptr;  // secondary handshake char
     NimBLEAddress m_targetAddress;
     bool m_doConnect = false;
     bool m_autoReconnect = true;
 
-    long m_lastConnectAttempt = 0;
+    unsigned long m_lastConnectAttempt = 0;
 
-    long m_lastDataTimestamp = 0;
+    unsigned long m_lastDataTimestamp = 0;
     TreadMillData m_lastData;
 
 
     void onConnect(BLEClient *pClient) override
     {
-        Serial.println("Connected to device!");
+        log_i("Connected to device!");
     }
 
     void onDisconnect(BLEClient *pClient, int reason) override
     {
-        Serial.println("Disconnected! Will attempt reconnect...");
+        log_w("Disconnected (reason=%d) - will attempt reconnect...", reason);
         m_doConnect = true; // Trigger reconnect in loop
     }
 

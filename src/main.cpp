@@ -2,6 +2,7 @@
 #include "esp_log.h"
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <LittleFS.h>
 
 #include <WiFi.h>
 #include <mdns.h>
@@ -88,17 +89,18 @@ void callback(char *topic, byte *payload, unsigned int length)
   if (strcmp(topic, g_mqttView.getSpeed().getCommandTopic()) == 0)
   {
     float data = atof((char *)payload);
-    uint16_t speed = (uint16_t)(data * 1000);
-    log_i("Setting speed to %.2f km/h (%u)", data, speed);
+    // HA slider sends mph. Device encoding: mph * 1600.
+    uint16_t speed = (uint16_t)(data * 1600.0f);
+    log_i("Setting speed to %.2f mph (raw=%u)", data, speed);
 
-    if (speed <= 100)
+    if (speed <= 100)  // below ~0.1 km/h → stop
     {
       treadmill.stop();
       return;
     }
-    if (speed > 6000)
+    if (speed > 6080)  // cap at 3.8 mph (device max)
     {
-      speed = 6000;
+      speed = 6080;
     }
     treadmill.setSpeed(speed);
   }
@@ -153,6 +155,20 @@ void setup()
   esp_task_wdt_add(NULL);                      // add current thread to WDT watch
 
   Serial.begin(115200);
+
+  // Initialize LittleFS for packet logging
+  if (LittleFS.begin(true)) {  // format on first use
+    log_i("LittleFS mounted successfully");
+    // Create CSV header for packet log
+    File logFile = LittleFS.open("/packets.csv", "w");
+    if (logFile) {
+      logFile.println("millis,length,type,b7,b8,b9,b10,b14,b23,b24,b25,b26,b27,b28");
+      logFile.close();
+      log_i("Packet log initialized");
+    }
+  } else {
+    log_e("LittleFS mount failed");
+  }
 
   WiFi.setHostname(composeClientID().c_str());
   WiFi.mode(WIFI_STA);
@@ -276,6 +292,33 @@ void loop()
 
   client.loop();
   treadmill.handle();
+
+  // Handle serial commands for packet log
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd == "dump") {
+      File logFile = LittleFS.open("/packets.csv", "r");
+      if (logFile) {
+        Serial.println("=== Packet Log ===");
+        while (logFile.available()) {
+          Serial.write(logFile.read());
+        }
+        logFile.close();
+        Serial.println("=== End Log ===");
+      } else {
+        Serial.println("No log file found");
+      }
+    }
+    else if (cmd == "clear") {
+      File logFile = LittleFS.open("/packets.csv", "w");
+      if (logFile) {
+        logFile.println("millis,length,type,b7,b8,b9,b10,b14,b23,b24,b25,b26,b27,b28");
+        logFile.close();
+        Serial.println("Log cleared");
+      }
+    }
+  }
 
   // Notifications are handled in the callback
   delay(100);

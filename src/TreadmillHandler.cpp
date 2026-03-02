@@ -3,13 +3,12 @@
 // --- Helper functions to read uint16 and uint32 from bytes ---
 uint16_t readU16(uint8_t *data, int offset)
 {
-    // TODO: really needed or can we just use memcpy?
+    // Explicit big-endian read — memcpy would give host byte order (little-endian on ESP32)
     return ((uint16_t)data[offset] << 8) | data[offset + 1];
 }
 
 uint32_t readU32(uint8_t *data, int offset)
 {
-    // TODO: really needed or can we just use memcpy?
     return ((uint32_t)data[offset] << 24) |
            ((uint32_t)data[offset + 1] << 16) |
            ((uint32_t)data[offset + 2] << 8) |
@@ -21,6 +20,7 @@ TreadmillHandler::TreadmillHandler()
     m_pClient = nullptr;
     m_pNotifyCharacteristic = nullptr;
     m_pWriteCharacteristic = nullptr;
+    m_pUnlockCharacteristic = nullptr;
     m_doConnect = false;
 }
 
@@ -29,37 +29,114 @@ TreadmillHandler::~TreadmillHandler()
     if (m_pClient)
     {
         m_pClient->disconnect();
-        // delete m_pClient;
         m_pClient = nullptr;
     }
 }
 
+// Helper to print command packet as hex
+void printCommandPacket(const char* cmdName, const uint8_t* packet, size_t length)
+{
+    char hex[length * 3 + 1];
+    for (size_t i = 0; i < length; i++)
+        sprintf(hex + i * 3, "%02X ", packet[i]);
+    hex[length * 3] = '\0';
+    log_i("CMD: %s (seq=%u) | %s", cmdName, packet[2], hex);
+}
+
+// BA05 Protocol: Set speed (speed in mph * 1000, e.g., 2500 = 2.5 mph)
 void TreadmillHandler::setSpeed(uint16_t speed)
 {
-    uint8_t packet[23];
-    this->makePacket(CMD_START_SET_SPEED, speed, packet);
+    uint8_t packet[27];
+    m_lastSpeed = speed;
+    // CMD1=0x01 for running, MODE=0x0C for running
+    this->makePacket(speed, 0x01, 0x0C, packet);
+    printCommandPacket("setSpeed", packet, sizeof(packet));
     this->sendCommand(packet, sizeof(packet));
 }
 
+// BA05 Protocol: Start at 1.0 km/h
 void TreadmillHandler::start()
 {
-    uint8_t packet[23];
-    this->makePacket(CMD_START_SET_SPEED, 0, packet);
+    uint8_t packet[27];
+    m_lastSpeed = START_SPEED;
+    // CMD1=0x01 for running, MODE=0x0C for running
+    this->makePacket(START_SPEED, 0x01, 0x0C, packet);
+    printCommandPacket("start", packet, sizeof(packet));
     this->sendCommand(packet, sizeof(packet));
 }
 
+// BA05 Protocol: Stop
 void TreadmillHandler::stop()
 {
-    uint8_t packet[23];
-    this->makePacket(CMD_STOP, 0, packet);
+    uint8_t packet[27];
+    m_lastSpeed = 0;
+    // CMD1=0x05 for stop, MODE=0x08 for stop, speed=0
+    this->makePacket(0, 0x05, 0x08, packet);
+    printCommandPacket("stop", packet, sizeof(packet));
     this->sendCommand(packet, sizeof(packet));
 }
 
+// BA05 Protocol: Pause (keep current speed in packet)
 void TreadmillHandler::pause()
 {
-    uint8_t packet[23];
-    this->makePacket(CMD_PAUSE, 0, packet);
+    uint8_t packet[27];
+    // CMD1=0x05 for pause, MODE=0x0A for pause, keep last speed
+    this->makePacket(m_lastSpeed, 0x05, 0x0A, packet);
+    printCommandPacket("pause", packet, sizeof(packet));
     this->sendCommand(packet, sizeof(packet));
+}
+
+// BA05 Protocol: 9-byte keepalive packet
+void TreadmillHandler::makeKeepalive(uint8_t *outPacket)
+{
+    // Format: 4D 00 [SEQ] 05 6A 05 FD F8 43
+    outPacket[0] = 0x4D;  // Start byte
+    outPacket[1] = 0x00;
+    outPacket[2] = m_seqCounter++;  // Sequence counter (auto-increment)
+    outPacket[3] = 0x05;
+    outPacket[4] = 0x6A;
+    outPacket[5] = 0x05;
+    outPacket[6] = 0xFD;
+    outPacket[7] = 0xF8;
+    outPacket[8] = 0x43;  // End byte
+}
+
+void TreadmillHandler::sendKeepalive()
+{
+    if (!isConnected()) return;
+
+    uint8_t packet[9];
+    makeKeepalive(packet);
+    this->sendCommand(packet, sizeof(packet));
+}
+
+// Sent immediately after subscribing to notifications.
+// The Q1 Classic Pro silently disconnects (BLE reason=531, remote user terminated)
+// if nothing is written to it within ~300ms of connection. Two-step approach:
+//   1. If the secondary unlock characteristic (0x2b11) is present, write the
+//      PitPat unlock bytes to it (raw, no BA05 envelope) - same as QZ does.
+//   2. Send an immediate keepalive on the primary write characteristic so the
+//      device knows we're a valid client.
+void TreadmillHandler::sendInitSequence()
+{
+    if (!isConnected()) return;
+
+    // Step 1: write unlock bytes to secondary characteristic (best-effort)
+    if (m_pUnlockCharacteristic)
+    {
+        // Raw PitPat unlock command - no BA05 envelope needed for this characteristic
+        uint8_t unlockData[] = {0x6B, 0x05, 0x9D, 0x98, 0x43};
+        bool ok = m_pUnlockCharacteristic->writeValue(unlockData, sizeof(unlockData), false);
+        log_i("Unlock write %s", ok ? "succeeded" : "failed (non-fatal)");
+    }
+    else
+    {
+        log_w("No unlock characteristic - skipping unlock step");
+    }
+
+    // Step 2: immediate keepalive on the main write characteristic
+    sendKeepalive();
+    log_i("Init sequence complete - keepalive sent");
 }
 
 void TreadmillHandler::begin(NimBLEAddress address)
@@ -77,14 +154,13 @@ bool TreadmillHandler::sendCommand(const uint8_t *data, size_t length)
         return false;
     }
 
-    bool success = m_pWriteCharacteristic->writeValue(data, length, true); // false = write without response
+    bool success = m_pWriteCharacteristic->writeValue(data, length, true);
     if (!success)
     {
         log_e("Failed to write to treadmill");
         return false;
     }
 
-    log_d("Wrote %d bytes to treadmill", length);
     return true;
 }
 
@@ -98,11 +174,19 @@ void TreadmillHandler::handle()
         {
             log_i("Connection successful.");
             m_doConnect = false;
+            m_lastKeepalive = millis();  // Reset keepalive timer on connect
         }
         else
         {
             log_e("Failed to connect - Retrying in 5 seconds...");
         }
+    }
+
+    // Send keepalive every KEEPALIVE_INTERVAL ms (200ms) to maintain connection
+    if (isConnected() && (millis() - m_lastKeepalive >= KEEPALIVE_INTERVAL))
+    {
+        sendKeepalive();
+        m_lastKeepalive = millis();
     }
 
     // Check for connection timeout and send state updates if needed
@@ -113,7 +197,7 @@ void TreadmillHandler::handle()
         m_lastDataTimestamp = millis(); // prevent repeated updates
         if (m_onDataUpdate)
         {
-            m_onDataUpdate(m_lastData); 
+            m_onDataUpdate(m_lastData);
         }
     }
 }
@@ -123,10 +207,11 @@ bool TreadmillHandler::connectToDevice()
     if (m_pClient == nullptr)
     {
         m_pClient = BLEDevice::createClient();
-        m_pClient->setDataLen(64); // Set data length to fit packats from device
+        // NOTE: setDataLen(64) removed - caused "Set data length error: 514" on every
+        // connect because 64 bytes is below the minimum negotiable PDU size.
+        // MTU is negotiated automatically (255 bytes, confirmed in logs).
         m_pClient->setClientCallbacks(this, false);
         m_pClient->setConnectionParams(12, 24, 0, 600); // 15ms to 30ms interval, no latency, 6s timeout
-        // m_pClient->setConnectTimeout(20);
     }
 
     log_i("Connecting to %s", m_targetAddress.toString().c_str());
@@ -137,10 +222,26 @@ bool TreadmillHandler::connectToDevice()
         return false;
     }
 
-    NimBLERemoteService *pService = m_pClient->getService(SERVICE_PAD_UUID);
+    // NOTE: delay(500) removed. The Q1 Classic Pro disconnects (reason=531, remote user
+    // terminated) if it receives no write within ~300ms of connecting. Every millisecond
+    // spent here is time we're not spending on the handshake.
+
+    // Retry service discovery up to 5 times with a short delay between attempts
+    NimBLERemoteService *pService = nullptr;
+    for (int retry = 0; retry < 5; retry++)
+    {
+        pService = m_pClient->getService(SERVICE_PAD_UUID);
+        if (pService)
+        {
+            log_i("Service found on attempt %d", retry + 1);
+            break;
+        }
+        log_w("Service not found, retry %d/5...", retry + 1);
+        delay(200); // reduced from 500ms - device won't wait long
+    }
     if (!pService)
     {
-        log_e("Failed to find treadmill service UUID: %s", SERVICE_PAD_UUID);
+        log_e("Failed to find treadmill service UUID after 5 retries: %s", SERVICE_PAD_UUID);
         m_pClient->disconnect();
         return false;
     }
@@ -182,56 +283,89 @@ bool TreadmillHandler::connectToDevice()
         return false;
     }
 
+    // Best-effort: discover the secondary unlock characteristic (service 0x1910, char 0x2b11).
+    // QZ uses this for the PitPat unlock handshake. The Q1's variant may or may not need it,
+    // but we try - failure here is non-fatal.
+    m_pUnlockCharacteristic = nullptr;
+    NimBLERemoteService *pUnlockService = m_pClient->getService(SERVICE_UNLOCK_UUID);
+    if (pUnlockService)
+    {
+        m_pUnlockCharacteristic = pUnlockService->getCharacteristic(CHARACTERISTIC_UNLOCK_UUID);
+        if (m_pUnlockCharacteristic)
+            log_i("Unlock characteristic (0x2b11) found.");
+        else
+            log_w("Unlock characteristic not found - continuing without it.");
+    }
+    else
+    {
+        log_w("Unlock service (0x1910) not found - continuing without it.");
+    }
+
+    // CRITICAL: send the init/handshake immediately - don't wait for the keepalive timer.
+    // The Q1 disconnects (reason=531) if it sees no write within ~300ms of connection.
+    sendInitSequence();
+    m_lastKeepalive = millis(); // prevent double-send when handle() fires next
+
     return true;
 }
 
-// Generates a 23-byte command packet for the treadmill
-void TreadmillHandler::makePacket(CommandType type, uint16_t speed, uint8_t *outPacket)
+// BA05 Protocol: Generates a 27-byte command packet
+// Format: 4D 00 [SEQ] 17 6A 17 00 00 00 00 [SPEED_HI] [SPEED_LO] [CMD1] 00 50 00 [MODE] 00 00 00 00 00 00 00 00 [CHECKSUM] 43
+//
+// Speed encoding: mph * 1600  (same as status packets; e.g. 3.0 km/h = 1.864 mph = raw 2982)
+// Checksum: XOR of bytes [5..24] — verified against QZ DeerRun source
+void TreadmillHandler::makePacket(uint16_t speed, uint8_t cmd1, uint8_t mode, uint8_t *outPacket)
 {
-    // type: "start", "pause", "stop", "set_speed"
-    // outPacket must be at least 23 bytes
+    // outPacket must be at least 27 bytes
 
-    // --- START / HEADER ---
-    outPacket[0] = 0x6A; // START_BYTE
-    outPacket[1] = 0x17; // LENGTH
+    // Header
+    outPacket[0] = 0x4D;  // Start byte (BA05)
+    outPacket[1] = 0x00;
+    outPacket[2] = m_seqCounter++;  // Sequence counter (auto-increment)
+    outPacket[3] = 0x17;  // Payload length (23 bytes follow before end byte)
+    outPacket[4] = 0x6A;
+    outPacket[5] = 0x17;
 
-    // Bytes 2-5 are reserved (0)
-    for (int i = 2; i <= 5; ++i)
-        outPacket[i] = 0;
+    // Reserved bytes
+    outPacket[6] = 0x00;
+    outPacket[7] = 0x00;
+    outPacket[8] = 0x00;
+    outPacket[9] = 0x00;
 
-    // --- Speed ---
-    outPacket[6] = (speed >> 8) & 0xFF;
-    outPacket[7] = speed & 0xFF;
+    // Speed (uint16 big-endian, mph * 1600)
+    outPacket[10] = (speed >> 8) & 0xFF;
+    outPacket[11] = speed & 0xFF;
 
-    // Magical byte: 5 for set_speed, 1 for others
-    outPacket[8] = (speed != 0) ? 5 : 1;
+    // Command byte 1
+    outPacket[12] = cmd1;  // 0x01 for running, 0x05 for pause/stop
 
-    outPacket[9] = 0;   // incline
-    outPacket[10] = 80; // weight default
-    outPacket[11] = 0;  // reserved
+    outPacket[13] = 0x00;
+    outPacket[14] = 0x50;  // was 0x46 - corrected from QZ source
+    outPacket[15] = 0x00;
 
-    // Command byte
-    uint8_t cmd = type; // default start/set_speed
+    // Mode byte
+    outPacket[16] = mode;  // 0x0C=running, 0x0A=pause, 0x08=stop
 
-    outPacket[12] = cmd & 0xF7; // kph mode (bit 3 = 0)
+    // Reserved bytes
+    outPacket[17] = 0x00;
+    outPacket[18] = 0x00;
+    outPacket[19] = 0x00;
+    outPacket[20] = 0x00;
+    outPacket[21] = 0x00;
+    outPacket[22] = 0x00;
+    outPacket[23] = 0x00;
+    outPacket[24] = 0x00;
 
-    // User ID 8 bytes (default 58965456623)
-    uint64_t userId = 58965456623ULL;
-    for (int i = 0; i < 8; ++i)
-    {
-        outPacket[13 + i] = (userId >> (56 - i * 8)) & 0xFF;
-    }
-
-    // --- Checksum ---
+    // Checksum: XOR of bytes [5..24] — QZ uses this range (not [1..24])
     uint8_t checksum = 0;
-    for (int i = 1; i <= 20; ++i)
+    for (int i = 5; i <= 24; ++i)
     {
         checksum ^= outPacket[i];
     }
-    outPacket[21] = checksum;
+    outPacket[25] = checksum;
 
-    // END_BYTE
-    outPacket[22] = 0x43;
+    // End byte
+    outPacket[26] = 0x43;
 }
 
 // --- Notification callback ---
@@ -241,80 +375,120 @@ void TreadmillHandler::notifyCallback(
     size_t length,
     bool isNotify)
 {
-    log_d("Notification received, length: %d", length);
-
-    // Log payload as hex
-    /**
-    Serial.print("Payload (hex): ");
-    for (size_t i = 0; i < length; i++)
+    if (length <= 5)
     {
-        if (pData[i] < 16)
-            Serial.print("0");
-        Serial.print(pData[i], HEX);
-        Serial.print(" ");
+        // 5-byte packets are keepalive ACKs from the device - ignore silently
+        return;
     }
-    Serial.println();
-     */
-    if (length < 31)
+    if (length < 20)
     {
-        log_e("Invalid treadmill packet (too short).");
-        // Here you could trigger a 'stopped/disconnected' state if needed
+        log_w("Unexpected packet length: %d - ignoring", length);
         return;
     }
 
-    // Parse treadmill fields
-    uint16_t current_speed = readU16(pData, 3);
-    uint16_t target_speed = readU16(pData, 5);
+    // Use last known data as starting point
+    TreadMillData data = m_lastData;
 
-    uint32_t distance = readU32(pData, 7);
-    
-    // TODO: validate version
-    uint8_t fw_version = pData[25];
+    // Packet type detection based on byte 3
+    uint8_t packetType = pData[3];
 
-    //uint16_t calories = ((uint16_t)pData[18] << 8) | pData[19];
-    uint16_t calories = readU16(pData, 18);
-    uint32_t steps = readU32(pData, 14);
-    uint32_t duration = readU32(pData, 20);
-    uint8_t flags = pData[26];
+    if (length >= 50 && (packetType == 0x2F || packetType == 0x34)) {
+        // BA05 packet parsing - field positions verified against live captures:
+        //
+        // 0x2F (51-byte) packets: normal running data - confirmed via hex dump 2025-02
+        // 0x34 (56-byte) packets: extended data - same header, +5 device serial bytes
+        //                         inserted at [36], shifting tail bytes
+        //
+        // Byte  Field              Notes
+        // [7-8] current speed      raw / 1600 = mph; display shows mph e.g. 0.6
+        // [9-10] target speed      same encoding
+        // [11-12] max speed        same encoding (may be 0 in 0x2F packets)
+        // [13-14] distance         uint16 BE, metres; was incorrectly uint8 before
+        // [23]  calories           uint8
+        // [25]  duration minutes   uint8
+        // [26-27] duration ms      uint16 BE, milliseconds within current minute
+        // [45]  status flags (0x2F packets)  0x08=running, 0x00=stopped
+        // [28]  status flags (0x34 packets)  pending further capture to verify
 
-    uint16_t maxRunSpeed = readU16(pData, 27);
+        uint16_t current_speed = readU16(pData, 7);
+        uint16_t target_speed  = readU16(pData, 9);
+        uint16_t distance_m    = readU16(pData, 13);  // uint16 - was uint8, max was 255m
+        uint8_t  calories      = pData[23];
+        uint8_t  duration_min  = pData[25];
+        uint16_t duration_ms   = readU16(pData, 26);
 
-    uint8_t unit_mode = (flags & 128) ? 1 : 0;
-    uint8_t running_state_bits = flags & 24;
+        uint32_t duration_total_sec = (uint32_t)(duration_min * 60) + (duration_ms / 1000);
 
-    TreadMillData::Status running_state = TreadMillData::STOPPED; // Default stopped
-    if (running_state_bits == 24)
-        running_state = TreadMillData::COUNTDOWN;
-    else if (running_state_bits == 8)
-        running_state = TreadMillData::RUNNING;
-    else if (running_state_bits == 16)
-        running_state = TreadMillData::PAUSED;
+        // Speed: device encodes as mph * 1600. Confirmed: 1000 raw = 0.625 mph
+        // All speed fields stored and published in mph to match belt display.
+        float speed_mph  = current_speed / 1600.0f;
+        float target_mph = target_speed  / 1600.0f;
+        float max_mph    = readU16(pData, 11) / 1600.0f;
 
-    const char *statusArr[] = {"Countdown", "Running", "Paused", "Stopped"};
-    const char *speed_unit = (unit_mode == 1) ? "mph" : "kph";
-    const char *distance_unit = (unit_mode == 1) ? "mi" : "km";   
+        data.speedFeedback = speed_mph;
+        data.speedCmd      = target_mph;
+        data.speedMax      = max_mph;
+        data.fwVersion     = 0;
+        // distanceKm, calories, durationSec, steps set below as session deltas
 
-    // log_i("--- Treadmill Data ---");
-    // log_i("Speed: %.2f %s", (float)current_speed / 1000.0, speed_unit);
-    // log_i("Distance: %.2f %s", (float)distance / 1000.0, distance_unit);
-    // log_i("Calories: %d kcal", calories);
-    // log_i("Steps: %d", steps);
-    // log_i("Duration (s): %d", duration / 1000);
-    // log_i("Status: %s", statusArr[running_state]);
-    // log_i("---------------------");
+        // Status byte differs by packet type.
+        // 0x2F (51-byte): byte [45] - observed values: 0x08, 0x06 (running), 0x00 (stopped)
+        // 0x34 (56-byte): byte [28] - original assumption, not yet re-verified
+        //
+        // We've seen both 0x06 and 0x08 while the belt is running, so don't rely on a
+        // specific bitmask. Instead map known explicit values and treat anything else
+        // non-zero as RUNNING (belt moving but in an unclassified active state).
+        uint8_t flags = (packetType == 0x2F) ? pData[45] : pData[28];
+        if      (flags == 0x00) data.status = TreadMillData::STOPPED;
+        else if (flags == 0x18) data.status = TreadMillData::COUNTDOWN;
+        else if (flags == 0x10) data.status = TreadMillData::PAUSED;
+        else                    data.status = TreadMillData::RUNNING;  // 0x06, 0x08, etc.
 
-    TreadMillData data;
-    data.speedCmd = (float)target_speed / 1000.0;
-    data.speedFeedback = (float)current_speed / 1000.0;
-    data.distanceKm = (float)distance / 1000.0;
-    data.calories = calories;
-    data.steps = steps;
-    data.durationSec = duration / 1000;
-    data.status = running_state;
-    data.fwVersion = fw_version;
-    data.speedMax = (float)maxRunSpeed / 1000.0;
+        // Detect new session: STOPPED/DISCONNECTED → RUNNING.
+        // PAUSED → RUNNING is a resume - don't reset baselines.
+        bool newSession = (data.status == TreadMillData::RUNNING &&
+                           m_lastStatus != TreadMillData::RUNNING &&
+                           m_lastStatus != TreadMillData::PAUSED &&
+                           m_lastStatus != TreadMillData::COUNTDOWN);
+        if (newSession)
+        {
+            m_baselineDistance = distance_m;
+            m_baselineCalories = calories;
+            m_baselineDuration = duration_total_sec;
+            log_i("New session started - baselines: dist=%u cal=%u dur=%u",
+                  m_baselineDistance, m_baselineCalories, m_baselineDuration);
+        }
+        m_lastStatus = data.status;
 
-    log_d("Max run speed: %.2f %s, FW version: %d", (float)maxRunSpeed / 1000.0, speed_unit, fw_version);
+        // Publish session deltas so HA values reset to 0 at the start of each walk.
+        // When STOPPED, the device resets its counters to 0 in the stopped packet.
+        // To preserve the final session values for HA automations (e.g. Strava post),
+        // we keep the last running values rather than overwriting with 0.
+        if (data.status != TreadMillData::STOPPED)
+        {
+            uint16_t session_distance = (distance_m >= m_baselineDistance)
+                                        ? distance_m - m_baselineDistance : distance_m;
+            uint8_t  session_calories = (calories >= m_baselineCalories)
+                                        ? calories - m_baselineCalories : calories;
+            uint32_t session_duration = (duration_total_sec >= m_baselineDuration)
+                                        ? duration_total_sec - m_baselineDuration : duration_total_sec;
+
+            data.distanceKm  = session_distance / 1000.0f;
+            data.calories    = session_calories;
+            data.durationSec = session_duration;
+            data.steps       = (uint32_t)(session_distance / STRIDE_LENGTH_M);
+        }
+        // else: keep m_lastData values (distance/calories/duration/steps from last running packet)
+
+        log_i("speed=%.2f mph target=%.2f dist=%.3f km cal=%u dur=%u:%02u status=%d",
+              data.speedFeedback, data.speedCmd, data.distanceKm,
+              data.calories, data.durationSec / 60, data.durationSec % 60, (int)data.status);
+    }
+    else if (length == 20) {
+        // Short status packet - speed only, offset unverified for Q1
+        uint16_t current_speed = readU16(pData, 9);
+        data.speedFeedback = current_speed / 1600.0f;  // mph, same encoding as main packets
+    }
 
     m_lastData = data;
     m_lastDataTimestamp = millis();

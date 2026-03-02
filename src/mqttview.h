@@ -32,16 +32,16 @@ public:
 
         // further mqtt device config
         m_speed.setCustomStateTopic(m_state.getStateTopic());
-        m_speed.setUnit("km/h");
+        m_speed.setUnit("mph");
         m_speed.setDeviceClass("speed");
-        m_speed.setMin(0.0f);
-        m_speed.setMax(6.0f);
+        m_speed.setMin(0.6f);
+        m_speed.setMax(3.8f);
         m_speed.setStep(0.1f);
         m_speed.setMode(NumberMode::SLIDER);
         m_speed.setValueTemplate("{{ value_json.speed_cmd }}");
 
         m_speedFeedback.setCustomStateTopic(m_state.getStateTopic());
-        m_speedFeedback.setUnit("km/h");
+        m_speedFeedback.setUnit("mph");
         m_speedFeedback.setDeviceClass("speed");
         m_speedFeedback.setStateClass(MqttSensor::StateClass::MEASUREMENT);
         m_speedFeedback.setValueTemplate("{{ value_json.speed_feedback }}");
@@ -49,24 +49,24 @@ public:
         m_distance.setCustomStateTopic(m_state.getStateTopic());
         m_distance.setUnit("km");
         m_distance.setDeviceClass("distance");
-        m_distance.setStateClass(MqttSensor::StateClass::TOTAL_INCREASING);
+        m_distance.setStateClass(MqttSensor::StateClass::MEASUREMENT);
         m_distance.setValueTemplate("{{ value_json.distance_km }}");
 
         m_duration.setCustomStateTopic(m_state.getStateTopic());
         m_duration.setUnit("s");
         m_duration.setDeviceClass("duration");
-        m_duration.setStateClass(MqttSensor::StateClass::TOTAL_INCREASING);
+        m_duration.setStateClass(MqttSensor::StateClass::MEASUREMENT);
         m_duration.setValueTemplate("{{ value_json.duration_sec }}");
 
         m_calories.setCustomStateTopic(m_state.getStateTopic());
         m_calories.setUnit("cal");
         m_calories.setDeviceClass("energy");
-        m_calories.setStateClass(MqttSensor::StateClass::TOTAL_INCREASING);
+        m_calories.setStateClass(MqttSensor::StateClass::MEASUREMENT);
         m_calories.setValueTemplate("{{ value_json.calories }}");
 
         m_steps.setCustomStateTopic(m_state.getStateTopic());
         m_steps.setUnit("steps");
-        m_steps.setStateClass(MqttSensor::StateClass::TOTAL_INCREASING);
+        m_steps.setStateClass(MqttSensor::StateClass::MEASUREMENT);
         m_steps.setIcon("mdi:shoe-print");
         m_steps.setValueTemplate("{{ value_json.steps }}");
 
@@ -78,7 +78,7 @@ public:
 
         m_maxSpeed.setCustomStateTopic(m_state.getStateTopic());
         m_maxSpeed.setEntityType(EntityCategory::DIAGNOSTIC);
-        m_maxSpeed.setUnit("km/h");
+        m_maxSpeed.setUnit("mph");
         m_maxSpeed.setDeviceClass("speed");
         m_maxSpeed.setValueTemplate("{{ value_json.speed_max }}");
 
@@ -123,8 +123,7 @@ public:
         publishConfig(m_duration);
         publishConfig(m_calories);
 
-        // TODO: steps are actually not implemented in this type of treadmill
-        // publishConfig(m_steps);
+        publishConfig(m_steps);  // estimated from distance / STRIDE_LENGTH_M
 
         // Configuration
         publishConfig(m_autoreconnectSwitch);

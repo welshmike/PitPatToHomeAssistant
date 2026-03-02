@@ -1,0 +1,112 @@
+# PaceKeeper → Strava Integration
+# =================================
+# Drop this file into your HA config as a package:
+#   /config/packages/pacekeeper_strava.yaml
+#
+# Then add to configuration.yaml (if not already using packages):
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Also add these three lines to secrets.yaml (values from your Strava API app):
+#   strava_token_payload: "client_id=YOUR_ID&client_secret=YOUR_SECRET&refresh_token=YOUR_REFRESH_TOKEN&grant_type=refresh_token"
+#   strava_client_id: "YOUR_CLIENT_ID"
+#   strava_client_secret: "YOUR_CLIENT_SECRET"
+#
+# Entity IDs assume default MQTT discovery naming. Check your HA device page
+# for PaceKeeper and adjust if any differ.
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+input_datetime:
+  pacekeeper_workout_start:
+    name: "PaceKeeper Workout Start"
+    has_date: true
+    has_time: true
+
+# ---------------------------------------------------------------------------
+# REST commands
+# ---------------------------------------------------------------------------
+rest_command:
+  strava_refresh_token:
+    url: "https://www.strava.com/oauth/token"
+    method: POST
+    content_type: "application/x-www-form-urlencoded"
+    payload: !secret strava_token_payload
+
+  strava_create_activity:
+    url: "https://www.strava.com/api/v3/activities"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ access_token }}"
+    content_type: "application/json"
+    payload: >-
+      {
+        "name": "{{ name }}",
+        "sport_type": "Walk",
+        "start_date_local": "{{ start_date }}",
+        "elapsed_time": {{ elapsed_time }},
+        "distance": {{ distance }},
+        "description": "{{ description }}"
+      }
+
+# ---------------------------------------------------------------------------
+# Automations
+# ---------------------------------------------------------------------------
+automation:
+  # Record the moment the belt starts moving.
+  # Only resets on a fresh start (not on resume from pause).
+  - alias: "PaceKeeper - Record Workout Start"
+    description: "Stores start timestamp when belt begins a new session"
+    trigger:
+      - platform: state
+        entity_id: sensor.pacekeeper_state
+        to: "running"
+        from:
+          - "stopped"
+          - "disconnected"
+          - "unknown"
+          - "unavailable"
+    action:
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.pacekeeper_workout_start
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+  # Post completed workout to Strava when belt stops.
+  # Skips sessions shorter than 60 seconds to avoid accidental posts.
+  - alias: "PaceKeeper - Post Workout to Strava"
+    description: "Creates a Strava Walk activity when a session ends"
+    trigger:
+      - platform: state
+        entity_id: sensor.pacekeeper_state
+        from: "running"
+        to: "stopped"
+    condition:
+      - condition: template
+        # Use elapsed wall-clock time instead of the duration sensor value.
+        # device_class: duration causes HA to auto-convert seconds → minutes,
+        # so | int(0) > 60 would compare minutes against 60 and always fail.
+        value_template: >-
+          {{ (now() - states('input_datetime.pacekeeper_workout_start') | as_datetime).total_seconds() > 60 }}
+    action:
+      # Step 1: exchange refresh token for a fresh access token
+      - action: rest_command.strava_refresh_token
+        response_variable: token_response
+
+      # Step 2: post the activity
+      - action: rest_command.strava_create_activity
+        data:
+          access_token: "{{ token_response.content.access_token }}"
+          name: "Walking Pad Session"
+          start_date: >-
+            {{ states('input_datetime.pacekeeper_workout_start')
+               | as_datetime
+               | strftime('%Y-%m-%dT%H:%M:%S') }}
+          elapsed_time: "{{ states('sensor.pacekeeper_duration') | int(0) }}"
+          distance: "{{ (states('sensor.pacekeeper_distance') | float(0) * 1000) | round(0) | int }}"
+          description: >-
+            {{ states('sensor.pacekeeper_calories') }} kcal •
+            {{ states('sensor.pacekeeper_steps') }} steps •
+            avg {{ states('sensor.pacekeeper_speed_feedback') }} mph

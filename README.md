@@ -11,6 +11,7 @@ See the video on Youtube:
 ## Supported Hardware
 
 * PitPat-T01 Treadmill – Superun BA06-B1 [[AliExpress](https://s.click.aliexpress.com/e/_c3V1ssrv)]
+* DeerRun Q1 Classic Pro (BA05/PitPat protocol variant)
 
 ## Required Tools
 
@@ -39,8 +40,20 @@ Get an app like **nRF Connect** – this app allows you to view Bluetooth connec
 * Set up VS Code with PlatformIO  
   (<https://docs.platformio.org/en/latest/integration/ide/vscode.html#installation>)
 * Clone this repo and open it in VS Code
-* Rename `config.h.sample` to `config.h`
-* Open the file and set the configuration values for MQTT and the Bluetooth address from the previous step
+* Copy `src/config.h.example` to `src/config.h`:
+  ```bash
+  cp src/config.h.example src/config.h
+  ```
+* Open `src/config.h` and fill in your values:
+  ```cpp
+  #define DEFAULT_STA_WIFI_SSID "your-wifi-name"
+  #define DEFAULT_STA_WIFI_PASS "your-wifi-password"
+  #define MQTT_SERVER           "192.168.x.x"       // your HA IP
+  #define MQTT_USER             "your-mqtt-user"
+  #define MQTT_PASS             "your-mqtt-password"
+  #define TARGET_ADDRESS        "AA:BB:CC:11:22:33"  // from nRF Connect
+  ```
+> **Note:** `src/config.h` is listed in `.gitignore` and will never be committed. Never commit your real credentials.
 * Connect the ESP32 with a USB cable (you might have to hold **RST** and **BOOT** while plugging it in)
 * Compile and flash the project via **PlatformIO → Upload and Monitor**
 * If everything goes well, you should see a bunch of log messages, and a new device called `PaceKeeper` should show up in your Home Assistant
