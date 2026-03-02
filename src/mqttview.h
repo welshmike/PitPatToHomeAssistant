@@ -18,7 +18,9 @@ public:
           m_duration(&m_device, "duration", "Duration"),
           m_calories(&m_device, "calories", "Calories"),
           m_steps(&m_device, "steps", "Steps"),
+          m_startBtn(&m_device, "start", "Start"),
           m_pauseBtn(&m_device, "pause", "Pause"),
+          m_stopBtn(&m_device, "stop", "Stop"),
 
           // Configuration Settings
           m_autoreconnectSwitch(&m_device, "auto-reconnect", "Auto Reconnect"),
@@ -90,7 +92,9 @@ public:
         m_firmware.setValueTemplate("{{ value_json.fw }}");
         m_firmware.setIcon("mdi:chip");
 
-        m_pauseBtn.setIcon("mdi:play-pause");
+        m_startBtn.setIcon("mdi:play");
+        m_pauseBtn.setIcon("mdi:pause");
+        m_stopBtn.setIcon("mdi:stop");
     }
 
     MqttDevice &getDevice()
@@ -103,9 +107,19 @@ public:
         return m_speed;
     }
 
+    const MqttButton &getStartButton() const
+    {
+        return m_startBtn;
+    }
+
     const MqttButton &getPauseButton() const
     {
         return m_pauseBtn;
+    }
+
+    const MqttButton &getStopButton() const
+    {
+        return m_stopBtn;
     }
 
     const MqttSwitch &getAutoReconnectSwitch() const
@@ -116,7 +130,9 @@ public:
     void publishAllConfigs()
     {
         // Controls
+        publishConfig(m_startBtn);
         publishConfig(m_pauseBtn);
+        publishConfig(m_stopBtn);
         publishConfig(m_speed);
 
         // Sensors
@@ -193,7 +209,9 @@ private:
 
     // Controls
     MqttNumber m_speed;
+    MqttButton m_startBtn;
     MqttButton m_pauseBtn;
+    MqttButton m_stopBtn;
 
     // Sensors
     MqttSensor m_calories;

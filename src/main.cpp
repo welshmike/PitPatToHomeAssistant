@@ -58,7 +58,9 @@ bool connectToMqtt()
   }
 
   client.subscribe(g_mqttView.getSpeed().getCommandTopic(), 1);
+  client.subscribe(g_mqttView.getStartButton().getCommandTopic(), 1);
   client.subscribe(g_mqttView.getPauseButton().getCommandTopic(), 1);
+  client.subscribe(g_mqttView.getStopButton().getCommandTopic(), 1);
   client.subscribe(g_mqttView.getAutoReconnectSwitch().getCommandTopic(), 1);
 
   client.subscribe(HOMEASSISTANT_STATUS_TOPIC);
@@ -104,18 +106,34 @@ void callback(char *topic, byte *payload, unsigned int length)
     }
     treadmill.setSpeed(speed);
   }
+  else if (strcmp(topic, g_mqttView.getStartButton().getCommandTopic()) == 0)
+  {
+    String command = String((char *)payload).substring(0, length);
+    command.trim();
+    if (command.equalsIgnoreCase("press"))
+    {
+      log_i("Start command received");
+      treadmill.start();
+    }
+  }
   else if (strcmp(topic, g_mqttView.getPauseButton().getCommandTopic()) == 0)
   {
     String command = String((char *)payload).substring(0, length);
     command.trim();
-    log_i("Pause command received: %s", command.c_str());
     if (command.equalsIgnoreCase("press"))
     {
-      if (treadmill.getLastData().status == TreadMillData::RUNNING)
-        treadmill.pause();
-      else if (treadmill.getLastData().status == TreadMillData::PAUSED ||
-               treadmill.getLastData().status == TreadMillData::STOPPED)
-        treadmill.start();
+      log_i("Pause command received");
+      treadmill.pause();
+    }
+  }
+  else if (strcmp(topic, g_mqttView.getStopButton().getCommandTopic()) == 0)
+  {
+    String command = String((char *)payload).substring(0, length);
+    command.trim();
+    if (command.equalsIgnoreCase("press"))
+    {
+      log_i("Stop command received");
+      treadmill.stop();
     }
   }
   else if (strcmp(topic, g_mqttView.getAutoReconnectSwitch().getCommandTopic()) == 0)
