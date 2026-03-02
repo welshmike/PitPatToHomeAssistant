@@ -233,7 +233,11 @@ private:
 
     void publishMqttState(const MqttEntity &entity, const char *state)
     {
-        if (!m_client->publish(entity.getStateTopic(), state))
+        // retain=true: broker always holds the latest state so HA can initialise
+        // entities immediately on reload/reconnect without waiting for the next
+        // live publish. Without this, number entities start as "unknown" and
+        // won't accept input until a live message happens to arrive.
+        if (!m_client->publish(entity.getStateTopic(), state, true))
         {
             log_e("Failed to publish state to %s", entity.getStateTopic());
         }
