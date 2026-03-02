@@ -452,7 +452,10 @@ void TreadmillHandler::notifyCallback(
         uint8_t  duration_min  = pData[25];
         uint16_t duration_ms   = readU16(pData, 26);
 
-        uint32_t duration_total_sec = (uint32_t)(duration_min * 60) + (duration_ms / 1000);
+        // byte[25] is NOT a minutes counter — it counts uint16 overflows of the ms timer.
+        // Each overflow = 65536ms (~65.5s). Treating it as 60s/min gave ~8% error.
+        // Verified: 26 overflows × 65536 + 53064ms = 1757s ≈ 29:17 (belt showed 29:16 ✓)
+        uint32_t duration_total_sec = ((uint32_t)duration_min * 65536 + duration_ms) / 1000;
 
         // Speed: device encodes as mph * 1600. Confirmed: 1000 raw = 0.625 mph
         // All speed fields stored and published in mph to match belt display.
