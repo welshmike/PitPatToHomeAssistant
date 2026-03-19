@@ -34,6 +34,13 @@ unsigned long g_lastWifiConnect = 0;
 String g_bssid = "";
 
 TreadmillHandler treadmill;
+
+// Recovery topic — allows restoring NVS totals after accidental "Erase Flash".
+// Topic: pacekeeper-{mac}/restore-totals/set
+// Payload: JSON e.g. {"dist_km":12.34,"steps":15000,"calories":200,"duration_sec":5400}
+// Publish from HA Developer Tools → MQTT. All fields are optional (omit to keep current).
+char g_restoreTotalsTopic[64];
+
 bool connectToMqtt()
 {
   if (client.connected())
@@ -62,6 +69,16 @@ bool connectToMqtt()
   client.subscribe(g_mqttView.getPauseButton().getCommandTopic(), 1);
   client.subscribe(g_mqttView.getStopButton().getCommandTopic(), 1);
   client.subscribe(g_mqttView.getAutoReconnectSwitch().getCommandTopic(), 1);
+  client.subscribe(g_mqttView.getStepLengthNumber().getCommandTopic(), 1);
+  client.subscribe(g_mqttView.getConnectSwitch().getCommandTopic(), 1);
+  client.subscribe(g_mqttView.getCalibrate20StepsButton().getCommandTopic(), 1);
+
+  // Recovery topic — build once and subscribe. Topic is logged at INFO so you can
+  // find it in the serial monitor if you need to publish a restore payload.
+  snprintf(g_restoreTotalsTopic, sizeof(g_restoreTotalsTopic),
+           "%s/restore-totals/set", composeClientID().c_str());
+  client.subscribe(g_restoreTotalsTopic);
+  log_i("Restore-totals topic: %s", g_restoreTotalsTopic);
 
   client.subscribe(HOMEASSISTANT_STATUS_TOPIC);
   client.subscribe(HOMEASSISTANT_STATUS_TOPIC_ALT);
@@ -70,6 +87,7 @@ bool connectToMqtt()
   delay(200); // give mqtt broker some time to process all config messages
   g_mqttView.publishState(treadmill.getLastData());
   g_mqttView.publishAutoReconnectSetting(treadmill.getAutoReconnect());
+  g_mqttView.publishStepLengthSetting(treadmill.getStepLength());
 
   return true;
 }
@@ -77,6 +95,164 @@ bool connectToMqtt()
 bool connectToWifi()
 {
   return WiFi.status() == WL_CONNECTED;
+}
+
+void handleSpeedCommand(byte *payload, unsigned int length)
+{
+  float data = atof((char *)payload);
+  // HA slider sends mph. Device encoding: mph * 1600.
+  uint16_t speed = (uint16_t)(data * 1600.0f);
+  log_i("Setting speed to %.2f mph (raw=%u)", data, speed);
+
+  if (speed <= 100)  // below ~0.1 km/h → stop
+  {
+    treadmill.stop();
+    return;
+  }
+  if (speed > 6080)  // cap at 3.8 mph (device max)
+  {
+    speed = 6080;
+  }
+  treadmill.setSpeed(speed);
+  // Immediately reflect the new commanded speed in HA — don't wait for the
+  // next BLE notification from the belt (can be 3-5s). speed_feedback still
+  // lags until the belt confirms, but the command value updates instantly.
+  TreadMillData updated = treadmill.getLastData();
+  updated.speedCmd = roundf((speed / 1600.0f) * 10) / 10.0f;
+  g_mqttView.publishState(updated);
+}
+
+void handleButtonCommand(byte *payload, unsigned int length, const char* action)
+{
+  String command = String((char *)payload).substring(0, length);
+  command.trim();
+  if (command.equalsIgnoreCase("press"))
+  {
+    if (strcmp(action, "start") == 0) {
+      log_i("Start command received");
+      treadmill.start();
+      TreadMillData updated = treadmill.getLastData();
+      updated.status = TreadMillData::COUNTDOWN;
+      g_mqttView.publishState(updated);
+    } else if (strcmp(action, "pause") == 0) {
+      log_i("Pause command received");
+      treadmill.pause();
+      TreadMillData updated = treadmill.getLastData();
+      updated.status = TreadMillData::PAUSED;
+      g_mqttView.publishState(updated);
+    } else if (strcmp(action, "stop") == 0) {
+      log_i("Stop command received");
+      treadmill.stop();
+      TreadMillData updated = treadmill.getLastData();
+      updated.status = TreadMillData::STOPPED;
+      g_mqttView.publishState(updated);
+    }
+  }
+}
+
+void handleAutoReconnectCommand(byte *payload, unsigned int length)
+{
+  String command = String((char *)payload).substring(0, length);
+  command.trim();
+  log_i("Auto Reconnect command received: %s", command.c_str());
+  if (command.equalsIgnoreCase(g_mqttView.getAutoReconnectSwitch().getOnState()))
+  {
+    treadmill.setAutoReconnect(true);
+    g_mqttView.publishAutoReconnectSetting(true);
+  }
+  else if (command.equalsIgnoreCase(g_mqttView.getAutoReconnectSwitch().getOffState()))
+  {
+    treadmill.setAutoReconnect(false);
+    g_mqttView.publishAutoReconnectSetting(false);
+  }
+}
+
+void handleConnectSwitchCommand(byte *payload, unsigned int length)
+{
+  String command = String((char *)payload).substring(0, length);
+  command.trim();
+  bool wasConnected = treadmill.isConnected();
+  bool actionTaken = treadmill.toggleConnection();
+  // Sync auto-reconnect switch in HA to reflect the new state
+  g_mqttView.publishAutoReconnectSetting(treadmill.getAutoReconnect());
+  if (wasConnected && actionTaken)
+  {
+    // Disconnect initiated — onDisconnect() will set DISCONNECTED + m_newDataAvailable,
+    // but publish optimistically now so HA doesn't wait for that callback (~42ms delay)
+    TreadMillData disconnected = treadmill.getLastData();
+    disconnected.status = TreadMillData::DISCONNECTED;
+    g_mqttView.publishState(disconnected);
+  }
+  else if (wasConnected && !actionTaken)
+  {
+    // Blocked by safety check (belt is active) —
+    // re-publish current state so HA snaps the switch back to ON
+    log_w("Connect switch OFF blocked — re-publishing current state to correct HA");
+    g_mqttView.publishState(treadmill.getLastData());
+  }
+  // If !wasConnected: connect requested, BLE callback will publish ON when established
+}
+
+void handleStepLengthCommand(byte *payload, unsigned int length)
+{
+  float stepM = atof((char *)payload);
+  if (stepM >= 0.10f && stepM <= 0.80f)
+  {
+    log_i("Setting step length to %.2f m", stepM);
+    treadmill.setStepLength(stepM);
+    g_mqttView.publishStepLengthSetting(stepM);
+  }
+  else
+  {
+    log_w("Step length %.2f out of range [0.10, 0.80] - ignoring", stepM);
+  }
+}
+
+void handleCalibrate20StepsCommand(byte *payload, unsigned int length)
+{
+  log_i("Calibration 20 Steps button pressed via MQTT");
+  treadmill.toggleCalibration();
+  g_mqttView.publishCalibrationPoints(treadmill.getCalibrationPoints(), treadmill.getCalibrationPointCount());
+}
+
+void handleRestoreTotalsCommand(byte *payload, unsigned int length)
+{
+  String payloadStr = String((char *)payload).substring(0, length);
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, payloadStr);
+  if (err)
+  {
+    log_e("restore-totals: JSON parse failed (%s) — payload: %s",
+          err.c_str(), payloadStr.c_str());
+  }
+  else
+  {
+    // Read each field; fall back to the current NVS value if the field is absent
+    // so you can restore individual fields without affecting others.
+    float    distKm      = doc["dist_km"]      | treadmill.getTotalDistanceKm();
+    uint32_t steps       = doc["steps"]        | treadmill.getTotalSteps();
+    uint32_t calories    = doc["calories"]      | treadmill.getTotalCalories();
+    uint32_t durationSec = doc["duration_sec"] | treadmill.getTotalDurationSec();
+
+    treadmill.restoreTotals(distKm, steps, calories, durationSec);
+
+    // Publish immediately so HA sensors reflect the restored values right away
+    g_mqttView.publishState(treadmill.getLastData());
+    log_i("Totals restored and published to MQTT.");
+  }
+}
+
+void handleHAStatus(byte *payload, unsigned int length)
+{
+  if (strncmp((char *)payload, "online", length) == 0)
+  {
+    g_mqttView.publishAllConfigs();
+    delay(200); // give mqtt broker some time to process all config messages
+    g_mqttView.publishState(treadmill.getLastData());
+    g_mqttView.publishAutoReconnectSetting(treadmill.getAutoReconnect());
+    g_mqttView.publishStepLengthSetting(treadmill.getStepLength());
+    g_mqttView.publishCalibrationPoints(treadmill.getCalibrationPoints(), treadmill.getCalibrationPointCount());
+  }
 }
 
 void callback(char *topic, byte *payload, unsigned int length)
@@ -88,88 +264,27 @@ void callback(char *topic, byte *payload, unsigned int length)
   }
   Serial.println();
 
-  if (strcmp(topic, g_mqttView.getSpeed().getCommandTopic()) == 0)
-  {
-    float data = atof((char *)payload);
-    // HA slider sends mph. Device encoding: mph * 1600.
-    uint16_t speed = (uint16_t)(data * 1600.0f);
-    log_i("Setting speed to %.2f mph (raw=%u)", data, speed);
-
-    if (speed <= 100)  // below ~0.1 km/h → stop
-    {
-      treadmill.stop();
-      return;
-    }
-    if (speed > 6080)  // cap at 3.8 mph (device max)
-    {
-      speed = 6080;
-    }
-    treadmill.setSpeed(speed);
-    // Immediately reflect the new commanded speed in HA — don't wait for the
-    // next BLE notification from the belt (can be 3-5s). speed_feedback still
-    // lags until the belt confirms, but the command value updates instantly.
-    TreadMillData updated = treadmill.getLastData();
-    updated.speedCmd = roundf((speed / 1600.0f) * 10) / 10.0f;
-    g_mqttView.publishState(updated);
-  }
-  else if (strcmp(topic, g_mqttView.getStartButton().getCommandTopic()) == 0)
-  {
-    String command = String((char *)payload).substring(0, length);
-    command.trim();
-    if (command.equalsIgnoreCase("press"))
-    {
-      log_i("Start command received");
-      treadmill.start();
-    }
-  }
-  else if (strcmp(topic, g_mqttView.getPauseButton().getCommandTopic()) == 0)
-  {
-    String command = String((char *)payload).substring(0, length);
-    command.trim();
-    if (command.equalsIgnoreCase("press"))
-    {
-      log_i("Pause command received");
-      treadmill.pause();
-    }
-  }
-  else if (strcmp(topic, g_mqttView.getStopButton().getCommandTopic()) == 0)
-  {
-    String command = String((char *)payload).substring(0, length);
-    command.trim();
-    if (command.equalsIgnoreCase("press"))
-    {
-      log_i("Stop command received");
-      treadmill.stop();
-    }
-  }
-  else if (strcmp(topic, g_mqttView.getAutoReconnectSwitch().getCommandTopic()) == 0)
-  {
-    String command = String((char *)payload).substring(0, length);
-    command.trim();
-    log_i("Auto Reconnect command received: %s", command.c_str());
-    if (command.equalsIgnoreCase(g_mqttView.getAutoReconnectSwitch().getOnState()))
-    {
-      treadmill.setAutoReconnect(true);
-      g_mqttView.publishAutoReconnectSetting(true);
-    }
-    else if (command.equalsIgnoreCase(g_mqttView.getAutoReconnectSwitch().getOffState()))
-    {
-      treadmill.setAutoReconnect(false);
-      g_mqttView.publishAutoReconnectSetting(false);
-    }
-  }
-
-  // publish config when homeassistant comes online and needs the configuration again
-  else if (strcmp(topic, HOMEASSISTANT_STATUS_TOPIC) == 0 ||
-           strcmp(topic, HOMEASSISTANT_STATUS_TOPIC_ALT) == 0)
-  {
-    if (strncmp((char *)payload, "online", length) == 0)
-    {
-      g_mqttView.publishAllConfigs();
-      delay(200); // give mqtt broker some time to process all config messages
-      g_mqttView.publishState(treadmill.getLastData());
-      g_mqttView.publishAutoReconnectSetting(treadmill.getAutoReconnect());
-    }
+  if (strcmp(topic, g_mqttView.getSpeed().getCommandTopic()) == 0) {
+    handleSpeedCommand(payload, length);
+  } else if (strcmp(topic, g_mqttView.getStartButton().getCommandTopic()) == 0) {
+    handleButtonCommand(payload, length, "start");
+  } else if (strcmp(topic, g_mqttView.getPauseButton().getCommandTopic()) == 0) {
+    handleButtonCommand(payload, length, "pause");
+  } else if (strcmp(topic, g_mqttView.getStopButton().getCommandTopic()) == 0) {
+    handleButtonCommand(payload, length, "stop");
+  } else if (strcmp(topic, g_mqttView.getAutoReconnectSwitch().getCommandTopic()) == 0) {
+    handleAutoReconnectCommand(payload, length);
+  } else if (strcmp(topic, g_mqttView.getConnectSwitch().getCommandTopic()) == 0) {
+    handleConnectSwitchCommand(payload, length);
+  } else if (strcmp(topic, g_mqttView.getStepLengthNumber().getCommandTopic()) == 0) {
+    handleStepLengthCommand(payload, length);
+  } else if (strcmp(topic, g_mqttView.getCalibrate20StepsButton().getCommandTopic()) == 0) {
+    handleCalibrate20StepsCommand(payload, length);
+  } else if (strcmp(topic, g_restoreTotalsTopic) == 0) {
+    handleRestoreTotalsCommand(payload, length);
+  } else if (strcmp(topic, HOMEASSISTANT_STATUS_TOPIC) == 0 ||
+             strcmp(topic, HOMEASSISTANT_STATUS_TOPIC_ALT) == 0) {
+    handleHAStatus(payload, length);
   }
 }
 

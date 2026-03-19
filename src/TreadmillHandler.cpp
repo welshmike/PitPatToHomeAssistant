@@ -1,19 +1,5 @@
 #include "TreadmillHandler.h"
-
-// --- Helper functions to read uint16 and uint32 from bytes ---
-uint16_t readU16(uint8_t *data, int offset)
-{
-    // Explicit big-endian read — memcpy would give host byte order (little-endian on ESP32)
-    return ((uint16_t)data[offset] << 8) | data[offset + 1];
-}
-
-uint32_t readU32(uint8_t *data, int offset)
-{
-    return ((uint32_t)data[offset] << 24) |
-           ((uint32_t)data[offset + 1] << 16) |
-           ((uint32_t)data[offset + 2] << 8) |
-           ((uint32_t)data[offset + 3]);
-}
+#include "ba05protocol.h"
 
 TreadmillHandler::TreadmillHandler()
 {
@@ -49,7 +35,7 @@ void TreadmillHandler::setSpeed(uint16_t speed)
     uint8_t packet[27];
     m_lastSpeed = speed;
     // CMD1=0x01 for running, MODE=0x0C for running
-    this->makePacket(speed, 0x01, 0x0C, packet);
+    BA05Protocol::makePacket(speed, 0x01, 0x0C, m_seqCounter++, packet);
     printCommandPacket("setSpeed", packet, sizeof(packet));
     this->sendCommand(packet, sizeof(packet));
 }
@@ -60,7 +46,7 @@ void TreadmillHandler::start()
     uint8_t packet[27];
     m_lastSpeed = START_SPEED;
     // CMD1=0x01 for running, MODE=0x0C for running
-    this->makePacket(START_SPEED, 0x01, 0x0C, packet);
+    BA05Protocol::makePacket(START_SPEED, 0x01, 0x0C, m_seqCounter++, packet);
     printCommandPacket("start", packet, sizeof(packet));
     this->sendCommand(packet, sizeof(packet));
 }
@@ -68,10 +54,22 @@ void TreadmillHandler::start()
 // BA05 Protocol: Stop
 void TreadmillHandler::stop()
 {
+    if (m_isPaused && m_sessionActive)
+    {
+        // Belt is paused (stuck in STOPPED) — commit the stored paused session now,
+        // since no new STOPPED transition will fire from the belt.
+        log_i("Stop after pause — committing paused session: dist=%.3f km steps=%u",
+              m_pausedDistKm, m_pausedSteps);
+        m_state.addSession(m_pausedDistKm, m_pausedSteps, m_pausedCalories, m_pausedDurationSec);
+        m_sessionActive = false;
+        m_isPaused      = false;
+        m_autoReconnect = false;
+        m_userRequestedConnect = false;
+    }
     uint8_t packet[27];
     m_lastSpeed = 0;
     // CMD1=0x05 for stop, MODE=0x08 for stop, speed=0
-    this->makePacket(0, 0x05, 0x08, packet);
+    BA05Protocol::makePacket(0, 0x05, 0x08, m_seqCounter++, packet);
     printCommandPacket("stop", packet, sizeof(packet));
     this->sendCommand(packet, sizeof(packet));
 }
@@ -79,34 +77,22 @@ void TreadmillHandler::stop()
 // BA05 Protocol: Pause (keep current speed in packet)
 void TreadmillHandler::pause()
 {
+    m_isPaused = true;
     uint8_t packet[27];
     // CMD1=0x05 for pause, MODE=0x0A for pause, keep last speed
-    this->makePacket(m_lastSpeed, 0x05, 0x0A, packet);
+    BA05Protocol::makePacket(m_lastSpeed, 0x05, 0x0A, m_seqCounter++, packet);
     printCommandPacket("pause", packet, sizeof(packet));
     this->sendCommand(packet, sizeof(packet));
 }
 
-// BA05 Protocol: 9-byte keepalive packet
-void TreadmillHandler::makeKeepalive(uint8_t *outPacket)
-{
-    // Format: 4D 00 [SEQ] 05 6A 05 FD F8 43
-    outPacket[0] = 0x4D;  // Start byte
-    outPacket[1] = 0x00;
-    outPacket[2] = m_seqCounter++;  // Sequence counter (auto-increment)
-    outPacket[3] = 0x05;
-    outPacket[4] = 0x6A;
-    outPacket[5] = 0x05;
-    outPacket[6] = 0xFD;
-    outPacket[7] = 0xF8;
-    outPacket[8] = 0x43;  // End byte
-}
+
 
 void TreadmillHandler::sendKeepalive()
 {
     if (!isConnected()) return;
 
     uint8_t packet[9];
-    makeKeepalive(packet);
+    BA05Protocol::makeKeepalive(m_seqCounter++, packet);
     this->sendCommand(packet, sizeof(packet));
 }
 
@@ -141,9 +127,13 @@ void TreadmillHandler::sendInitSequence()
 
 void TreadmillHandler::begin(NimBLEAddress address)
 {
+    m_state.loadFromNVS();
+
     m_targetAddress = address;
     m_doConnect = true;
 }
+
+
 
 // Send data to the write characteristic
 bool TreadmillHandler::sendCommand(const uint8_t *data, size_t length)
@@ -169,7 +159,59 @@ bool TreadmillHandler::sendCommand(const uint8_t *data, size_t length)
     bool success = m_pWriteCharacteristic->writeValue(data, length, true);
     if (!success)
     {
-        log_e("Failed to write to treadmill");
+        // 27-byte packets are user commands (start/stop/pause/setSpeed).
+        // 9-byte packets are keepalives. We treat these differently on failure:
+        // - User command failure → user clearly wants to use the belt, so force
+        //   reconnect and re-enable autoReconnect even if a prior session ended.
+        // - Keepalive failure → don't override autoReconnect state; if it's false
+        //   (session ended cleanly) we don't want to reconnect just to idle.
+        bool isUserCommand = (length == 27);
+
+        if (!m_pClient->isConnected())
+        {
+            // Link layer also gone — onDisconnect() will fire, but set state now so
+            // HA gets a DISCONNECTED update immediately rather than waiting for the callback.
+            log_e("Write failed: link layer gone — triggering immediate reconnect");
+            m_lastData.status = TreadMillData::DISCONNECTED;
+            m_newDataAvailable = true;
+            if (isUserCommand)
+            {
+                m_autoReconnect        = true;
+                m_userRequestedConnect = true;
+            }
+            m_doConnect = true;
+        }
+        else
+        {
+            // GATT layer broken but link layer still alive (zombie connection).
+            // This is the "throw-off" scenario: writeValue() returns failure (rc=7,
+            // BLE_HS_ENOTCONN at GATT level) but isConnected() is true because the
+            // BLE link-layer supervision timer is still being satisfied by LL-level
+            // packets (e.g. the pad's outbound notifications). Without intervention,
+            // this state can persist for many minutes until the supervision timeout
+            // finally expires — then the belt stops abruptly (the pad kills the motor
+            // when BLE drops) and the user gets thrown off.
+            //
+            // Fix: call disconnect() explicitly from Core 1. This sends an HCI
+            // disconnect command immediately, fires onDisconnect() (reason=534,
+            // local host terminated) within milliseconds, and unblocks the reconnect
+            // loop — no waiting for supervision timeout.
+            log_e("Write failed: GATT layer broken despite isConnected()=true (zombie) — forcing disconnect");
+            m_lastData.status = TreadMillData::DISCONNECTED;
+            m_newDataAvailable = true;
+            if (isUserCommand)
+            {
+                // User sent a command — they want to walk. Re-arm auto-reconnect so
+                // onDisconnect() → m_doConnect chain fires even if a prior session
+                // had set m_autoReconnect=false.
+                m_autoReconnect        = true;
+                m_userRequestedConnect = true;
+            }
+            // disconnect() fires onDisconnect() asynchronously on Core 0.
+            // onDisconnect() nulls the characteristic pointers and sets m_doConnect=true
+            // (if m_autoReconnect). Safe to call from Core 1 / handle() context.
+            m_pClient->disconnect();
+        }
         return false;
     }
 
@@ -179,20 +221,56 @@ bool TreadmillHandler::sendCommand(const uint8_t *data, size_t length)
 void TreadmillHandler::handle()
 {
     // handles reconnection
-    if (m_doConnect && (millis() - m_lastConnectAttempt > 5000) && m_autoReconnect)
+    // m_reconnectNotBefore is set after an idle kick (user-requested connect) to add
+    // a 60s backoff between reconnect attempts — avoids rapid beeping while idle.
+    if (m_doConnect && (millis() - m_lastConnectAttempt > 5000) && m_autoReconnect &&
+        (m_reconnectNotBefore == 0 || millis() >= m_reconnectNotBefore))
     {
         m_lastConnectAttempt = millis();
         if (this->connectToDevice())
         {
             log_i("Connection successful.");
             m_doConnect = false;
-            m_lastKeepalive = millis();   // Reset keepalive timer on connect
-            m_lastConnectTime = millis(); // Start post-connect cooldown
+            m_lastKeepalive = millis(); // Reset keepalive timer on connect
+            // m_lastConnectTime is now set inside connectToDevice() before subscription
+            // so that notification timing is accurate during the setup window.
         }
         else
         {
             log_e("Failed to connect - Retrying in 5 seconds...");
         }
+    }
+
+    // Re-send PitPat unlock bytes to 0x2b11 in response to first 0x34 packet this
+    // connection. The Q1 pad may require the unlock handshake to be sent AFTER it
+    // issues the 0x34 challenge (especially during active-walk reconnects) rather than
+    // accepting the upfront unlock sent in sendInitSequence() before any notification.
+    // This fires once per connection (m_sendUnlockNow set on type change TO 0x34).
+    if (m_sendUnlockNow && isConnected())
+    {
+        m_sendUnlockNow = false;
+        if (m_pUnlockCharacteristic)
+        {
+            uint8_t unlockData[] = {0x6B, 0x05, 0x9D, 0x98, 0x43};
+            bool ok = m_pUnlockCharacteristic->writeValue(unlockData, sizeof(unlockData), false);
+            log_i("0x34 challenge → unlock re-sent to 0x2b11: %s", ok ? "OK" : "FAILED");
+        }
+        else
+        {
+            log_w("0x34 challenge → unlock re-send skipped (0x2b11 not available this connection)");
+        }
+    }
+
+    // Immediate keepalive requested by notifyCallback() (Core 0) in response to a 0x34
+    // packet. Sent here on Core 1 to avoid calling writeValue() inside a NimBLE callback,
+    // which deadlocks (writeValue blocks waiting for an ATT response processed by the same
+    // NimBLE task that's currently blocked in the callback).
+    if (m_sendKeepaliveNow && isConnected())
+    {
+        m_sendKeepaliveNow = false;
+        sendKeepalive();
+        m_lastKeepalive = millis(); // reset timer so we don't double-send immediately after
+        log_i("Immediate keepalive sent (0x34 response, Core 1)");
     }
 
     // Send keepalive every KEEPALIVE_INTERVAL ms (200ms) to maintain connection
@@ -202,14 +280,27 @@ void TreadmillHandler::handle()
         m_lastKeepalive = millis();
     }
 
-    // Check for connection timeout and send state updates if needed
-    if (millis() - m_lastDataTimestamp > CONNECTION_TIMEOUT * 1000)
+    // Publish new BLE packet data from Core 1 (main loop).
+    // notifyCallback() (Core 0) sets this flag when it has written fresh data to m_lastData.
+    // We clear it before calling m_onDataUpdate so that another notifyCallback packet
+    // arriving during the publish will re-set the flag and get published next cycle.
+    if (m_newDataAvailable && m_onDataUpdate)
+    {
+        m_newDataAvailable = false;
+        m_onDataUpdate(m_lastData);
+    }
+
+    // Check for connection timeout — catches radio loss / silent disconnects where
+    // onDisconnect() never fired. Skip if already DISCONNECTED to avoid repeated
+    // MQTT publishes every 30s when the idle kick has cleanly stopped auto-reconnect.
+    if (m_lastData.status != TreadMillData::DISCONNECTED &&
+        millis() - m_lastDataTimestamp > CONNECTION_TIMEOUT * 1000)
     {
         unsigned long elapsedSec = (millis() - m_lastDataTimestamp) / 1000;
         log_w("No data received for %lus (threshold %ds) - marking disconnected.",
               elapsedSec, CONNECTION_TIMEOUT);
         m_lastData.status = TreadMillData::DISCONNECTED;
-        m_lastDataTimestamp = millis(); // prevent repeated updates
+        m_lastDataTimestamp = millis(); // reset so the check doesn't re-fire immediately
         if (m_onDataUpdate)
         {
             m_onDataUpdate(m_lastData);
@@ -226,8 +317,16 @@ bool TreadmillHandler::connectToDevice()
         // connect because 64 bytes is below the minimum negotiable PDU size.
         // MTU is negotiated automatically (255 bytes, confirmed in logs).
         m_pClient->setClientCallbacks(this, false);
-        m_pClient->setConnectionParams(12, 24, 0, 600); // 15ms to 30ms interval, no latency, 6s timeout
     }
+
+    // Always request our preferred connection parameters — not just on first client
+    // creation. NimBLE negotiates these with the peripheral at the start of each new
+    // physical connection; calling this only once (inside the nullptr guard) means every
+    // reconnect after boot uses whatever parameters were cached from the previous session,
+    // which may differ from the values we want. Re-applying before connect() ensures
+    // the peripheral sees a consistent parameter request every time.
+    //   minInterval=12 (~15ms), maxInterval=24 (~30ms), latency=0, timeout=600 (6s)
+    m_pClient->setConnectionParams(12, 24, 0, 600);
 
     log_i("Connecting to %s", m_targetAddress.toString().c_str());
 
@@ -280,6 +379,28 @@ bool TreadmillHandler::connectToDevice()
 
     if (m_pNotifyCharacteristic->canNotify())
     {
+        // Reset ALL per-connection state BEFORE subscribing so that any notification
+        // that arrives during the remainder of connectToDevice() (unlock discovery,
+        // BLE param logging, sendInitSequence) sees a clean slate.
+        //
+        // Previously these resets lived at the END of connectToDevice(), which caused
+        // a race: the first 0x34 notification arrived during setup and set flags
+        // (m_lastPacketType=0x34, m_sendUnlockNow=true), then the end-of-function
+        // resets wiped them — so the 0x2F transition was logged as "First packet"
+        // instead of "Packet type changed", and m_sendUnlockNow was silently cleared.
+        //
+        // Setting m_lastConnectTime here also gives accurate t=+Xms timing for all
+        // notifications that arrive during the connection setup window.
+        m_lastConnectTime         = millis();
+        m_firstPacketAfterConnect = true;
+        m_lastPacketType          = 0;
+        m_sendKeepaliveNow        = false;
+        m_sendUnlockNow           = false;
+        m_sessionActive           = false;
+        m_isPaused                = false;
+        m_justResumedFromPause    = false;
+        m_reconnectNotBefore      = 0;
+
         m_pNotifyCharacteristic->subscribe(
             true,
             [this](NimBLERemoteCharacteristic *chr,
@@ -316,72 +437,30 @@ bool TreadmillHandler::connectToDevice()
         log_w("Unlock service (0x1910) not found - continuing without it.");
     }
 
+    // Log the actual negotiated connection parameters so we can verify the supervision
+    // timeout the pad accepted. Our requested values: interval=12-24 (15-30ms),
+    // latency=0, timeout=600 (6s). If the pad negotiated a much longer timeout, that
+    // explains why onDisconnect() can take hundreds of seconds after the GATT layer breaks.
+    NimBLEConnInfo connInfo = m_pClient->getConnInfo();
+    log_i("Negotiated BLE params: interval=%u (%.1fms) latency=%u timeout=%u (%ums)",
+          connInfo.getConnInterval(), connInfo.getConnInterval() * 1.25f,
+          connInfo.getConnLatency(),
+          connInfo.getConnTimeout(),
+          connInfo.getConnTimeout() * 10);
+
     // CRITICAL: send the init/handshake immediately - don't wait for the keepalive timer.
     // The Q1 disconnects (reason=531) if it sees no write within ~300ms of connection.
     sendInitSequence();
     m_lastKeepalive = millis(); // prevent double-send when handle() fires next
 
+    // Per-connection state was already reset above (before subscribe) to avoid
+    // the race where notifications arrive during setup and then get wiped by resets
+    // that execute after them. Nothing to do here.
+
     return true;
 }
 
-// BA05 Protocol: Generates a 27-byte command packet
-// Format: 4D 00 [SEQ] 17 6A 17 00 00 00 00 [SPEED_HI] [SPEED_LO] [CMD1] 00 50 00 [MODE] 00 00 00 00 00 00 00 00 [CHECKSUM] 43
-//
-// Speed encoding: mph * 1600  (same as status packets; e.g. 3.0 km/h = 1.864 mph = raw 2982)
-// Checksum: XOR of bytes [5..24] — verified against QZ DeerRun source
-void TreadmillHandler::makePacket(uint16_t speed, uint8_t cmd1, uint8_t mode, uint8_t *outPacket)
-{
-    // outPacket must be at least 27 bytes
 
-    // Header
-    outPacket[0] = 0x4D;  // Start byte (BA05)
-    outPacket[1] = 0x00;
-    outPacket[2] = m_seqCounter++;  // Sequence counter (auto-increment)
-    outPacket[3] = 0x17;  // Payload length (23 bytes follow before end byte)
-    outPacket[4] = 0x6A;
-    outPacket[5] = 0x17;
-
-    // Reserved bytes
-    outPacket[6] = 0x00;
-    outPacket[7] = 0x00;
-    outPacket[8] = 0x00;
-    outPacket[9] = 0x00;
-
-    // Speed (uint16 big-endian, mph * 1600)
-    outPacket[10] = (speed >> 8) & 0xFF;
-    outPacket[11] = speed & 0xFF;
-
-    // Command byte 1
-    outPacket[12] = cmd1;  // 0x01 for running, 0x05 for pause/stop
-
-    outPacket[13] = 0x00;
-    outPacket[14] = 0x50;  // was 0x46 - corrected from QZ source
-    outPacket[15] = 0x00;
-
-    // Mode byte
-    outPacket[16] = mode;  // 0x0C=running, 0x0A=pause, 0x08=stop
-
-    // Reserved bytes
-    outPacket[17] = 0x00;
-    outPacket[18] = 0x00;
-    outPacket[19] = 0x00;
-    outPacket[20] = 0x00;
-    outPacket[21] = 0x00;
-    outPacket[22] = 0x00;
-    outPacket[23] = 0x00;
-    outPacket[24] = 0x00;
-
-    // Checksum: XOR of bytes [5..24] — QZ uses this range (not [1..24])
-    uint8_t checksum = 0;
-    for (int i = 5; i <= 24; ++i)
-    {
-        checksum ^= outPacket[i];
-    }
-    outPacket[25] = checksum;
-
-    // End byte
-    outPacket[26] = 0x43;
-}
 
 // --- Notification callback ---
 void TreadmillHandler::notifyCallback(
@@ -392,108 +471,215 @@ void TreadmillHandler::notifyCallback(
 {
     if (length <= 5)
     {
-        // 5-byte packets are keepalive ACKs from the device - ignore silently
         return;
     }
-    if (length < 20)
+
+    BA05Protocol::ParsedData parsed = BA05Protocol::parsePacket(pData, length);
+    if (!parsed.valid)
     {
-        log_w("Unexpected packet length: %d - ignoring", length);
+        log_w("Unexpected or invalid packet length: %d - ignoring", length);
         return;
     }
 
-    // Use last known data as starting point
     TreadMillData data = m_lastData;
+    TreadMillData::Status previousStatus = m_lastStatus;
+    uint8_t packetType = parsed.packetType;
 
-    // Packet type detection based on byte 3
-    uint8_t packetType = pData[3];
+    if (packetType != m_lastPacketType)
+    {
+        unsigned long msAfterConnect = millis() - m_lastConnectTime;
+        if (m_lastPacketType == 0)
+        {
+            log_i("First packet: type=0x%02X len=%d at t=+%lums after connect",
+                  packetType, length, msAfterConnect);
+        }
+        else
+        {
+            log_i("Packet type changed: 0x%02X → 0x%02X at t=+%lums after connect",
+                  m_lastPacketType, packetType, msAfterConnect);
+        }
+        m_lastPacketType = packetType;
+
+        if (packetType == 0x34)
+        {
+            m_sendUnlockNow = true;
+            log_i("0x34 onset → queued unlock re-send to 0x2b11 (Core 1)");
+        }
+    }
 
     if (length >= 50 && (packetType == 0x2F || packetType == 0x34)) {
-        // BA05 packet parsing - field positions verified against live captures:
-        //
-        // 0x2F (51-byte) packets: normal running data - confirmed via hex dump 2025-02
-        // 0x34 (56-byte) packets: extended data - same header, +5 device serial bytes
-        //                         inserted at [36], shifting tail bytes
-        //
-        // Byte  Field              Notes
-        // [7-8] current speed      raw / 1600 = mph; display shows mph e.g. 0.6
-        // [9-10] target speed      same encoding
-        // [11-12] max speed        same encoding (may be 0 in 0x2F packets)
-        // [13-14] distance         uint16 BE, metres; was incorrectly uint8 before
-        // [23]  calories           uint8
-        // [25]  duration minutes   uint8
-        // [26-27] duration ms      uint16 BE, milliseconds within current minute
-        // [45]  status flags (0x2F packets)  0x08=running, 0x00=stopped
-        // [28]  status flags (0x34 packets)  pending further capture to verify
-
-        uint16_t current_speed = readU16(pData, 7);
-        uint16_t target_speed  = readU16(pData, 9);
-        uint16_t distance_m    = readU16(pData, 13);  // uint16 - was uint8, max was 255m
-        uint8_t  calories      = pData[23];
-        uint8_t  duration_min  = pData[25];
-        uint16_t duration_ms   = readU16(pData, 26);
-
-        // byte[25] is NOT a minutes counter — it counts uint16 overflows of the ms timer.
-        // Each overflow = 65536ms (~65.5s). Treating it as 60s/min gave ~8% error.
-        // Verified: 26 overflows × 65536 + 53064ms = 1757s ≈ 29:17 (belt showed 29:16 ✓)
-        uint32_t duration_total_sec = ((uint32_t)duration_min * 65536 + duration_ms) / 1000;
-
-        // Speed: device encodes as mph * 1600. Confirmed: 1000 raw = 0.625 mph
-        // All speed fields stored and published in mph to match belt display.
-        float speed_mph  = current_speed / 1600.0f;
-        float target_mph = target_speed  / 1600.0f;
-        float max_mph    = readU16(pData, 11) / 1600.0f;
-
-        data.speedFeedback = speed_mph;
-        data.speedCmd      = target_mph;
-        data.speedMax      = max_mph;
+        data.speedFeedback = parsed.speedFeedback;
+        data.speedCmd      = parsed.speedCmd;
+        data.speedMax      = parsed.speedMax;
         data.fwVersion     = 0;
-        // distanceKm, calories, durationSec, steps set below as session deltas
+        data.status        = parsed.status;
 
-        // Status byte differs by packet type.
-        // 0x2F (51-byte): byte [45] - observed values: 0x08, 0x06 (running), 0x00 (stopped)
-        // 0x34 (56-byte): byte [28] - original assumption, not yet re-verified
-        //
-        // We've seen both 0x06 and 0x08 while the belt is running, so don't rely on a
-        // specific bitmask. Instead map known explicit values and treat anything else
-        // non-zero as RUNNING (belt moving but in an unclassified active state).
-        uint8_t flags = (packetType == 0x2F) ? pData[45] : pData[28];
-        if      (flags == 0x00) data.status = TreadMillData::STOPPED;
-        else if (flags == 0x18) data.status = TreadMillData::COUNTDOWN;
-        else if (flags == 0x10) data.status = TreadMillData::PAUSED;
-        else                    data.status = TreadMillData::RUNNING;  // 0x06, 0x08, etc.
+        if (m_firstPacketAfterConnect)
+        {
+            m_firstPacketAfterConnect = false;
+            const char* statusName[] = {"COUNTDOWN","RUNNING","PAUSED","STOPPED","DISCONNECTED"};
+            const char* sn = (data.status <= TreadMillData::DISCONNECTED)
+                             ? statusName[(int)data.status] : "UNKNOWN";
+            log_w("FIRST POST-CONNECT PACKET: type=0x%02X len=%d → status=%s "
+                  "speed=%.3f dist=%dm dur=%u cal=%u",
+                  packetType, length, sn,
+                  parsed.speedFeedback, parsed.distanceM, parsed.durationSec, parsed.calories);
+            char hex[length * 3 + 1];
+            for (size_t i = 0; i < length; i++) sprintf(hex + i * 3, "%02X ", pData[i]);
+            hex[length * 3 - 1] = '\0';
+            log_w("FIRST POST-CONNECT RAW: %s", hex);
+        }
+
+        if (packetType == 0x34)
+        {
+            m_sendKeepaliveNow = true;
+            log_i("0x34 → queued immediate keepalive (Core 1)");
+        }
+
+        // STATUS TRANSITION LOGGING — temporary, for pause vs stop diagnosis
+        if (data.status != previousStatus)
+        {
+            auto statusStr = [](TreadMillData::Status s) -> const char* {
+                switch(s) {
+                    case TreadMillData::COUNTDOWN:    return "COUNTDOWN";
+                    case TreadMillData::RUNNING:      return "RUNNING";
+                    case TreadMillData::PAUSED:       return "PAUSED";
+                    case TreadMillData::STOPPED:      return "STOPPED";
+                    case TreadMillData::DISCONNECTED: return "DISCONNECTED";
+                    default:                          return "UNKNOWN";
+                }
+            };
+            log_w("STATUS: %s → %s  (flags=0x%02X  speed=%.2f  dist=%um  active=%d)",
+                  statusStr(previousStatus), statusStr(data.status),
+                  (packetType == 0x2F) ? pData[45] : pData[28],
+                  parsed.speedFeedback, parsed.distanceM, m_sessionActive);
+        }
 
         m_lastStatus = data.status;
 
-        // Use raw values from the belt as source of truth — no session delta tracking.
-        // The belt accumulates distance/calories/duration until powered off, matching
-        // its own display exactly regardless of ESP32 reconnects or reflashes.
-        //
-        // When STOPPED the belt resets its counters to 0 in the stopped packet.
-        // We preserve the last running values so HA automations (e.g. Strava) can
-        // still read the final session totals after the belt stops.
+        if (data.status == TreadMillData::RUNNING && data.speedFeedback > 0.001f)
+        {
+            if (m_isPaused && previousStatus == TreadMillData::STOPPED)
+            {
+                if (parsed.distanceM > 0)
+                {
+                    // Belt resumed from where it left off — session continues, no commit.
+                    // Mark that we just resumed so we can suppress the belt's startup
+                    // RUNNING→STOPPED→RUNNING sequence that fires in the next ~500 ms.
+                    log_i("Resumed from pause (dist=%um) — session continues", parsed.distanceM);
+                    m_justResumedFromPause = true;
+                    m_resumeDistanceM      = parsed.distanceM;
+                }
+                else
+                {
+                    // Belt reset its odometer — commit the stored paused session, then start fresh
+                    log_i("Belt reset after pause — committing paused session: dist=%.3f km steps=%u",
+                          m_pausedDistKm, m_pausedSteps);
+                    data.sessionDistanceKm  = m_pausedDistKm;
+                    data.sessionSteps       = m_pausedSteps;
+                    data.sessionCalories    = m_pausedCalories;
+                    data.sessionDurationSec = m_pausedDurationSec;
+                    data.sessionComplete    = true;
+                    m_state.addSession(m_pausedDistKm, m_pausedSteps, m_pausedCalories, m_pausedDurationSec);
+                }
+                m_isPaused = false;
+            }
+            m_sessionActive = true;
+        }
+
         if (data.status != TreadMillData::STOPPED)
         {
-            data.distanceKm  = distance_m / 1000.0f;
-            data.calories    = calories;
-            data.durationSec = duration_total_sec;
-            data.steps       = (uint32_t)(distance_m / STRIDE_LENGTH_M);
+            data.distanceKm  = parsed.distanceM / 1000.0f;
+            data.calories    = parsed.calories;
+            data.steps       = (uint32_t)(parsed.distanceM / m_state.getStepLength());
+            data.durationSec = parsed.durationSec;
         }
-        // else: preserve m_lastData values (belt has reset counters to 0)
 
-        log_d("speed=%.2f mph target=%.2f dist=%.3f km cal=%u dur=%u:%02u status=%d",
+        if (data.status == TreadMillData::STOPPED &&
+            previousStatus != TreadMillData::STOPPED &&
+            previousStatus != TreadMillData::DISCONNECTED &&
+            data.distanceKm > 0.0f &&
+            m_sessionActive)
+        {
+            if (m_justResumedFromPause && !m_isPaused && parsed.distanceM <= m_resumeDistanceM)
+            {
+                // Belt's startup RUNNING→STOPPED after a resume — distance hasn't advanced,
+                // so this is not a real stop. Suppress the commit and wait for real RUNNING.
+                log_i("Suppressing spurious post-resume STOPPED (dist=%um unchanged)", parsed.distanceM);
+                m_justResumedFromPause = false;
+            }
+            else if (m_isPaused)
+            {
+                // Belt reports STOPPED because we sent a pause command — defer the commit.
+                // We'll commit when the belt resumes (RUNNING with dist=0 = reset) or
+                // when stop()/onDisconnect() is called explicitly.
+                m_pausedDistKm         = data.distanceKm;
+                m_pausedSteps          = data.steps;
+                m_pausedCalories       = (uint32_t)data.calories;
+                m_pausedDurationSec    = data.durationSec;
+                m_justResumedFromPause = false; // clear in case user re-paused right after resume
+                log_i("Pause-stop: deferring commit (dist=%.3f km steps=%u) — waiting for resume or stop",
+                      m_pausedDistKm, m_pausedSteps);
+            }
+            else
+            {
+                data.sessionDistanceKm  = data.distanceKm;
+                data.sessionSteps       = data.steps;
+                data.sessionCalories    = (uint32_t)data.calories;
+                data.sessionDurationSec = data.durationSec;
+                data.sessionComplete    = true;
+
+                m_state.addSession(data.distanceKm, data.steps, (uint32_t)data.calories, data.durationSec);
+
+                log_i("Session ended — totals: dist=%.2f km  steps=%u  cal=%u  dur=%u s",
+                      m_state.getTotalDistanceKm(), m_state.getTotalSteps(),
+                      m_state.getTotalCalories(), m_state.getTotalDurationSec());
+                log_i("Session summary: dist=%.3f km  steps=%u  cal=%u  dur=%u s",
+                      data.sessionDistanceKm, data.sessionSteps,
+                      data.sessionCalories, data.sessionDurationSec);
+
+                m_sessionActive        = false;
+                m_autoReconnect        = false;
+                m_userRequestedConnect = false;
+                m_justResumedFromPause = false;
+
+                data.distanceKm  = 0.0f;
+                data.calories    = 0;
+                data.steps       = 0;
+                data.durationSec = 0;
+            }
+        }
+
+        if (data.status != TreadMillData::STOPPED && m_sessionActive)
+        {
+            data.totalDistanceKm  = m_state.getTotalDistanceKm() + data.distanceKm;
+            data.totalSteps       = m_state.getTotalSteps() + data.steps;
+            data.totalCalories    = m_state.getTotalCalories() + (uint32_t)data.calories;
+            data.totalDurationSec = m_state.getTotalDurationSec() + data.durationSec;
+        }
+        else
+        {
+            data.totalDistanceKm  = m_state.getTotalDistanceKm();
+            data.totalSteps       = m_state.getTotalSteps();
+            data.totalCalories    = m_state.getTotalCalories();
+            data.totalDurationSec = m_state.getTotalDurationSec();
+        }
+
+        log_d("speed=%.2f mph target=%.2f dist=%.3f km cal=%u dur=%u:%02u status=%d  "
+              "tot_dist=%.2f km tot_steps=%u",
               data.speedFeedback, data.speedCmd, data.distanceKm,
-              data.calories, data.durationSec / 60, data.durationSec % 60, (int)data.status);
+              data.calories, data.durationSec / 60, data.durationSec % 60, (int)data.status,
+              data.totalDistanceKm, data.totalSteps);
     }
     else if (length == 20) {
-        // Short status packet - speed only, offset unverified for Q1
-        uint16_t current_speed = readU16(pData, 9);
-        data.speedFeedback = current_speed / 1600.0f;  // mph, same encoding as main packets
+        data.speedFeedback = parsed.speedFeedback;
     }
 
     m_lastData = data;
     m_lastDataTimestamp = millis();
-    if (m_onDataUpdate)
-    {
-        m_onDataUpdate(data);
-    }
+    // Signal handle() (Core 1) that new data is ready to publish.
+    // Do NOT call m_onDataUpdate() here — notifyCallback runs on Core 0 (NimBLE task)
+    // and PubSubClient::publish() is not thread-safe. Calling it concurrently from
+    // Core 0 and Core 1 (dead reckoning) caused ECONNRESET / double-publish bugs.
+    m_newDataAvailable = true;
 }

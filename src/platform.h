@@ -19,12 +19,12 @@
 //  CHARACTERISTIC: 0000ff02-0000-1000-8000-00805f9b34fb [read,notify]
 #define CHARACTERISTIC_NOTIFY_STATE_UUID "0000ff02-0000-1000-8000-00805f9b34fb"
 
-// Stride length used to estimate step count from distance (no step sensor in PitPat protocol).
-// Adjust in config.h if desired: #define STRIDE_LENGTH_M 0.70f (shorter) or 0.80f (taller)
-#ifndef STRIDE_LENGTH_M
-#define STRIDE_LENGTH_M 0.60f   // ~24 inches — calibrated for slow walking pad speeds (1–4 mph)
-                                // Standard adult stride is ~0.762m but pads at desk speed
-                                // produce shorter, shuffling steps. Override in config.h.
+// Step length used to estimate step count from distance (no step sensor in PitPat protocol).
+// Counts individual foot strikes (left=1, right=2, left=3...), not stride pairs.
+// Typical adult step length at slow walking pad speeds: 0.25–0.40m.
+// Override in config.h if desired: #define STEP_LENGTH_M 0.35f
+#ifndef STEP_LENGTH_M
+#define STEP_LENGTH_M 0.30f   // ~12 inches — calibrated for slow walking pad speeds (1–4 mph)
 #endif
 
 // Secondary service used for unlock handshake (best-effort, optional)
@@ -58,4 +58,18 @@ public:
     uint32_t durationSec = 0;
     uint8_t fwVersion = 0;
     Status status = DISCONNECTED; // default to DISCONNECTED when we start up
+
+    // All-time cumulative totals (managed by TreadmillHandler, persisted in NVS)
+    float totalDistanceKm = 0.0;
+    uint32_t totalSteps = 0;
+    uint32_t totalCalories = 0;
+    uint32_t totalDurationSec = 0;
+
+    // Session summary — populated on STOPPED transition so Strava and other
+    // automations can read the final session values after live fields clear to 0.
+    float    sessionDistanceKm  = 0.0;
+    uint32_t sessionSteps       = 0;
+    uint32_t sessionCalories    = 0;
+    uint32_t sessionDurationSec = 0;
+    bool     sessionComplete    = false;
 };
