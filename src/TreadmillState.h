@@ -32,6 +32,7 @@ public:
     void toggleCalibration(float currentSpeedMph);
     uint8_t getCalibrationPointCount() const { return m_numCalibrationPoints; }
     const CalibrationPoint* getCalibrationPoints() const { return m_calibrationPoints; }
+    void restoreCalibrationPoints(const CalibrationPoint* points, uint8_t count);
 
     // Legacy fallback (still useful if 0 cal points)
     void setStepLength(float stepM);

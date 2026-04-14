@@ -33,6 +33,7 @@ public:
     void toggleCalibration() { m_state.toggleCalibration(m_lastData.speedFeedback); }
     uint8_t getCalibrationPointCount() const { return m_state.getCalibrationPointCount(); }
     const CalibrationPoint* getCalibrationPoints() const { return m_state.getCalibrationPoints(); }
+    void restoreCalibrationPoints(const CalibrationPoint* pts, uint8_t count) { m_state.restoreCalibrationPoints(pts, count); }
 
     void setStepLength(float stepM) { m_state.setStepLength(stepM); }
 

@@ -237,6 +237,16 @@ void TreadmillState::saveCalibrationToNVS()
     log_i("Saved %u calibration points to NVS.", m_numCalibrationPoints);
 }
 
+void TreadmillState::restoreCalibrationPoints(const CalibrationPoint* points, uint8_t count)
+{
+    uint8_t n = count > 10 ? 10 : count;
+    m_numCalibrationPoints = n;
+    for (uint8_t i = 0; i < n; i++)
+        m_calibrationPoints[i] = points[i];
+    saveCalibrationToNVS();
+    log_i("Restored %u calibration points from MQTT.", n);
+}
+
 void TreadmillState::loadCalibrationFromNVS()
 {
     Preferences prefs;
