@@ -168,17 +168,11 @@ void MqttView::publishStepLengthSetting(float stepM)
 
 void MqttView::publishCalibrationPoints(const CalibrationPoint* points, uint8_t count)
 {
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-    for (uint8_t i = 0; i < count; i++)
-    {
-        JsonObject pt = arr.add<JsonObject>();
-        pt["mph"] = serialized(String(points[i].speedMph, 1));
-        pt["spm"] = serialized(String(points[i].spm, 1));
-    }
-    String json;
-    serializeJson(doc, json);
-    publishMqttState(m_calibrationPoints, json.c_str());
+    // HA state values are limited to 255 characters — the full JSON array for
+    // 10 points exceeds this. Publish just the count as the state value instead.
+    char buf[4];
+    snprintf(buf, sizeof(buf), "%u", count);
+    publishMqttState(m_calibrationPoints, buf);
 }
 
 void MqttView::publishAllConfigs()
