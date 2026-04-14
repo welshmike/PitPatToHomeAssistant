@@ -351,18 +351,6 @@ void setup()
   NimBLEAddress targetAddress(std::string(TARGET_ADDRESS), BLE_ADDR_PUBLIC);
   treadmill.begin(targetAddress);
 
-  // ONE-TIME calibration restore — seeds NVS on a fresh board.
-  // Remove this block after first successful flash and reflash.
-  if (treadmill.getCalibrationPointCount() == 0)
-  {
-    CalibrationPoint pts[] = {
-      {0.6f, 52.1f}, {0.8f, 58.7f}, {1.0f, 68.8f}, {1.2f, 75.1f},
-      {1.4f, 80.3f}, {1.6f, 83.9f}, {1.8f, 87.8f}, {2.0f, 95.6f},
-      {2.2f, 100.8f},{2.4f, 102.5f}
-    };
-    treadmill.restoreCalibrationPoints(pts, 10);
-    log_i("Calibration points seeded to NVS.");
-  }
 
   treadmill.setCallback([](const TreadMillData &data)
                         {
