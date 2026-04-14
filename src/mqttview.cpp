@@ -3,7 +3,7 @@
 
 MqttView::MqttView(PubSubClient *client)
     : m_client(client),
-      m_device(composeClientID().c_str(), "PaceKeeper", SYSTEM_NAME, "maker_pt"),
+      m_device("pacekeeper-bridge", "PaceKeeper", SYSTEM_NAME, "maker_pt"),
       m_speed(&m_device, "speed", "Speed"),
       m_speedFeedback(&m_device, "speed-feedback", "Speed Feedback"),
       m_state(&m_device, "state", "State"),
