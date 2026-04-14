@@ -291,7 +291,17 @@ void callback(char *topic, byte *payload, unsigned int length)
 void setup()
 {
   // initialize watchdog
+  // ESP-IDF 5.x (Arduino-ESP32 3.x) changed the WDT API to use a config struct
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  esp_task_wdt_config_t wdt_config = {
+      .timeout_ms = WATCHDOG_TIMEOUT_S * 1000,
+      .idle_core_mask = 0,
+      .trigger_panic = true,
+  };
+  esp_task_wdt_reconfigure(&wdt_config);
+#else
   esp_task_wdt_init(WATCHDOG_TIMEOUT_S, true); // enable panic so ESP32 restarts
+#endif
   esp_task_wdt_add(NULL);                      // add current thread to WDT watch
 
   Serial.begin(115200);
