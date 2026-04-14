@@ -330,7 +330,12 @@ bool TreadmillHandler::connectToDevice()
 
     log_i("Connecting to %s", m_targetAddress.toString().c_str());
 
-    if (!m_pClient->isConnected() && !m_pClient->connect(m_targetAddress, true, true))
+    // deleteAttributes=false: reuse cached GATT service/characteristic handles from the
+    // previous connection. Full discovery was causing the belt to kick the connection
+    // (reason=531) before service enumeration completed — especially on single-core C3
+    // where BLE tasks share CPU with the main loop. On first boot the cache is empty
+    // so discovery runs normally; subsequent reconnects skip it entirely.
+    if (!m_pClient->isConnected() && !m_pClient->connect(m_targetAddress, false, true))
     {
         log_e("Failed to connect to treadmill at %s", m_targetAddress.toString().c_str());
         return false;
