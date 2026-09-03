@@ -118,6 +118,11 @@ Render, 20 Hz max, into a full-screen M5GFX sprite then pushed, to avoid flicker
 
 Every screen has three status dots on the top edge: BLE (on when connected), WiFi, MQTT.
 
+**Amended 2026-09-03 after Task 8 doc pass:** as built, the Paused hint text reads
+"tap resume - hold stop" (not "tap to resume, hold to stop"), and the three status dots are
+drawn at full brightness even on the Paused screen, unlike the rest of that screen's elements,
+which are all halved. See `src/DialUi.cpp` (`drawRunning()`, `drawStatusDots()`).
+
 Idle power: after 2 min in Disconnected or Stopped, brightness drops to 20 %. After 10 min the backlight goes off. Any input wakes at full brightness.
 
 Buzzer: one short click on an accepted tap, two on stop, a low buzz when a command is refused (post-connect cooldown, disconnect blocked while belt active). Compile-time `DIAL_SOUND` flag defaults on.

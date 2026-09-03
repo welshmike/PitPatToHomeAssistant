@@ -65,6 +65,84 @@ Get an app like **nRF Connect** – this app allows you to view Bluetooth connec
   ```
 * If everything goes well, you should see a bunch of log messages, and a new device called `PaceKeeper` should show up in your Home Assistant
 
+## M5Stack Dial
+
+The M5Stack Dial v1.1 is the current target for local, HA-free control: tap to start/pause/
+resume, turn the dial to change speed, and read live stats on the round display. The ESP32
+DevKit build described above still works and is now the legacy target — kept building so it
+stays available as a fallback.
+
+### Hardware needed
+
+* M5Stack Dial v1.1
+* Power via USB-C (5 V) or the rear screw terminal (6–36 V) — no wiring required, everything
+  (display, touch, encoder, buzzer) is built into the unit
+* The same DeerRun Q1 / PitPat-T01 treadmill as above
+
+### Controls
+
+* **Tap** the screen: start (when disconnected or stopped), pause (when running), or resume at
+  the previous speed (when paused)
+* **Hold** the screen for about 1 second: stop. While a connect is in progress, the same hold
+  cancels the connect instead
+* **Side WAKE button**: stop (or cancel an in-progress connect, same as the hold)
+* **Rotate** the dial: ±0.1 mph per detent (click). The change is queued and sent as a single
+  speed command about 400 ms after the last click, so spinning several clicks quickly only
+  produces one BLE write. Rotating while stopped or disconnected starts the belt at the dialed
+  speed
+* If the screen is dimmed or off, the first tap, hold, or turn only wakes it — the input itself
+  is discarded, so a brush of the dial in the dark can't start the belt
+
+### What the screen shows
+
+* **Disconnected**: last session's summary (time, distance, steps) with a hint to tap or turn to
+  start
+* **Connecting**: "Connecting… attempt N" with a note that belt beeps are normal, and a hint that
+  holding cancels
+* **Starting** (belt COUNTDOWN): a pulsing "STARTING" with a hint to tap to cancel
+* **Running**: elapsed time in the centre, a speed ring around the edge (0–3.8 mph) with a
+  numeric speed readout, distance and step count below
+* **Paused**: the same layout as Running, dimmed, with a pulsing "PAUSED" label and a hint to tap
+  to resume or hold to stop
+* **Speed overlay**: after a rotate, the target speed replaces the elapsed time for 1.5 seconds,
+  then reverts automatically
+* Every screen has three small status dots along the top edge: BLE, WiFi, MQTT — lit when each is
+  up
+
+### Dimming
+
+After 2 minutes idle in Disconnected or Stopped, the backlight drops to 20% brightness. After
+10 minutes it turns off. Any input restores full brightness (see the wake-only rule above).
+
+### Buzzer
+
+A compile-time `DIAL_SOUND` flag (on by default for both `dial-usb` and `dial-ota`) enables short
+confirmation tones: one short click on an accepted tap, two short beeps on stop, and a low buzz
+when a command is refused (e.g. a command sent during the post-connect cooldown, or a disconnect
+blocked while the belt is still active).
+
+### Flashing
+
+* First flash over USB-C:
+  ```bash
+  pio run -e dial-usb -t upload
+  ```
+* Subsequent flashes over the air, once the Dial is on WiFi:
+  ```bash
+  pio run -e dial-ota -t upload    # targets pacekeeper-dial.local
+  ```
+* Serial log output over USB-C:
+  ```bash
+  pio device monitor -e dial-usb
+  ```
+
+### One device at a time
+
+Only one BLE central can hold the Q1's connection, so run either the DevKit or the Dial — never
+both at once. The Home Assistant device identity (`pacekeeper-bridge`) is independent of the
+BLE/MAC address, so whichever board is running takes over the same HA device and entities; there
+is nothing to reconfigure in Home Assistant when switching boards.
+
 ## Architecture
 
 The firmware is split by concern: `TreadmillHandler` owns the BLE link to the belt (connect/
