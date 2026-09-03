@@ -15,10 +15,13 @@ public:
     TreadmillHandler();
     ~TreadmillHandler();
     void begin(NimBLEAddress address);
-    void setSpeed(uint16_t speed);
-    void start() override;
-    void pause() override;
-    void stop() override;
+    // Return true when the command reached the belt (or was queued because the
+    // link is down), false when the GATT write failed — sendCommand() has then
+    // already flagged DISCONNECTED in the snapshot.
+    bool setSpeed(uint16_t speed);
+    bool start() override;
+    bool pause() override;
+    bool stop() override;
 
     // Returns true when observers should be pushed a fresh snapshot: a new BLE
     // packet arrived, a pause-timeout summary was committed, or the connection
@@ -80,7 +83,11 @@ public:
     // Thin adapters over the existing API so TreadmillController can drive the
     // link without knowing anything about NimBLE.
 
-    void setSpeedRaw(uint16_t raw) override { setSpeed(raw); }
+    bool setSpeedRaw(uint16_t raw) override { return setSpeed(raw); }
+
+    // The Q1 reports STOPPED while paused; the tracker's flag is the truth.
+    bool isPaused() const override { return m_tracker.isPaused(); }
+    uint16_t lastCommandedSpeedRaw() const override { return m_lastSpeed; }
 
     TreadMillData snapshot() const override { return m_snapshot.read(); }
 

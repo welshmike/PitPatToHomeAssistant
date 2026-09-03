@@ -29,7 +29,7 @@ void printCommandPacket(const char* cmdName, const uint8_t* packet, size_t lengt
 }
 
 // BA05 Protocol: Set speed (speed in mph * 1000, e.g., 2500 = 2.5 mph)
-void TreadmillHandler::setSpeed(uint16_t speed)
+bool TreadmillHandler::setSpeed(uint16_t speed)
 {
     m_lastSpeed = speed;
     if (!isConnected())
@@ -41,17 +41,17 @@ void TreadmillHandler::setSpeed(uint16_t speed)
         m_userRequestedConnect = false;
         m_reconnectNotBefore   = 0;
         m_doConnect            = true;
-        return;
+        return true; // queued, not failed
     }
     uint8_t packet[27];
     // CMD1=0x01 for running, MODE=0x0C for running
     BA05Protocol::makePacket(speed, 0x01, 0x0C, m_seqCounter++, packet);
     printCommandPacket("setSpeed", packet, sizeof(packet));
-    this->sendCommand(packet, sizeof(packet));
+    return this->sendCommand(packet, sizeof(packet));
 }
 
 // BA05 Protocol: Start at 1.0 km/h
-void TreadmillHandler::start()
+bool TreadmillHandler::start()
 {
     if (!isConnected())
     {
@@ -62,18 +62,18 @@ void TreadmillHandler::start()
         m_userRequestedConnect = false;
         m_reconnectNotBefore   = 0;
         m_doConnect            = true;
-        return;
+        return true; // queued, not failed
     }
     uint8_t packet[27];
     m_lastSpeed = START_SPEED_RAW;
     // CMD1=0x01 for running, MODE=0x0C for running
     BA05Protocol::makePacket(START_SPEED_RAW, 0x01, 0x0C, m_seqCounter++, packet);
     printCommandPacket("start", packet, sizeof(packet));
-    this->sendCommand(packet, sizeof(packet));
+    return this->sendCommand(packet, sizeof(packet));
 }
 
 // BA05 Protocol: Stop
-void TreadmillHandler::stop()
+bool TreadmillHandler::stop()
 {
     // Always disarm the pause timeout — either we're explicitly stopping, or the
     // pause timeout handler cleared the session flags and is about to disconnect.
@@ -91,18 +91,18 @@ void TreadmillHandler::stop()
     // CMD1=0x05 for stop, MODE=0x08 for stop, speed=0
     BA05Protocol::makePacket(0, 0x05, 0x08, m_seqCounter++, packet);
     printCommandPacket("stop", packet, sizeof(packet));
-    this->sendCommand(packet, sizeof(packet));
+    return this->sendCommand(packet, sizeof(packet));
 }
 
 // BA05 Protocol: Pause (keep current speed in packet)
-void TreadmillHandler::pause()
+bool TreadmillHandler::pause()
 {
     m_tracker.onPauseCommand();
     uint8_t packet[27];
     // CMD1=0x05 for pause, MODE=0x0A for pause, keep last speed
     BA05Protocol::makePacket(m_lastSpeed, 0x05, 0x0A, m_seqCounter++, packet);
     printCommandPacket("pause", packet, sizeof(packet));
-    this->sendCommand(packet, sizeof(packet));
+    return this->sendCommand(packet, sizeof(packet));
 }
 
 void TreadmillHandler::restoreTotals(float distKm, uint32_t steps, uint32_t calories, uint32_t durationSec)

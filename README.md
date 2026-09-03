@@ -69,7 +69,9 @@ Get an app like **nRF Connect** – this app allows you to view Bluetooth connec
 
 The firmware is split by concern: `TreadmillHandler` owns the BLE link to the belt (connect/
 reconnect, keepalives, the BA05 protocol) and delegates session accounting to `SessionTracker`
-and command intent to `TreadmillController`, which is what `main.cpp` and MQTT actually talk to.
+and command intent to `TreadmillController`. MQTT messages are parsed on the net task into
+`Command`s; the loop task's `drainCommands()` routes belt intents (start/pause/stop/speed/connect)
+through `TreadmillController` and settings/calibration/restore straight to `TreadmillHandler`.
 `SnapshotStore` holds the current `TreadMillData` behind a mutex so the BLE task and the main
 loop can both read/write it safely. Two FreeRTOS tasks do the work: the main loop task drives
 `TreadmillHandler::handle()` and the controller, while a dedicated `NetTask` owns WiFi/MQTT

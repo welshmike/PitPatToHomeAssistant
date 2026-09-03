@@ -14,14 +14,22 @@ class ITreadmillLink
 {
 public:
     virtual bool isConnected() const = 0;
-    virtual void start() = 0;                   // start at START_SPEED_RAW (queues if disconnected)
-    virtual void pause() = 0;
-    virtual void stop() = 0;
-    virtual void setSpeedRaw(uint16_t raw) = 0; // queues if disconnected
+    // The four command calls return true when the command was written to the
+    // belt, or queued because the link is disconnected; false when the write
+    // itself failed. On false the link has already published DISCONNECTED into
+    // its own snapshot, so the caller must not overwrite it optimistically.
+    virtual bool start() = 0;                   // start at START_SPEED_RAW (queues if disconnected)
+    virtual bool pause() = 0;
+    virtual bool stop() = 0;
+    virtual bool setSpeedRaw(uint16_t raw) = 0; // queues if disconnected
     virtual bool requestConnect() = 0;
     virtual bool requestDisconnect() = 0;       // refuses while the belt is active
     virtual TreadMillData snapshot() const = 0;
     virtual void publishOptimistic(const TreadMillData&) = 0; // write the snapshot only
+    // The belt reports STOPPED while paused, so the link's own pause flag is the
+    // only truth about a pause; lastCommandedSpeedRaw() is what resume() restores.
+    virtual bool isPaused() const = 0;
+    virtual uint16_t lastCommandedSpeedRaw() const = 0;
     virtual ~ITreadmillLink() = default;
 };
 
@@ -51,8 +59,8 @@ public:
     void resume();
     void stop();
 
-    // disconnected/stopped -> start, running -> pause, paused -> resume,
-    // countdown -> stop.
+    // link paused -> resume; otherwise disconnected/stopped -> start,
+    // running -> pause, paused -> resume, countdown -> stop.
     void toggleStartPause();
 
     // Clamped to [SPEED_MIN_MPH, SPEED_MAX_MPH]; below 0.55 mph this stops the
@@ -87,6 +95,9 @@ private:
     // Applies the optimistic snapshot every command shares: mutate a copy of the
     // link's snapshot, hand it back to the link, then tell observers once.
     void publishOptimistic(const TreadMillData& d);
+    // A command whose write failed: don't touch the snapshot, just re-notify with
+    // whatever the link now holds (the handler wrote DISCONNECTED into it).
+    void notifyLinkSnapshot();
     static float clampMph(float mph);
     static float roundToStep(float mph);
 

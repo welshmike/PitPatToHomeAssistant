@@ -27,18 +27,23 @@ public:
     bool          connected = false;
     bool          connectResult = true;    // what requestConnect() reports back
     bool          disconnectResult = true; // what requestDisconnect() reports back
+    bool          writeResult = true;      // what start/pause/stop/setSpeedRaw report back
+    bool          paused = false;          // the link's own pause flag
+    uint16_t      lastSpeedRaw = 0;        // last commanded raw speed the link remembers
     TreadMillData data;                 // settable snapshot the controller reads
     TreadMillData lastOptimistic;       // last value passed to publishOptimistic()
 
     // --- ITreadmillLink ---
     bool isConnected() const override { return connected; }
-    void start() override { record(CallType::START, 0); }
-    void pause() override { record(CallType::PAUSE, 0); }
-    void stop()  override { record(CallType::STOP, 0); }
-    void setSpeedRaw(uint16_t raw) override { record(CallType::SET_SPEED, raw); }
+    bool start() override { record(CallType::START, 0); return writeResult; }
+    bool pause() override { record(CallType::PAUSE, 0); return writeResult; }
+    bool stop()  override { record(CallType::STOP, 0); return writeResult; }
+    bool setSpeedRaw(uint16_t raw) override { record(CallType::SET_SPEED, raw); return writeResult; }
     bool requestConnect() override { record(CallType::CONNECT, 0); return connectResult; }
     bool requestDisconnect() override { record(CallType::DISCONNECT, 0); return disconnectResult; }
     TreadMillData snapshot() const override { return data; }
+    bool isPaused() const override { return paused; }
+    uint16_t lastCommandedSpeedRaw() const override { return lastSpeedRaw; }
     void publishOptimistic(const TreadMillData& d) override
     {
         lastOptimistic = d;
@@ -213,15 +218,24 @@ static void test_stop_publishesStopped(void)
 }
 
 // ---------------------------------------------------------------------------
-// resume() — speed comes from the snapshot's speedCmd, else START_SPEED_RAW
+// resume() — speed comes from the link's last commanded raw, else START_SPEED_RAW
 // ---------------------------------------------------------------------------
 
-static void test_resume_usesSnapshotSpeedCmd(void)
+// A real pause: the Q1 reports STOPPED with speedCmd 0, and only the link knows
+// it is paused and at what speed it was running.
+static void seedPausedLink(FakeLink& link, uint16_t lastSpeedRaw)
+{
+    link.connected = true;
+    link.paused = true;
+    link.lastSpeedRaw = lastSpeedRaw;
+    link.data.status = TreadMillData::STOPPED;
+    link.data.speedCmd = 0.0f;
+}
+
+static void test_resume_usesLinkLastCommandedSpeed(void)
 {
     FakeLink link;
-    link.connected = true;
-    link.data.status = TreadMillData::PAUSED;
-    link.data.speedCmd = 2.0f;
+    seedPausedLink(link, 3200);
     TreadmillController c(link);
 
     c.resume();
@@ -232,9 +246,7 @@ static void test_resume_usesSnapshotSpeedCmd(void)
 static void test_resume_belowMinFallsBackToStartSpeed(void)
 {
     FakeLink link;
-    link.connected = true;
-    link.data.status = TreadMillData::PAUSED;
-    link.data.speedCmd = 0.0f;
+    seedPausedLink(link, 0); // e.g. resumed after a stop cleared the last speed
     TreadmillController c(link);
 
     c.resume();
@@ -245,15 +257,13 @@ static void test_resume_belowMinFallsBackToStartSpeed(void)
 static void test_resume_doesNotAssumeRunning(void)
 {
     FakeLink link;
-    link.connected = true;
-    link.data.status = TreadMillData::PAUSED;
-    link.data.speedCmd = 2.0f;
+    seedPausedLink(link, 3200);
     TreadmillController c(link);
 
     c.resume();
 
     // Status is left for the belt to report; only speedCmd is optimistic.
-    TEST_ASSERT_EQUAL_INT(TreadMillData::PAUSED, (int)link.lastOptimistic.status);
+    TEST_ASSERT_EQUAL_INT(TreadMillData::STOPPED, (int)link.lastOptimistic.status);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.0f, link.lastOptimistic.speedCmd);
 }
 
@@ -296,12 +306,27 @@ static void test_toggleStartPause_runningPauses(void)
     TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::PAUSE));
 }
 
-static void test_toggleStartPause_pausedResumes(void)
+// The realistic pause: belt says STOPPED, only link.paused says otherwise.
+static void test_toggleStartPause_linkPausedResumes(void)
+{
+    FakeLink link;
+    seedPausedLink(link, 3200);
+    TreadmillController c(link);
+
+    c.toggleStartPause();
+
+    TEST_ASSERT_EQUAL_INT(0, link.countOf(FakeLink::CallType::START));
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::SET_SPEED));
+    TEST_ASSERT_EQUAL_UINT16(3200, link.firstSpeedRaw());
+}
+
+// The optimistic window: the controller's own PAUSED is still in the snapshot.
+static void test_toggleStartPause_pausedStatusResumes(void)
 {
     FakeLink link;
     link.connected = true;
     link.data.status = TreadMillData::PAUSED;
-    link.data.speedCmd = 1.5f;
+    link.lastSpeedRaw = 2400;
     TreadmillController c(link);
 
     c.toggleStartPause();
@@ -406,6 +431,20 @@ static void test_nudgeUp_clampsAtMax(void)
     TEST_ASSERT_EQUAL_UINT16(SPEED_RAW_MAX, link.firstSpeedRaw());
 }
 
+static void test_nudgeWhilePaused_seedsFromLastCommandedSpeed(void)
+{
+    FakeLink link;
+    seedPausedLink(link, 3200); // paused snapshot reports speedCmd 0
+    TreadmillController c(link);
+
+    c.nudgeSpeed(1, 1000);
+    c.tick(1400);
+
+    // Seeded from 2.0 mph, not from the snapshot's 0.
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.1f, c.targetSpeedMph());
+    TEST_ASSERT_EQUAL_UINT16(3360, link.firstSpeedRaw());
+}
+
 static void test_nudge_notifiesTargetPendingThenSettled(void)
 {
     FakeLink link;
@@ -443,6 +482,101 @@ static void test_tick_withNoPendingNudge_doesNothing(void)
 }
 
 // ---------------------------------------------------------------------------
+// A failed write must not be papered over with an optimistic status
+// ---------------------------------------------------------------------------
+
+// The handler writes DISCONNECTED into its snapshot when a GATT write fails.
+static void seedFailedWriteLink(FakeLink& link)
+{
+    link.connected = true;
+    link.writeResult = false;
+    link.data.status = TreadMillData::DISCONNECTED;
+}
+
+static void test_start_whenWriteFails_keepsLinkSnapshot(void)
+{
+    FakeLink link;
+    seedFailedWriteLink(link);
+    TreadmillController c(link);
+    RecordingObserver obs;
+    c.addObserver(obs);
+
+    c.start();
+
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::START));
+    TEST_ASSERT_EQUAL_INT(0, link.countOf(FakeLink::CallType::PUBLISH));
+    TEST_ASSERT_EQUAL_INT(1, obs.snapshotCount);
+    TEST_ASSERT_EQUAL_INT(TreadMillData::DISCONNECTED, (int)obs.lastSnapshot.status);
+}
+
+static void test_pause_whenWriteFails_keepsLinkSnapshot(void)
+{
+    FakeLink link;
+    seedFailedWriteLink(link);
+    TreadmillController c(link);
+    RecordingObserver obs;
+    c.addObserver(obs);
+
+    c.pause();
+
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::PAUSE));
+    TEST_ASSERT_EQUAL_INT(0, link.countOf(FakeLink::CallType::PUBLISH));
+    TEST_ASSERT_EQUAL_INT(1, obs.snapshotCount);
+    TEST_ASSERT_EQUAL_INT(TreadMillData::DISCONNECTED, (int)obs.lastSnapshot.status);
+}
+
+static void test_stop_whenWriteFails_keepsLinkSnapshot(void)
+{
+    FakeLink link;
+    seedFailedWriteLink(link);
+    TreadmillController c(link);
+    RecordingObserver obs;
+    c.addObserver(obs);
+
+    c.stop();
+
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::STOP));
+    TEST_ASSERT_EQUAL_INT(0, link.countOf(FakeLink::CallType::PUBLISH));
+    TEST_ASSERT_EQUAL_INT(1, obs.snapshotCount);
+    TEST_ASSERT_EQUAL_INT(TreadMillData::DISCONNECTED, (int)obs.lastSnapshot.status);
+}
+
+static void test_setSpeedMph_whenWriteFails_keepsLinkSnapshot(void)
+{
+    FakeLink link;
+    seedFailedWriteLink(link);
+    TreadmillController c(link);
+    RecordingObserver obs;
+    c.addObserver(obs);
+
+    c.setSpeedMph(2.0f);
+
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::SET_SPEED));
+    TEST_ASSERT_EQUAL_INT(0, link.countOf(FakeLink::CallType::PUBLISH));
+    TEST_ASSERT_EQUAL_INT(1, obs.snapshotCount);
+    TEST_ASSERT_EQUAL_INT(TreadMillData::DISCONNECTED, (int)obs.lastSnapshot.status);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, obs.lastSnapshot.speedCmd);
+}
+
+static void test_resume_whenWriteFails_keepsLinkSnapshot(void)
+{
+    FakeLink link;
+    seedPausedLink(link, 3200);
+    link.writeResult = false;
+    link.data.status = TreadMillData::DISCONNECTED;
+    TreadmillController c(link);
+    RecordingObserver obs;
+    c.addObserver(obs);
+
+    c.resume();
+
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::SET_SPEED));
+    TEST_ASSERT_EQUAL_INT(0, link.countOf(FakeLink::CallType::PUBLISH));
+    TEST_ASSERT_EQUAL_INT(1, obs.snapshotCount);
+    TEST_ASSERT_EQUAL_INT(TreadMillData::DISCONNECTED, (int)obs.lastSnapshot.status);
+}
+
+// ---------------------------------------------------------------------------
 // Observers
 // ---------------------------------------------------------------------------
 
@@ -452,6 +586,7 @@ static void test_eachCommandNotifiesObserverExactlyOnce(void)
     link.connected = true;
     link.data.status = TreadMillData::RUNNING;
     link.data.speedCmd = 2.0f;
+    link.lastSpeedRaw = 3200;
     TreadmillController c(link);
     RecordingObserver obs;
     c.addObserver(obs);
@@ -596,22 +731,30 @@ int main(int argc, char **argv)
     RUN_TEST(test_pause_publishesPaused);
     RUN_TEST(test_stop_publishesStopped);
 
-    RUN_TEST(test_resume_usesSnapshotSpeedCmd);
+    RUN_TEST(test_resume_usesLinkLastCommandedSpeed);
     RUN_TEST(test_resume_belowMinFallsBackToStartSpeed);
     RUN_TEST(test_resume_doesNotAssumeRunning);
 
     RUN_TEST(test_toggleStartPause_disconnectedStarts);
     RUN_TEST(test_toggleStartPause_stoppedStarts);
     RUN_TEST(test_toggleStartPause_runningPauses);
-    RUN_TEST(test_toggleStartPause_pausedResumes);
+    RUN_TEST(test_toggleStartPause_linkPausedResumes);
+    RUN_TEST(test_toggleStartPause_pausedStatusResumes);
     RUN_TEST(test_toggleStartPause_countdownStops);
 
     RUN_TEST(test_threeNudgesWithinSettleWindow_sendOneSetSpeed);
     RUN_TEST(test_nudgeWhileDisconnected_seedsFromMinAndSendsAfterSettle);
     RUN_TEST(test_nudgeDown_clampsAtMin);
     RUN_TEST(test_nudgeUp_clampsAtMax);
+    RUN_TEST(test_nudgeWhilePaused_seedsFromLastCommandedSpeed);
     RUN_TEST(test_nudge_notifiesTargetPendingThenSettled);
     RUN_TEST(test_tick_withNoPendingNudge_doesNothing);
+
+    RUN_TEST(test_start_whenWriteFails_keepsLinkSnapshot);
+    RUN_TEST(test_pause_whenWriteFails_keepsLinkSnapshot);
+    RUN_TEST(test_stop_whenWriteFails_keepsLinkSnapshot);
+    RUN_TEST(test_setSpeedMph_whenWriteFails_keepsLinkSnapshot);
+    RUN_TEST(test_resume_whenWriteFails_keepsLinkSnapshot);
 
     RUN_TEST(test_eachCommandNotifiesObserverExactlyOnce);
     RUN_TEST(test_multipleObserversAllReceiveSnapshots);

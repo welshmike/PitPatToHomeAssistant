@@ -99,9 +99,12 @@ TreadMillData SessionTracker::onPacket(const BA05Protocol::ParsedData& parsed,
             m_connectionBaseDistKm  = parsed.distanceM / 1000.0f;
             m_connectionBaseCal     = parsed.calories;
             m_connectionBaseDurSec  = parsed.durationSec;
-            const char* statusName[] = {"COUNTDOWN","RUNNING","PAUSED","STOPPED","DISCONNECTED"};
-            const char* sn = (data.status <= TreadMillData::DISCONNECTED)
-                             ? statusName[(int)data.status] : "UNKNOWN";
+            // statusName covers the four belt-reported values (0..3); DISCONNECTED
+            // is 100, so it has to be mapped explicitly rather than indexed.
+            const char* statusName[] = {"COUNTDOWN","RUNNING","PAUSED","STOPPED"};
+            const char* sn = ((int)data.status < 4)         ? statusName[(int)data.status]
+                             : (data.status == TreadMillData::DISCONNECTED) ? "DISCONNECTED"
+                                                                           : "UNKNOWN";
             TRACKER_LOG_W("FIRST POST-CONNECT PACKET: type=0x%02X len=%d → status=%s "
                           "speed=%.3f dist=%dm dur=%u cal=%u (baseline captured)",
                           (unsigned)packetType, (int)parsed.length, sn,

@@ -37,6 +37,11 @@ void TreadmillController::publishOptimistic(const TreadMillData& d)
     notifySnapshot(d);
 }
 
+void TreadmillController::notifyLinkSnapshot()
+{
+    notifySnapshot(m_link.snapshot());
+}
+
 float TreadmillController::clampMph(float mph)
 {
     if (mph < SPEED_MIN_MPH) return SPEED_MIN_MPH;
@@ -60,7 +65,13 @@ static uint16_t rawFromMph(float mph)
 
 void TreadmillController::start()
 {
-    m_link.start();
+    if (!m_link.start())
+    {
+        // The write failed and the link has already put DISCONNECTED in its
+        // snapshot — publishing COUNTDOWN over it would hide the failure.
+        notifyLinkSnapshot();
+        return;
+    }
     TreadMillData d = m_link.snapshot();
     d.status = TreadMillData::COUNTDOWN;
     publishOptimistic(d);
@@ -68,7 +79,11 @@ void TreadmillController::start()
 
 void TreadmillController::pause()
 {
-    m_link.pause();
+    if (!m_link.pause())
+    {
+        notifyLinkSnapshot();
+        return;
+    }
     TreadMillData d = m_link.snapshot();
     d.status = TreadMillData::PAUSED;
     publishOptimistic(d);
@@ -76,7 +91,11 @@ void TreadmillController::pause()
 
 void TreadmillController::stop()
 {
-    m_link.stop();
+    if (!m_link.stop())
+    {
+        notifyLinkSnapshot();
+        return;
+    }
     TreadMillData d = m_link.snapshot();
     d.status = TreadMillData::STOPPED;
     publishOptimistic(d);
@@ -84,23 +103,35 @@ void TreadmillController::stop()
 
 void TreadmillController::resume()
 {
-    // The handler already remembers m_lastSpeed and would reuse it, but the
-    // controller derives the resume speed from the snapshot so this rule is
-    // testable on the host without a live BLE link.
-    TreadMillData d = m_link.snapshot();
-    uint16_t raw = (d.speedCmd >= SPEED_MIN_MPH)
-                       ? rawFromMph(d.speedCmd)
-                       : START_SPEED_RAW;
-    m_link.setSpeedRaw(raw);
+    // The paused snapshot reports STOPPED with speedCmd 0 (the Q1's own view of
+    // a pause), so the speed to resume at can only come from the link's last
+    // commanded value.
+    uint16_t raw = m_link.lastCommandedSpeedRaw();
+    if (raw < START_SPEED_RAW) raw = START_SPEED_RAW;
+
+    if (!m_link.setSpeedRaw(raw))
+    {
+        notifyLinkSnapshot();
+        return;
+    }
 
     // Deliberately no optimistic RUNNING here: the belt runs its own countdown
     // on resume, so let the next notification say what actually happened.
+    TreadMillData d = m_link.snapshot();
     d.speedCmd = roundToStep((float)raw / SPEED_RAW_PER_MPH);
     publishOptimistic(d);
 }
 
 void TreadmillController::toggleStartPause()
 {
+    // The link's pause flag outranks the belt status: the Q1 reports STOPPED
+    // while paused, so the status alone would send a start instead of a resume.
+    if (m_link.isPaused())
+    {
+        resume();
+        return;
+    }
+
     switch (m_link.snapshot().status)
     {
     case TreadMillData::DISCONNECTED:
@@ -135,7 +166,11 @@ void TreadmillController::setSpeedMph(float mph)
     const bool wasIdle = (d.status == TreadMillData::STOPPED ||
                           d.status == TreadMillData::DISCONNECTED);
 
-    m_link.setSpeedRaw(raw);
+    if (!m_link.setSpeedRaw(raw))
+    {
+        notifyLinkSnapshot();
+        return;
+    }
 
     d.speedCmd = roundToStep(clamped);
     if (wasIdle)
@@ -151,11 +186,20 @@ void TreadmillController::nudgeSpeed(int clicks, uint32_t nowMs)
 {
     if (!m_nudgePending)
     {
-        const TreadMillData d = m_link.snapshot();
-        const bool live = (d.status == TreadMillData::RUNNING ||
-                           d.status == TreadMillData::PAUSED ||
-                           d.status == TreadMillData::COUNTDOWN);
-        m_targetMph = (live && d.speedCmd >= SPEED_MIN_MPH) ? d.speedCmd : SPEED_MIN_MPH;
+        if (m_link.isPaused())
+        {
+            // Paused: the snapshot's speedCmd is 0, so seed from the speed the
+            // belt was last told to run at.
+            m_targetMph = clampMph((float)m_link.lastCommandedSpeedRaw() / SPEED_RAW_PER_MPH);
+        }
+        else
+        {
+            const TreadMillData d = m_link.snapshot();
+            const bool live = (d.status == TreadMillData::RUNNING ||
+                               d.status == TreadMillData::PAUSED ||
+                               d.status == TreadMillData::COUNTDOWN);
+            m_targetMph = (live && d.speedCmd >= SPEED_MIN_MPH) ? d.speedCmd : SPEED_MIN_MPH;
+        }
     }
 
     m_targetMph = roundToStep(clampMph(m_targetMph + clicks * SPEED_STEP_MPH));

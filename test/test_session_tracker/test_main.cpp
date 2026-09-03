@@ -282,6 +282,37 @@ static void test_disconnectWhilePausedCommitsSnapshot(void)
     TEST_ASSERT_FALSE(g_tracker->isPaused());
 }
 
+// A mid-session drop commits what was walked so far; the reconnect recaptures a
+// baseline at the belt's unchanged odometer, so the next commit is only the new
+// distance. Without the recapture the second commit would repeat the first.
+static void test_reconnectMidSessionDoesNotDoubleCount(void)
+{
+    TreadMillData d;
+    g_tracker->onConnected(0);
+
+    d = g_tracker->onPacket(mkFull(0x2F, TreadMillData::STOPPED, 0.0f, 200), d, 100);
+    d = g_tracker->onPacket(mkFull(0x2F, TreadMillData::RUNNING, 2.0f, 1200), d, 200);
+
+    g_tracker->onDisconnected(d);
+    TEST_ASSERT_EQUAL_size_t(1, g_totals->calls.size());
+    TEST_ASSERT_FLOAT_WITHIN(0.0001f, 1.0f, g_totals->calls[0].distKm);
+
+    // Reconnect: the belt odometer is where we left it (1200 m), so the new
+    // baseline must be 1200, not 200.
+    g_tracker->onConnected(1000);
+    d = g_tracker->onPacket(mkFull(0x2F, TreadMillData::RUNNING, 2.0f, 1200), d, 1100);
+    d = g_tracker->onPacket(mkFull(0x2F, TreadMillData::RUNNING, 2.0f, 1500), d, 1200);
+    d = g_tracker->onPacket(mkFull(0x2F, TreadMillData::STOPPED, 0.0f, 1500), d, 1300);
+
+    TEST_ASSERT_EQUAL_size_t(2, g_totals->calls.size());
+    TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.3f, g_totals->calls[1].distKm);
+
+    float committed = 0.0f;
+    for (const SessionDelta& c : g_totals->calls) committed += c.distKm;
+    TEST_ASSERT_FLOAT_WITHIN(0.0001f, 1.3f, committed);
+    TEST_ASSERT_FLOAT_WITHIN(0.0001f, 1.3f, g_totals->totalDistanceKm());
+}
+
 // ---------------------------------------------------------------------------
 // 7. onStopCommand
 // ---------------------------------------------------------------------------
@@ -431,6 +462,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_pauseThenBeltResetCommitsSnapshot);
     RUN_TEST(test_midSessionDisconnectCommitsDelta);
     RUN_TEST(test_disconnectWhilePausedCommitsSnapshot);
+    RUN_TEST(test_reconnectMidSessionDoesNotDoubleCount);
     RUN_TEST(test_stopCommandWhilePausedCommitsAndReturnsTrue);
     RUN_TEST(test_stopCommandWhenNotPausedCommitsNothing);
     RUN_TEST(test_settledIdleFiresOnceOn0x2FOnly);
