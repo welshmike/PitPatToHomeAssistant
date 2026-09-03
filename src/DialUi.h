@@ -50,10 +50,22 @@ private:
     void drawConnecting(LovyanGFX& gfx);
     void drawStarting(LovyanGFX& gfx, uint32_t nowMs);
     void drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs);
+    // Centre speed overlay (target speed in Font7 amber + "mph" caption, and
+    // the amber target ring) — called from draw() for whichever screen is
+    // showing, on top of it, while the overlay window (m_speedOverlayUntilMs)
+    // is open. Shared by every screen, not just Running (I3).
+    void drawSpeedOverlay(LovyanGFX& gfx, bool paused);
+    // Long-press-to-stop progress ring — called from draw() for whichever
+    // screen is showing, on top of it, whenever a hold is in progress (I4).
+    void drawHoldArc(LovyanGFX& gfx);
 
     // Which of the four top-level screens is showing right now. Selection
-    // order: COUNTDOWN -> Starting; (RUNNING or paused) -> Running/Paused;
-    // controller.isConnecting() -> Connecting; else Disconnected. `paused` is
+    // order: (RUNNING or paused) -> Running/Paused; controller.isConnecting()
+    // -> Connecting (checked BEFORE the COUNTDOWN test below — a start()
+    // queued while disconnected makes the controller publish an optimistic
+    // COUNTDOWN even though nothing is actually counting down yet, so
+    // Connecting must win that race or the Starting screen shows with no way
+    // to cancel it); COUNTDOWN -> Starting; else Disconnected. `paused` is
     // passed in rather than recomputed so callers that already have it (draw(),
     // handleInput()) don't pay for isPausedState() twice in the same tick.
     enum class Screen : uint8_t { DISCONNECTED, CONNECTING, STARTING, RUNNING };
@@ -61,6 +73,10 @@ private:
 
     void handleInput(uint32_t nowMs);
     void applyBrightness();
+    // Plays the accepted/refused tone pair for a stop-or-cancel gesture
+    // (Connecting-screen cancel, hold-to-stop, side button). No-op when
+    // DIAL_SOUND is off.
+    void playStopBeep(uint32_t nowMs, bool accepted);
 
     // Redraw-skip key for the render() throttle below: every field that can
     // change what drawRunning()/drawIdle() puts on screen, coarsened to the
@@ -124,7 +140,13 @@ private:
     uint32_t m_secondBeepDueMs = 0;
 #endif
 
-    M5Canvas m_canvas{&M5Dial.Display};
+    // Default-constructed (no parent bound at construction time): `dialUi` is
+    // a global in main.cpp, and M5Dial.Display is a reference bound inside a
+    // library global's own constructor — global init order across
+    // translation units is unspecified, so binding to it here would be a
+    // static-init-order hazard. The sprite is pushed to an explicit
+    // destination (&M5Dial.Display) in render() instead.
+    M5Canvas m_canvas;
     bool m_useCanvas = false;
     uint32_t m_lastRenderMs = 0;
 

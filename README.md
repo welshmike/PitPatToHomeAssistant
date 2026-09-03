@@ -81,11 +81,14 @@ stays available as a fallback.
 
 ### Controls
 
-* **Tap** the screen: start (when disconnected or stopped), pause (when running), or resume at
-  the previous speed (when paused)
+* **Tap** the screen: start (when disconnected or stopped), pause (when running), resume at the
+  previous speed (when paused), or — while a connect is in progress (the Connecting screen) —
+  cancel the connect
 * **Hold** the screen for about 1 second: stop. While a connect is in progress, the same hold
   cancels the connect instead
-* **Side WAKE button**: stop (or cancel an in-progress connect, same as the hold)
+* **Side WAKE button**: always stops, on every screen — an emergency stop that does not depend
+  on what's showing. It does not cancel an in-progress connect (only tap/hold on the Connecting
+  screen do that); pressing it there is a harmless no-op refusal since there's no belt link yet
 * **Rotate** the dial: ±0.1 mph per detent (click). The change is queued and sent as a single
   speed command about 400 ms after the last click, so spinning several clicks quickly only
   produces one BLE write. Rotating while stopped or disconnected starts the belt at the dialed
@@ -97,15 +100,21 @@ stays available as a fallback.
 
 * **Disconnected**: last session's summary (time, distance, steps) with a hint to tap or turn to
   start
-* **Connecting**: "Connecting… attempt N" with a note that belt beeps are normal, and a hint that
-  holding cancels
-* **Starting** (belt COUNTDOWN): a pulsing "STARTING" with a hint to tap to cancel
+* **Connecting**: shown whenever a connect is in progress — including right after tapping start
+  while the belt is unreachable, before the belt itself is counting down. "Connecting… attempt
+  N" (attempt count only shown once there's been one) with a note that belt beeps are normal,
+  and a hint that tap or hold cancels
+* **Starting** (belt COUNTDOWN): reachable only once actually connected and the belt itself
+  reports COUNTDOWN — a pulsing "STARTING" with a hint to tap to cancel
 * **Running**: elapsed time in the centre, a speed ring around the edge (0–3.8 mph) with a
   numeric speed readout, distance and step count below
 * **Paused**: the same layout as Running, dimmed, with a pulsing "PAUSED" label and a hint to tap
   to resume or hold to stop
-* **Speed overlay**: after a rotate, the target speed replaces the elapsed time for 1.5 seconds,
-  then reverts automatically
+* **Speed overlay**: after a rotate, the target speed and an amber target ring replace the
+  current screen's centre content for 1.5 seconds on whichever screen is showing (not just
+  Running/Paused), then revert automatically
+* **Hold-to-stop/cancel progress**: while holding, a red arc outside the speed ring fills in on
+  whichever screen is showing, not just Running/Paused
 * Every screen has three small status dots along the top edge: BLE, WiFi, MQTT — lit when each is
   up
 

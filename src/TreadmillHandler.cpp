@@ -87,11 +87,18 @@ bool TreadmillHandler::stop()
         m_userRequestedConnect = false;
     }
     uint8_t packet[27];
-    m_lastSpeed = 0;
     // CMD1=0x05 for stop, MODE=0x08 for stop, speed=0
     BA05Protocol::makePacket(0, 0x05, 0x08, m_seqCounter++, packet);
     printCommandPacket("stop", packet, sizeof(packet));
-    return this->sendCommand(packet, sizeof(packet));
+    const bool ok = this->sendCommand(packet, sizeof(packet));
+    if (ok)
+    {
+        // Only clear the resume seed once the stop actually reached the belt
+        // (or was queued) — if it failed while disconnected, resume() should
+        // still restart at the speed the belt was last actually running.
+        m_lastSpeed = 0;
+    }
+    return ok;
 }
 
 // BA05 Protocol: Pause (keep current speed in packet)
@@ -123,10 +130,11 @@ bool TreadmillHandler::requestDisconnect()
         if (m_doConnect && m_autoReconnect)
         {
             // Cancel an in-flight connect attempt (kick phase / retry loop).
-            // If connect() was already issued asynchronously, onConnect() may
-            // still fire after this — but since m_autoReconnect is now false,
-            // the subsequent onDisconnect() will not schedule a reconnect, so
-            // the connection is torn back down. That's the desired outcome.
+            // connectToDevice() is synchronous and every caller runs on the
+            // loop task, so this can only land between attempts — never mid-
+            // connect. m_autoReconnect = false just suppresses the next
+            // scheduled attempt in handle(); nothing further needs tearing
+            // down here.
             log_i("Connect cancelled by user while connecting");
             m_autoReconnect        = false;
             m_userRequestedConnect = false;
@@ -385,7 +393,12 @@ bool TreadmillHandler::handle()
         {
             log_i("Connection successful.");
             m_doConnect = false;
-            m_connectAttempts = 0;
+            // Deliberately NOT resetting m_connectAttempts here: a successful
+            // connectToDevice() only means the kick phase's GATT handshake
+            // went through, not that the link is stable — the Q1 can still
+            // bounce us straight back into another attempt. The Dial's
+            // "attempt N" should keep counting through that. See the
+            // POST_CONNECT_COOLDOWN check below for the actual reset point.
             m_lastKeepalive = millis(); // Reset keepalive timer on connect
             // m_lastConnectTime is now set inside connectToDevice() before subscription
             // so that notification timing is accurate during the setup window.
@@ -394,6 +407,16 @@ bool TreadmillHandler::handle()
         {
             log_e("Failed to connect - Retrying in 5 seconds...");
         }
+    }
+
+    // Attempt counter: only reset once the connection has been stable for
+    // POST_CONNECT_COOLDOWN — see the comment above. Otherwise it's reset
+    // only in requestConnect() (a fresh user-initiated connect). Cheap to
+    // re-assign 0 every tick once stable; no separate "already reset" flag
+    // needed.
+    if (isConnected() && (millis() - m_lastConnectTime >= POST_CONNECT_COOLDOWN))
+    {
+        m_connectAttempts = 0;
     }
 
     // Send the initial keepalive once GATT is ready (onConnect set this flag).

@@ -152,59 +152,60 @@ void DialUi::handleInput(uint32_t nowMs)
 
     if (ev.tap)
     {
-        // The controller notifies observers (including this one, via
-        // onSnapshot/onTargetSpeed) synchronously, so m_snapshot already
-        // reflects the outcome by the time toggleStartPause() returns.
-        const TreadMillData::Status statusBefore = m_snapshot.status;
-        const float speedBefore = m_snapshot.speedCmd;
-        m_controller.toggleStartPause();
-        const bool refused = (m_snapshot.status == statusBefore) && (m_snapshot.speedCmd == speedBefore);
-#if DIAL_SOUND
-        if (refused)
+        // The Connecting screen has no running belt to toggle — tap cancels
+        // the in-flight connect there, same gesture as hold (C1).
+        if (currentScreen(isPausedState()) == Screen::CONNECTING)
         {
-            M5Dial.Speaker.tone(400, 120);
+            const bool cancelled = m_controller.requestDisconnect();
+            playStopBeep(nowMs, cancelled);
         }
         else
         {
-            M5Dial.Speaker.tone(2000, 40);
-        }
+            // The controller notifies observers (including this one, via
+            // onSnapshot/onTargetSpeed) synchronously, so m_snapshot already
+            // reflects the outcome by the time toggleStartPause() returns.
+            const TreadMillData::Status statusBefore = m_snapshot.status;
+            const float speedBefore = m_snapshot.speedCmd;
+            m_controller.toggleStartPause();
+            const bool refused = (m_snapshot.status == statusBefore) && (m_snapshot.speedCmd == speedBefore);
+#if DIAL_SOUND
+            if (refused)
+            {
+                M5Dial.Speaker.tone(400, 120);
+            }
+            else
+            {
+                M5Dial.Speaker.tone(2000, 40);
+            }
 #endif
+        }
     }
 
-    if (ev.longPress || ev.btnStop)
+    if (ev.longPress)
     {
         // The Connecting screen's hold gesture cancels the in-flight connect
         // rather than stopping a belt that isn't running yet.
         if (currentScreen(isPausedState()) == Screen::CONNECTING)
         {
             const bool cancelled = m_controller.requestDisconnect();
-#if DIAL_SOUND
-            if (cancelled)
-            {
-                // Two short beeps 80 ms apart, non-blocking: play the first now
-                // and let the scheduler below fire the second once its deadline
-                // passes.
-                M5Dial.Speaker.tone(1500, 60);
-                m_secondBeepPending = true;
-                m_secondBeepDueMs = nowMs + 80;
-            }
-            else
-            {
-                M5Dial.Speaker.tone(400, 120);
-            }
-#endif
+            playStopBeep(nowMs, cancelled);
         }
         else
         {
-            m_controller.stop();
-#if DIAL_SOUND
-            // Two short beeps 80 ms apart, non-blocking: play the first now and
-            // let the scheduler below fire the second once its deadline passes.
-            M5Dial.Speaker.tone(1500, 60);
-            m_secondBeepPending = true;
-            m_secondBeepDueMs = nowMs + 80;
-#endif
+            const bool stopped = m_controller.stop();
+            playStopBeep(nowMs, stopped);
         }
+    }
+
+    if (ev.btnStop)
+    {
+        // Emergency stop: the side button always sends stop(), on every
+        // screen — including Connecting, where it does NOT cancel the
+        // connect (only tap/hold do that there); the write is simply
+        // refused because the link is down, and that plays the refused tone
+        // via the same feedback path (I1).
+        const bool stopped = m_controller.stop();
+        playStopBeep(nowMs, stopped);
     }
 
     if (ev.detents != 0)
@@ -226,6 +227,28 @@ void DialUi::handleInput(uint32_t nowMs)
         M5Dial.Speaker.tone(1500, 60);
         m_secondBeepPending = false;
     }
+#endif
+}
+
+void DialUi::playStopBeep(uint32_t nowMs, bool accepted)
+{
+#if DIAL_SOUND
+    if (accepted)
+    {
+        // Two short beeps 80 ms apart, non-blocking: play the first now and
+        // let the scheduler in handleInput() fire the second once its
+        // deadline passes.
+        M5Dial.Speaker.tone(1500, 60);
+        m_secondBeepPending = true;
+        m_secondBeepDueMs = nowMs + 80;
+    }
+    else
+    {
+        M5Dial.Speaker.tone(400, 120);
+    }
+#else
+    (void)nowMs;
+    (void)accepted;
 #endif
 }
 
@@ -275,17 +298,22 @@ bool DialUi::isPausedState() const
 
 DialUi::Screen DialUi::currentScreen(bool paused) const
 {
-    if (m_snapshot.status == TreadMillData::COUNTDOWN)
-    {
-        return Screen::STARTING;
-    }
     if (m_snapshot.status == TreadMillData::RUNNING || paused)
     {
         return Screen::RUNNING;
     }
+    // Checked before COUNTDOWN: TreadmillHandler::start() while disconnected
+    // queues the command and the controller optimistically publishes
+    // COUNTDOWN right away, but the belt hasn't actually started counting
+    // down — it's still mid-connect (or mid-kick-phase-retry). Showing
+    // Connecting here is what makes that state cancellable at all.
     if (m_controller.isConnecting())
     {
         return Screen::CONNECTING;
+    }
+    if (m_snapshot.status == TreadMillData::COUNTDOWN)
+    {
+        return Screen::STARTING;
     }
     return Screen::DISCONNECTED;
 }
@@ -334,7 +362,10 @@ void DialUi::render(uint32_t nowMs)
     if (m_useCanvas)
     {
         draw(m_canvas, nowMs);
-        m_canvas.pushSprite(0, 0);
+        // Explicit destination: m_canvas has no parent bound at construction
+        // (see the m_canvas declaration in DialUi.h for why), so pushSprite()
+        // needs to be told where to push rather than relying on one.
+        m_canvas.pushSprite(&M5Dial.Display, 0, 0);
     }
     else
     {
@@ -376,6 +407,23 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     default:
         drawDisconnected(gfx);
         break;
+    }
+
+    // Speed overlay (I3): drawn on top of whichever screen just painted,
+    // for as long as the overlay window from the last nudge is open — not
+    // just while Running. See the m_speedOverlayUntilMs comment in DialUi.h.
+    const bool overlayActive = (int32_t)(m_speedOverlayUntilMs - nowMs) > 0;
+    if (overlayActive)
+    {
+        drawSpeedOverlay(gfx, paused);
+    }
+
+    // Long-press-to-stop progress (I4): drawn on top of whichever screen
+    // just painted, for as long as a hold is in progress — not just while
+    // Running/Paused (e.g. holding to cancel from Connecting).
+    if (m_holdProgress > 0.0f)
+    {
+        drawHoldArc(gfx);
     }
 }
 
@@ -425,17 +473,26 @@ void DialUi::drawConnecting(LovyanGFX& gfx)
     gfx.setTextColor(kColText, kColBg);
     gfx.drawString("Connecting...", kCentreX, kConnLabelY, &fonts::Font4);
 
-    char attemptBuf[24];
+    // Only show "attempt N" once there has actually been one — attempt 0
+    // (the brief window before the first connectToDevice() call) just reads
+    // "Connecting..." with no attempt line (I2).
     const uint16_t attempts = m_controller.connectAttempts();
-    snprintf(attemptBuf, sizeof(attemptBuf), "attempt %u",
-             (unsigned)(attempts > 0 ? attempts : 1));
-    gfx.setTextColor(kColDim, kColBg);
-    gfx.drawString(attemptBuf, kCentreX, kConnAttemptY, &fonts::Font2);
+    if (attempts > 0)
+    {
+        char attemptBuf[24];
+        snprintf(attemptBuf, sizeof(attemptBuf), "attempt %u", (unsigned)attempts);
+        gfx.setTextColor(kColDim, kColBg);
+        gfx.drawString(attemptBuf, kCentreX, kConnAttemptY, &fonts::Font2);
+    }
 
+    gfx.setTextColor(kColDim, kColBg);
     gfx.drawString("belt beeps are normal", kCentreX, kConnBeepY, &fonts::Font2);
-    gfx.drawString("hold to cancel", kCentreX, kConnHintY, &fonts::Font2);
+    gfx.drawString("tap or hold to cancel", kCentreX, kConnHintY, &fonts::Font2);
 }
 
+// Reachable only when actually connected and the belt itself reports
+// COUNTDOWN — currentScreen() checks isConnecting() first, so a start()
+// queued while disconnected shows Connecting instead (C1).
 void DialUi::drawStarting(LovyanGFX& gfx, uint32_t nowMs)
 {
     // Blink 1 Hz: on for the first 500 ms of each 1000 ms window — same
@@ -456,43 +513,29 @@ void DialUi::drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs)
     const uint16_t colText  = paused ? dimColor565(kColText)     : kColText;
     const uint16_t colDim   = paused ? dimColor565(kColDim)      : kColDim;
     const uint16_t colCyan  = paused ? dimColor565(kColSpeedVal) : kColSpeedVal;
-    const uint16_t colAmber = paused ? dimColor565(kColPending)  : kColPending;
 
     // Speed ring: dark 300 deg track (120 deg gap centred at the bottom),
-    // then the value arc from the same start angle. fillArc's fmodf()
-    // handles the >360 deg wrap on its own, so one call each is enough.
+    // then the current-speed arc from the same start angle. fillArc's
+    // fmodf() handles the >360 deg wrap on its own, so one call each is
+    // enough. drawSpeedOverlay() (called from draw(), I3) repaints this in
+    // amber with the target speed instead while a nudge's overlay window is
+    // open, so this is only what shows the rest of the time.
     gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
                 kRingStartDeg + kRingSweepDeg, colTrack);
 
-    const bool  ringPending = m_targetPending;
-    const float ringSpeedMph = ringPending ? m_targetSpeedMph : m_snapshot.speedFeedback;
-    const float ringSweep    = DialFormat::speedToAngle(ringSpeedMph);
+    const float ringSweep = DialFormat::speedToAngle(m_snapshot.speedFeedback);
     if (ringSweep > 0.0f)
     {
         gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
-                    kRingStartDeg + ringSweep, ringPending ? colAmber : colCyan);
+                    kRingStartDeg + ringSweep, colCyan);
     }
 
-    // Centre: elapsed time, or the target speed for DIAL_SPEED_OVERLAY_MS
-    // after the last nudge (armed in handleInput()).
-    const bool overlayActive = (int32_t)(m_speedOverlayUntilMs - nowMs) > 0;
+    // Centre: elapsed time. drawSpeedOverlay() (draw(), I3) repaints this
+    // with the target speed instead while a nudge's overlay window is open.
     char centreBuf[16];
-    if (overlayActive)
-    {
-        DialFormat::formatSpeedMph(m_targetSpeedMph, centreBuf, sizeof(centreBuf));
-    }
-    else
-    {
-        DialFormat::formatDuration(m_snapshot.durationSec, centreBuf, sizeof(centreBuf));
-    }
-    gfx.setTextColor(overlayActive ? colAmber : colText, kColBg);
+    DialFormat::formatDuration(m_snapshot.durationSec, centreBuf, sizeof(centreBuf));
+    gfx.setTextColor(colText, kColBg);
     gfx.drawString(centreBuf, kCentreX, kCentreY, &fonts::Font7);
-
-    if (overlayActive)
-    {
-        gfx.setTextColor(colAmber, kColBg);
-        gfx.drawString("mph", kCentreX, kOverlayCaptionY, &fonts::Font2);
-    }
 
     // Row: distance (left) / steps (right), each with a caption beneath.
     char distBuf[8];
@@ -529,13 +572,42 @@ void DialUi::drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs)
         gfx.setTextColor(colDim, kColBg);
         gfx.drawString("tap resume - hold stop", kCentreX, kHintY, &fonts::Font2);
     }
+}
 
-    // Long-press-to-stop progress: thin red arc just outside the ring.
-    if (m_holdProgress > 0.0f)
+// Centre speed overlay (I3): target speed big in Font7 amber with an "mph"
+// caption, and the amber target ring — shared by every screen, called from
+// draw() on top of whatever the current screen just painted, for as long as
+// the overlay window from the last nudge (m_speedOverlayUntilMs) is open.
+void DialUi::drawSpeedOverlay(LovyanGFX& gfx, bool paused)
+{
+    const uint16_t colTrack = paused ? dimColor565(kColDim)     : kColDim;
+    const uint16_t colAmber = paused ? dimColor565(kColPending) : kColPending;
+
+    gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
+                kRingStartDeg + kRingSweepDeg, colTrack);
+
+    const float ringSweep = DialFormat::speedToAngle(m_targetSpeedMph);
+    if (ringSweep > 0.0f)
     {
-        gfx.fillArc(kRingCx, kRingCy, kHoldOuter, kHoldInner, kRingStartDeg,
-                    kRingStartDeg + kRingSweepDeg * m_holdProgress, kColHold);
+        gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
+                    kRingStartDeg + ringSweep, colAmber);
     }
+
+    char centreBuf[16];
+    DialFormat::formatSpeedMph(m_targetSpeedMph, centreBuf, sizeof(centreBuf));
+    gfx.setTextColor(colAmber, kColBg);
+    gfx.drawString(centreBuf, kCentreX, kCentreY, &fonts::Font7);
+    gfx.drawString("mph", kCentreX, kOverlayCaptionY, &fonts::Font2);
+}
+
+// Long-press-to-stop/cancel progress (I4): thin red arc just outside the
+// speed ring — shared by every screen, called from draw() on top of
+// whatever the current screen just painted, for as long as a hold is in
+// progress.
+void DialUi::drawHoldArc(LovyanGFX& gfx)
+{
+    gfx.fillArc(kRingCx, kRingCy, kHoldOuter, kHoldInner, kRingStartDeg,
+                kRingStartDeg + kRingSweepDeg * m_holdProgress, kColHold);
 }
 
 #endif // HAS_DIAL_UI

@@ -89,16 +89,17 @@ void TreadmillController::pause()
     publishOptimistic(d);
 }
 
-void TreadmillController::stop()
+bool TreadmillController::stop()
 {
     if (!m_link.stop())
     {
         notifyLinkSnapshot();
-        return;
+        return false;
     }
     TreadMillData d = m_link.snapshot();
     d.status = TreadMillData::STOPPED;
     publishOptimistic(d);
+    return true;
 }
 
 void TreadmillController::resume()

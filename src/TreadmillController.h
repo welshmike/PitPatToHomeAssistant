@@ -34,7 +34,10 @@ public:
     void start();
     void pause();
     void resume();
-    void stop();
+    // Returns the link's own answer: true when the link accepted the stop (or
+    // queued it), false when it refused/failed. Callers that give feedback for
+    // a stop gesture (DialUi) use this instead of guessing from the snapshot.
+    bool stop();
 
     // link paused -> resume; otherwise disconnected/stopped -> start,
     // running -> pause, paused -> resume, countdown -> stop.

@@ -723,6 +723,9 @@ static void test_requestDisconnect_whileConnecting_cancelsAttempt(void)
 
     TEST_ASSERT_TRUE(c.requestDisconnect());
     TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::DISCONNECT));
+    // Cancelling a connect that never reached "connected" has no belt state to
+    // publish optimistically — nothing was ever wasConnected.
+    TEST_ASSERT_EQUAL_INT(0, link.countOf(FakeLink::CallType::PUBLISH));
 }
 
 static void test_requestDisconnect_whenIdle_refusesAndRepublishes(void)

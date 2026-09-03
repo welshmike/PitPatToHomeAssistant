@@ -197,6 +197,43 @@ static void test_backlight_dimAt120s_offAt600s_activityResets(void)
     TEST_ASSERT_TRUE(DialInput::Backlight::FULL == input.backlight());
 }
 
+// A touch-and-hold that starts while dim stays fully swallowed: the wake-only
+// tick reports wake and nothing else, and the long-press threshold passing
+// mid-hold must not fire longPress — only a fresh gesture, started while
+// FULL, can trigger a long press.
+static void test_wake_touchWhileDim_swallowsLongPressUntilRelease(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, false, 0, 0, false, t0); // baseline
+    input.tick(0, false, 0, 0, false, t0 + 120000); // now DIM
+    TEST_ASSERT_TRUE(DialInput::Backlight::DIM == input.backlight());
+
+    // Touch-down arrives while dim: wakes, swallows the gesture. Only this
+    // first tick reports wake.
+    DialEvents eDown = input.tick(0, true, 50, 50, false, t0 + 120001);
+    TEST_ASSERT_TRUE(eDown.wake);
+    TEST_ASSERT_FALSE(eDown.tap);
+    TEST_ASSERT_FALSE(eDown.longPress);
+
+    // Held past the long-press threshold (1000 ms): still swallowed, so no
+    // longPress and no further wake.
+    DialEvents eHeld = input.tick(0, true, 50, 50, false, t0 + 120001 + DialInput::HOLD_MS);
+    TEST_ASSERT_FALSE(eHeld.wake);
+    TEST_ASSERT_FALSE(eHeld.longPress);
+
+    DialEvents eHeldPast = input.tick(0, true, 50, 50, false, t0 + 120001 + DialInput::HOLD_MS + 500);
+    TEST_ASSERT_FALSE(eHeldPast.wake);
+    TEST_ASSERT_FALSE(eHeldPast.longPress);
+
+    // Release of the whole swallowed hold: no tap, no longPress, no wake.
+    DialEvents eRelease = input.tick(0, false, 0, 0, false, t0 + 120001 + DialInput::HOLD_MS + 1000);
+    TEST_ASSERT_FALSE(eRelease.tap);
+    TEST_ASSERT_FALSE(eRelease.longPress);
+    TEST_ASSERT_FALSE(eRelease.wake);
+}
+
 static void test_wake_encoderWhileDim_rebasesBaselineForNextDetent(void)
 {
     DialInput input;
@@ -282,6 +319,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_longPress_firesOnceAt1000ms_progressHalfAt500ms);
     RUN_TEST(test_wake_inputWhileDim_yieldsWakeOnly);
     RUN_TEST(test_wake_touchWhileDim_swallowsGestureUntilRelease);
+    RUN_TEST(test_wake_touchWhileDim_swallowsLongPressUntilRelease);
     RUN_TEST(test_wake_encoderWhileDim_rebasesBaselineForNextDetent);
     RUN_TEST(test_tap_releaseAtExactlyTapMaxMs_notATap);
     RUN_TEST(test_tap_releaseJustUnderTapMaxMs_isATap);

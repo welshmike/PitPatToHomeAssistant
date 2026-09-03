@@ -123,6 +123,17 @@ Every screen has three status dots on the top edge: BLE (on when connected), WiF
 drawn at full brightness even on the Paused screen, unlike the rest of that screen's elements,
 which are all halved. See `src/DialUi.cpp` (`drawRunning()`, `drawStatusDots()`).
 
+**Amended 2026-09-03 after final review:** `currentScreen()` now checks `controller.isConnecting()`
+before the COUNTDOWN test, not after — `TreadmillHandler::start()` while disconnected queues the
+command and the controller optimistically publishes COUNTDOWN right away, so without this reorder
+the Dial showed "STARTING / tap to cancel" for a belt that wasn't actually counting down, and its
+tap-to-cancel went through `stop()`, which the disconnected link refuses (nothing was cleared).
+Connecting now wins that race, and its cancel gesture is tap **or** hold (not hold alone) —
+`handleInput()` checks `currentScreen() == CONNECTING` for both `ev.tap` and `ev.longPress` and
+routes either one to `requestDisconnect()` instead of `toggleStartPause()`/`stop()`. The Starting
+screen is consequently reachable only once actually connected and the belt itself reports
+COUNTDOWN. See `src/DialUi.cpp` (`currentScreen()`, `handleInput()`).
+
 Idle power: after 2 min in Disconnected or Stopped, brightness drops to 20 %. After 10 min the backlight goes off. Any input wakes at full brightness.
 
 Buzzer: one short click on an accepted tap, two on stop, a low buzz when a command is refused (post-connect cooldown, disconnect blocked while belt active). Compile-time `DIAL_SOUND` flag defaults on.
