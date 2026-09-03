@@ -105,6 +105,56 @@ void TreadmillHandler::pause()
     this->sendCommand(packet, sizeof(packet));
 }
 
+void TreadmillHandler::restoreTotals(float distKm, uint32_t steps, uint32_t calories, uint32_t durationSec)
+{
+    m_state.restoreTotals(distKm, steps, calories, durationSec);
+    m_snapshot.modify([&](TreadMillData& d) {
+        d.totalDistanceKm  = m_state.getTotalDistanceKm();
+        d.totalSteps       = m_state.getTotalSteps();
+        d.totalCalories    = m_state.getTotalCalories();
+        d.totalDurationSec = m_state.getTotalDurationSec();
+    });
+}
+
+bool TreadmillHandler::requestDisconnect()
+{
+    if (!isConnected())
+    {
+        return false;
+    }
+    // Safety check — don't disconnect while belt is active
+    TreadMillData snap = m_snapshot.read();
+    if (snap.status == TreadMillData::RUNNING ||
+        snap.status == TreadMillData::PAUSED ||
+        snap.status == TreadMillData::COUNTDOWN)
+    {
+        log_w("Disconnect blocked — belt is active (status=%d)", (int)snap.status);
+        return false;
+    }
+    log_i("Manual disconnect requested");
+    m_autoReconnect = false;        // prevent onDisconnect() from immediately reconnecting
+    m_userRequestedConnect = false; // user explicitly turned off — don't auto-reconnect
+    m_reconnectNotBefore = 0;
+    m_pClient->disconnect();
+    // Don't deleteClient here — onDisconnect() fires shortly after and handles
+    // cleanup. Deleting here and again in onDisconnect() is a double-free.
+    return true;
+}
+
+bool TreadmillHandler::requestConnect()
+{
+    if (isConnected())
+    {
+        return false;
+    }
+    log_i("Manual connect requested");
+    m_autoReconnect = true;
+    m_userRequestedConnect = true; // user explicitly turned on — keep retrying after idle kicks
+    m_reconnectNotBefore = 0;      // allow immediate first attempt
+    m_doConnect = true;
+    return true;
+}
+
 
 
 void TreadmillHandler::sendKeepalive()
@@ -169,6 +219,50 @@ void TreadmillHandler::saveSettings()
     prefs.end();
     log_i("Settings saved: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min",
           m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins);
+}
+
+void TreadmillHandler::setIdleDisconnectMins(uint16_t mins)
+{
+    m_idleDisconnectMins = mins;
+    saveSettings();
+    // If the timer is currently armed, rearm it with the new duration.
+    if (m_idleDisconnectDeadline != 0)
+    {
+        if (mins == 0)
+        {
+            m_idleDisconnectDeadline = 0;
+            log_i("Idle disconnect timer disarmed (mins=0)");
+        }
+        else
+        {
+            m_idleDisconnectDeadline = m_idleDisconnectArmedAt + (uint32_t)mins * 60000UL;
+            unsigned long elapsed = millis() - m_idleDisconnectArmedAt;
+            log_i("Idle disconnect timer rearmed: %u min (%lu s elapsed)",
+                  mins, elapsed / 1000);
+        }
+    }
+}
+
+void TreadmillHandler::setPauseTimeoutMins(uint16_t mins)
+{
+    m_pauseTimeoutMins = mins;
+    saveSettings();
+    // If the timer is currently armed, rearm it with the new duration.
+    if (m_pauseTimeoutDeadline != 0)
+    {
+        if (mins == 0)
+        {
+            m_pauseTimeoutDeadline = 0;
+            log_i("Pause timeout timer disarmed (mins=0)");
+        }
+        else
+        {
+            m_pauseTimeoutDeadline = m_pauseTimeoutArmedAt + (uint32_t)mins * 60000UL;
+            unsigned long elapsed = millis() - m_pauseTimeoutArmedAt;
+            log_i("Pause timeout timer rearmed: %u min (%lu s elapsed)",
+                  mins, elapsed / 1000);
+        }
+    }
 }
 
 
@@ -566,4 +660,184 @@ void TreadmillHandler::notifyCallback(
     // and PubSubClient::publish() is not thread-safe. Publishing concurrently from
     // Core 0 and Core 1 (dead reckoning) caused ECONNRESET / double-publish bugs.
     m_newDataAvailable = true;
+}
+
+// --- ISessionEvents ---------------------------------------------------
+// These carry exactly the timer/flag code that used to sit inline in
+// notifyCallback() at each of these points.
+
+void TreadmillHandler::onSessionStarted()
+{
+    // Cancel idle-disconnect timer — belt is active.
+    if (m_idleDisconnectDeadline != 0)
+    {
+        log_i("Idle disconnect timer cancelled — session started");
+        m_idleDisconnectDeadline = 0;
+    }
+}
+
+void TreadmillHandler::onSessionEnded()
+{
+    m_autoReconnect        = false;
+    m_userRequestedConnect = false;
+
+    // Arm idle-disconnect timer so BLE disconnects automatically after
+    // the configured idle period. Prevents the Q1 kicking loop that
+    // occurs when we stay connected with no belt activity.
+    if (m_idleDisconnectMins > 0)
+    {
+        m_idleDisconnectArmedAt  = millis();
+        m_idleDisconnectDeadline = m_idleDisconnectArmedAt + (uint32_t)m_idleDisconnectMins * 60000UL;
+        log_i("Idle disconnect timer armed: %u min", m_idleDisconnectMins);
+    }
+}
+
+void TreadmillHandler::onPaused()
+{
+    // Arm pause timeout — if the user never resumes, commit and disconnect.
+    if (m_pauseTimeoutMins > 0)
+    {
+        m_pauseTimeoutArmedAt  = millis();
+        m_pauseTimeoutDeadline = m_pauseTimeoutArmedAt + (uint32_t)m_pauseTimeoutMins * 60000UL;
+        log_i("Pause timeout armed: %u min", m_pauseTimeoutMins);
+    }
+}
+
+void TreadmillHandler::onSettledIdle()
+{
+    if (m_idleDisconnectMins > 0 && m_idleDisconnectDeadline == 0)
+    {
+        m_idleDisconnectArmedAt  = millis();
+        m_idleDisconnectDeadline = m_idleDisconnectArmedAt + (uint32_t)m_idleDisconnectMins * 60000UL;
+        log_i("Idle disconnect timer armed on stable idle connection: %u min", m_idleDisconnectMins);
+    }
+}
+
+void TreadmillHandler::onConnect(BLEClient *pClient)
+{
+    log_i("Connected to device!");
+    m_sendInitNow = true;
+#if HAS_STATUS_LED
+    digitalWrite(LED_BLE_PIN, HIGH); // active-high: on
+#endif
+}
+
+void TreadmillHandler::onDisconnect(BLEClient *pClient, int reason)
+{
+    // NimBLE reason = 512 + HCI error code. Common codes:
+    //   0x08 (520) = connection timeout       — radio loss / device out of range
+    //   0x13 (531) = remote user terminated   — device actively closed the connection
+    //   0x16 (534) = local host terminated    — we called disconnect()
+    //   0x3E (574) = failed to establish      — connect() timed out
+    const char* desc = "unknown";
+    switch (reason - 512) {
+        case 0x08: desc = "connection timeout";             break;
+        case 0x13: desc = "remote user terminated";         break;
+        case 0x16: desc = "local host terminated";          break;
+        case 0x3E: desc = "failed to establish connection"; break;
+    }
+    log_w("Disconnected reason=%d (HCI 0x%02X: %s)",
+          reason, reason - 512, desc);
+
+    // Intentional drop via supervision timeout — we stopped keepalives deliberately
+    // so Q1 sees a supervision timeout (0x08) rather than HCI 0x16 (local host terminated).
+    // Clear both flags regardless of the actual reason code; if something else fired
+    // first (e.g., Q1 kicked us), we still want to clean up.
+    if (m_intentionalDrop)
+    {
+        if ((reason - 512) == 0x08)
+            log_i("Intentional drop: supervision timeout fired as expected — Q1 should see lighter kick phase");
+        else
+            log_w("Intentional drop: expected 0x08 but got HCI 0x%02X — cleaning up anyway", reason - 512);
+        m_intentionalDrop = false;
+        m_stopKeepalives  = false;
+    }
+
+    // Use m_tracker.sessionActive() as the ground truth for "belt was genuinely
+    // active". This flag is only set when we observe speed > 0 (belt physically
+    // moving), so it's immune to:
+    //   - Phantom RUNNING status from 0x34 packets (flags=0xBC with speed=0)
+    //   - Residual distanceKm from a previous session persisting on reconnect
+    // Read BEFORE onDisconnected() so the backoff decision below is unaffected
+    // by any state the commit clears.
+    bool beltWasActive = m_tracker.sessionActive();
+    TreadMillData last = m_snapshot.read();
+    m_tracker.onDisconnected(last);
+
+    // Reason 531 (HCI 0x13: remote user terminated) = treadmill kicked us.
+    // When the belt is idle (stopped/disconnected) this is just the treadmill's
+    // ~10s idle BLE timeout. Reconnecting immediately causes the pad to beep on
+    // every connect/disconnect cycle. Instead, treat it like a manual disconnect —
+    // stop auto-reconnecting and let the user reconnect when they want to walk.
+    // If the belt was RUNNING/PAUSED/COUNTDOWN when kicked, reconnect immediately
+    // to preserve the active session.
+    bool isIdleKick = ((reason - 512) == 0x13);
+
+    if (isIdleKick && !beltWasActive)
+    {
+        if (m_userRequestedConnect)
+        {
+            // User explicitly pressed Connect — use a short 5s backoff so the Q1's
+            // kick phase (~5-8 cycles) settles in ~2 min. The longer 20s backoff
+            // made the kick phase take 4+ min (30s/cycle × 8 kicks), which felt
+            // like the device was broken.
+            m_reconnectNotBefore = millis() + 5000UL;
+            log_w("Idle kick (user-requested) — backing off 5s before reconnect");
+        }
+        else if (m_autoReconnect)
+        {
+            // Auto-reconnect (background, no user session): back off 20s to keep
+            // beeping infrequent while working through the kick phase.
+            m_reconnectNotBefore = millis() + 20000UL;
+            log_w("Idle kick (auto-reconnect) — backing off 20s before reconnect");
+        }
+        // else: m_autoReconnect is already false (session ended) — don't reconnect.
+    }
+    else if (isIdleKick && beltWasActive)
+    {
+        // Mid-session kick: Q1 kicked us (reason=531) while the belt was active.
+        // Without backoff we reconnect immediately, Q1 kicks again, and this loops
+        // for minutes. Add a 10s pause to let Q1 cycle out of its kicking phase
+        // before the next connect attempt (~10s connect + 10s wait = ~20s/cycle).
+        m_reconnectNotBefore = millis() + 10000UL;
+        log_w("Mid-session kick — backing off 10s before reconnect to work through kicking phase");
+    }
+
+    // Disarm both timers — either they fired and triggered this disconnect, or we
+    // were kicked/timed-out externally. Either way, nothing left to fire.
+    m_idleDisconnectDeadline = 0;
+    m_pauseTimeoutDeadline   = 0;
+
+    // Clear pending command only when we're not going to reconnect.
+    // If m_autoReconnect is still true (kicked while connecting to execute a
+    // command), preserve the command so it fires once the belt settles.
+    // If we're disconnecting cleanly (pause timeout, user disconnect), the
+    // command is stale and should be dropped.
+    if (!m_autoReconnect)
+    {
+        m_pendingCmd = PendingCmd::NONE;
+    }
+
+#if HAS_STATUS_LED
+    digitalWrite(LED_BLE_PIN, LOW); // active-high: off
+#endif
+
+    // Always publish DISCONNECTED so HA switch reflects the real state.
+    m_snapshot.modify([&](TreadMillData& d) { d.status = TreadMillData::DISCONNECTED; });
+    m_newDataAvailable = true;
+
+    // Do NOT deleteClient here — calling NimBLEDevice::deleteClient() from within
+    // a NimBLE callback (Core 0) is unsafe and corrupts the NimBLE heap, causing
+    // subsequent connections to be unstable. The original pacekeeper code never
+    // deletes the client — it reuses it, letting connect(addr, true, true) clear
+    // the GATT cache on the next connect attempt.
+    // Null the characteristic pointers — they're stale after disconnect and
+    // connectToDevice() re-fetches them on the next successful connection.
+    m_pWriteCharacteristic  = nullptr;
+    m_pNotifyCharacteristic = nullptr;
+
+    if (m_autoReconnect)
+    {
+        m_doConnect = true; // Trigger reconnect in handle() loop
+    }
 }

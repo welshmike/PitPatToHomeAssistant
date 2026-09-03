@@ -89,9 +89,9 @@ namespace BA05Protocol {
 
             uint32_t duration_total_sec = ((uint32_t)duration_min * 65536 + duration_ms) / 1000;
 
-            parsed.speedFeedback = current_speed / 1600.0f;
-            parsed.speedCmd      = target_speed  / 1600.0f;
-            parsed.speedMax      = readU16(pData, 11) / 1600.0f;
+            parsed.speedFeedback = current_speed / (float)SPEED_RAW_PER_MPH;
+            parsed.speedCmd      = target_speed  / (float)SPEED_RAW_PER_MPH;
+            parsed.speedMax      = readU16(pData, 11) / (float)SPEED_RAW_PER_MPH;
             parsed.distanceM     = distance_m;
             parsed.calories      = calories;
             parsed.durationSec   = duration_total_sec;
@@ -112,7 +112,7 @@ namespace BA05Protocol {
         } 
         else if (length == 20) {
             uint16_t current_speed = readU16(pData, 9);
-            parsed.speedFeedback = current_speed / 1600.0f;
+            parsed.speedFeedback = current_speed / (float)SPEED_RAW_PER_MPH;
             parsed.valid = true;
         }
         

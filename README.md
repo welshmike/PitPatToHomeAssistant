@@ -55,8 +55,28 @@ Get an app like **nRF Connect** – this app allows you to view Bluetooth connec
   ```
 > **Note:** `src/config.h` is listed in `.gitignore` and will never be committed. Never commit your real credentials.
 * Connect the ESP32 with a USB cable (you might have to hold **RST** and **BOOT** while plugging it in)
-* Compile and flash the project via **PlatformIO → Upload and Monitor**
+* Compile and flash the project via **PlatformIO → Upload and Monitor**, or from the CLI:
+  ```bash
+  pio run -e devkit-usb -t upload      # DevKit board, USB
+  pio run -e devkit-ota -t upload      # DevKit board, OTA (after first USB flash)
+  pio run -e dial-usb -t upload        # M5Stack Dial, USB — work in progress, see below
+  pio run -e dial-ota -t upload        # M5Stack Dial, OTA
+  pio test -e native                   # host-side unit tests, no hardware needed
+  ```
 * If everything goes well, you should see a bunch of log messages, and a new device called `PaceKeeper` should show up in your Home Assistant
+
+## Architecture
+
+The firmware is split by concern: `TreadmillHandler` owns the BLE link to the belt (connect/
+reconnect, keepalives, the BA05 protocol) and delegates session accounting to `SessionTracker`
+and command intent to `TreadmillController`, which is what `main.cpp` and MQTT actually talk to.
+`SnapshotStore` holds the current `TreadMillData` behind a mutex so the BLE task and the main
+loop can both read/write it safely. Two FreeRTOS tasks do the work: the main loop task drives
+`TreadmillHandler::handle()` and the controller, while a dedicated `NetTask` owns WiFi/MQTT
+(`NetManager`) and drains command/publish queues (`Commands.h`) so nothing but that task ever
+touches `PubSubClient`. `board.h` selects per-target pins/partitions; the ESP32 DevKit is the
+verified target today, and the M5Stack Dial (`dial-usb`/`dial-ota`) is a work-in-progress port —
+its on-device UI is not yet documented here.
 
 ## Cloud Free Usage – Start Without WiFi, App, and Cloud Account
 

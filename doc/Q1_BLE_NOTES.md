@@ -79,7 +79,7 @@ Shorter backoff = more beeps but faster settle. Longer = fewer beeps but slower.
 | Idle kick, auto-reconnect only | **20s** | Background reconnect — minimise beeping, ~4 min settle |
 | Mid-session kick (belt was active) | **10s** | Without backoff: instant reconnect → instant kick → infinite loop |
 
-"Belt was active" (`m_sessionActive`) is the ground truth for "belt physically moved".
+"Belt was active" (`SessionTracker::sessionActive()`, backed by `m_sessionActive`) is the ground truth for "belt physically moved".
 This flag is immune to phantom RUNNING from `0x34` packets and residual belt odometer from prior sessions.
 
 ---
@@ -121,7 +121,7 @@ if (m_intentionalDrop)
 ## Idle-Disconnect Timer
 
 - Armed on **first `0x2F` packet** (device settled to stable idle) if no active session.
-- Also armed on **session end** (STOPPED transition with `m_sessionActive`).
+- Also armed on **session end** (STOPPED transition with `SessionTracker::sessionActive()`).
 - Default: 30 minutes. Configurable via HA number entity (NVS key `"idle"`).
 - Disarmed when belt goes RUNNING (session starts).
 - On fire: sets `m_intentionalDrop=true`, `m_stopKeepalives=true`, `m_autoReconnect=false`.
@@ -259,12 +259,15 @@ The 6s supervision timeout means keepalives must arrive within 6 seconds.
 
 ---
 
-## `m_sessionActive` — Ground Truth for Belt Activity
+## `SessionTracker::sessionActive()` — Ground Truth for Belt Activity
 
-Set when `speedFeedback > 0.001` and status is RUNNING.
-Reset on each new BLE connection (in `connectToDevice()` before subscribe).
+Set when `speedFeedback > 0.001` and status is RUNNING. Lives in `SessionTracker`
+(backing field `m_sessionActive`) alongside the rest of the session accounting —
+`TreadmillHandler` reads it through `m_tracker.sessionActive()`.
+Reset on each new BLE connection (in `connectToDevice()` before subscribe, via
+`SessionTracker::onConnected()`).
 
-Used in `onDisconnect()` to distinguish:
+Used in `TreadmillHandler::onDisconnect()` to distinguish:
 - **Idle kick** (`!beltWasActive`): Q1's routine timeout, no real session in progress.
 - **Mid-session kick** (`beltWasActive`): Belt was actually moving — commit delta to NVS,
   reconnect with 10s backoff.
@@ -277,8 +280,12 @@ Immune to:
 
 ## Session Delta Accounting
 
-Belt odometer at connection start is captured in `m_connectionBaseDistKm` (and `BaseCal`, `BaseDurSec`).
-All `addSession()` calls commit `(current - base)`, not the raw odometer.
+Belt odometer at connection start is captured in `SessionTracker::m_connectionBaseDistKm`
+(and `m_connectionBaseCal`, `m_connectionBaseDurSec`).
+All `ITotalsStore::addSession()` calls commit `(current - base)`, not the raw odometer. The
+call only updates in-memory totals (`TreadmillState::addSession()`) and marks them dirty; the
+actual NVS write is deferred to `TreadmillState::flush()`, called once per `handle()` cycle on
+the main loop so the flash write never happens on the NimBLE task.
 
 This prevents double-counting when:
 - A mid-session BLE reconnect occurs (prior delta already committed in `onDisconnect()`).
