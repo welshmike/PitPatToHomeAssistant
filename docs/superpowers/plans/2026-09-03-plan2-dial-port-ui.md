@@ -133,3 +133,11 @@ Layout on 240x240 (centre 120,120):
 
 ## Backlog from Plan 1 to fold in where touched
 See the end of `2026-09-03-plan1-devkit-refactor.md`. Do in this plan: `MQTT_CONNECTING` observable from `NetTask::status()` (Task 1 or 6, needed for the dots), dedupe the second snapshot publish on `onTargetSpeed(false)` (Task 3), split `ITreadmillLink.h` (Task 6 when the interface grows). Leave the rest unless a task touches that code.
+
+## Backlog from the Plan 2 final review (follow-up, not blocking)
+- Tap "refused" heuristic compares status/speedCmd before and after; a failed GATT write (status → DISCONNECTED) beeps "accepted", and a resume to the same speed beeps "refused". Make the controller return an explicit accepted/refused result instead.
+- Dial-initiated cancel/stop change `m_autoReconnect` without echoing `PubType::AUTO_RECONNECT`, so HA's Auto Reconnect switch drifts (the MQTT STOP path has the same gap).
+- `kHintY = 222` may clip Font2 hints at the round bezel; check on hardware and move up if needed.
+- Skip rendering while the backlight is OFF.
+- `pulsePhase` in the frame key forces a 2 Hz redraw on screens with nothing pulsing.
+- Verify on hardware that the 115 KB canvas plus NimBLE init leaves enough heap (log lines exist).
