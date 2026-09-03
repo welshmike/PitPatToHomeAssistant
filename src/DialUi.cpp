@@ -177,19 +177,34 @@ void DialUi::handleInput(uint32_t nowMs)
         // rather than stopping a belt that isn't running yet.
         if (currentScreen(isPausedState()) == Screen::CONNECTING)
         {
-            m_controller.requestDisconnect();
+            const bool cancelled = m_controller.requestDisconnect();
+#if DIAL_SOUND
+            if (cancelled)
+            {
+                // Two short beeps 80 ms apart, non-blocking: play the first now
+                // and let the scheduler below fire the second once its deadline
+                // passes.
+                M5Dial.Speaker.tone(1500, 60);
+                m_secondBeepPending = true;
+                m_secondBeepDueMs = nowMs + 80;
+            }
+            else
+            {
+                M5Dial.Speaker.tone(400, 120);
+            }
+#endif
         }
         else
         {
             m_controller.stop();
-        }
 #if DIAL_SOUND
-        // Two short beeps 80 ms apart, non-blocking: play the first now and
-        // let the scheduler below fire the second once its deadline passes.
-        M5Dial.Speaker.tone(1500, 60);
-        m_secondBeepPending = true;
-        m_secondBeepDueMs = nowMs + 80;
+            // Two short beeps 80 ms apart, non-blocking: play the first now and
+            // let the scheduler below fire the second once its deadline passes.
+            M5Dial.Speaker.tone(1500, 60);
+            m_secondBeepPending = true;
+            m_secondBeepDueMs = nowMs + 80;
 #endif
+        }
     }
 
     if (ev.detents != 0)
@@ -411,8 +426,9 @@ void DialUi::drawConnecting(LovyanGFX& gfx)
     gfx.drawString("Connecting...", kCentreX, kConnLabelY, &fonts::Font4);
 
     char attemptBuf[24];
+    const uint16_t attempts = m_controller.connectAttempts();
     snprintf(attemptBuf, sizeof(attemptBuf), "attempt %u",
-             (unsigned)m_controller.connectAttempts());
+             (unsigned)(attempts > 0 ? attempts : 1));
     gfx.setTextColor(kColDim, kColBg);
     gfx.drawString(attemptBuf, kCentreX, kConnAttemptY, &fonts::Font2);
 

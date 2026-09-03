@@ -120,6 +120,22 @@ bool TreadmillHandler::requestDisconnect()
 {
     if (!isConnected())
     {
+        if (m_doConnect && m_autoReconnect)
+        {
+            // Cancel an in-flight connect attempt (kick phase / retry loop).
+            // If connect() was already issued asynchronously, onConnect() may
+            // still fire after this — but since m_autoReconnect is now false,
+            // the subsequent onDisconnect() will not schedule a reconnect, so
+            // the connection is torn back down. That's the desired outcome.
+            log_i("Connect cancelled by user while connecting");
+            m_autoReconnect        = false;
+            m_userRequestedConnect = false;
+            m_doConnect            = false;
+            m_reconnectNotBefore   = 0;
+            m_pendingCmd           = PendingCmd::NONE;
+            m_connectAttempts      = 0;
+            return true;
+        }
         return false;
     }
     // Safety check — don't disconnect while belt is active

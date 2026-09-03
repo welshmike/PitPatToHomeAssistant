@@ -42,7 +42,13 @@ public:
     bool stop()  override { record(CallType::STOP, 0); return writeResult; }
     bool setSpeedRaw(uint16_t raw) override { record(CallType::SET_SPEED, raw); return writeResult; }
     bool requestConnect() override { record(CallType::CONNECT, 0); return connectResult; }
-    bool requestDisconnect() override { record(CallType::DISCONNECT, 0); return disconnectResult; }
+    bool requestDisconnect() override
+    {
+        record(CallType::DISCONNECT, 0);
+        if (connected) return disconnectResult; // e.g. refused while belt is active
+        if (connecting) return true;            // cancel an in-flight connect attempt
+        return false;
+    }
     TreadMillData snapshot() const override { return data; }
     bool isPaused() const override { return paused; }
     uint16_t lastCommandedSpeedRaw() const override { return lastSpeedRaw; }
@@ -705,6 +711,35 @@ static void test_requestConnect_whenAlreadyConnected_republishesSnapshot(void)
     TEST_ASSERT_EQUAL_INT(TreadMillData::STOPPED, (int)obs.lastSnapshot.status);
 }
 
+static void test_requestDisconnect_whileConnecting_cancelsAttempt(void)
+{
+    FakeLink link;
+    link.connected  = false;
+    link.connecting = true;
+    link.data.status = TreadMillData::DISCONNECTED;
+    TreadmillController c(link);
+    RecordingObserver obs;
+    c.addObserver(obs);
+
+    TEST_ASSERT_TRUE(c.requestDisconnect());
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::DISCONNECT));
+}
+
+static void test_requestDisconnect_whenIdle_refusesAndRepublishes(void)
+{
+    FakeLink link;
+    link.connected  = false;
+    link.connecting = false;
+    link.data.status = TreadMillData::DISCONNECTED;
+    TreadmillController c(link);
+    RecordingObserver obs;
+    c.addObserver(obs);
+
+    TEST_ASSERT_FALSE(c.requestDisconnect());
+    TEST_ASSERT_EQUAL_INT(1, obs.snapshotCount);
+    TEST_ASSERT_EQUAL_INT(TreadMillData::DISCONNECTED, (int)obs.lastSnapshot.status);
+}
+
 static void test_publishNetStatus_reachesEveryObserver(void)
 {
     FakeLink link;
@@ -768,6 +803,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_requestDisconnect_whenAccepted_publishesDisconnected);
     RUN_TEST(test_requestDisconnect_whenBlocked_republishesRealSnapshot);
     RUN_TEST(test_requestConnect_whenAlreadyConnected_republishesSnapshot);
+    RUN_TEST(test_requestDisconnect_whileConnecting_cancelsAttempt);
+    RUN_TEST(test_requestDisconnect_whenIdle_refusesAndRepublishes);
     RUN_TEST(test_publishNetStatus_reachesEveryObserver);
 
     return UNITY_END();
