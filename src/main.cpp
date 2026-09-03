@@ -357,8 +357,10 @@ void setup()
 
   Serial.begin(115200);
 
+#if HAS_STATUS_LED
   pinMode(LED_BLE_PIN, OUTPUT);
   digitalWrite(LED_BLE_PIN, LOW); // active-high: off until BLE connects
+#endif
 
   WiFi.setHostname(composeClientID().c_str());
   WiFi.mode(WIFI_STA);

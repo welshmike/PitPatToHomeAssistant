@@ -1,5 +1,4 @@
 #include "ba05protocol.h"
-#include "esp_log.h"
 
 namespace BA05Protocol {
 

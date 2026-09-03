@@ -1,8 +1,7 @@
 #pragma once
 #include <Arduino.h>
-
-// Built-in blue LED on ESP32 DevKit v1 — active-high (HIGH = on, LOW = off).
-#define LED_BLE_PIN 2
+#include "board.h"
+#include "TreadmillData.h"
 
 #define SYSTEM_NAME "PaceKeeper"
 #define VERSION "2026.1.1"
@@ -33,40 +32,3 @@
 // Declare strings as extern to avoid multiple-definition linker errors
 extern const char* HOMEASSISTANT_STATUS_TOPIC;
 extern const char* HOMEASSISTANT_STATUS_TOPIC_ALT;
-
-class TreadMillData
-{
-public:
-    enum Status
-    {
-        COUNTDOWN = 0,
-        RUNNING = 1,
-        PAUSED = 2,
-        STOPPED = 3,
-        DISCONNECTED = 100, // Internal state, don't use for treadmill communication
-    };
-
-    float speedCmd = 0.0;
-    float speedFeedback = 0.0;
-    float speedMax = 0.0;
-    float distanceKm = 0.0;
-    uint16_t calories = 0;
-    uint32_t steps = 0;
-    uint32_t durationSec = 0;
-    uint8_t fwVersion = 0;
-    Status status = DISCONNECTED; // default to DISCONNECTED when we start up
-
-    // All-time cumulative totals (managed by TreadmillHandler, persisted in NVS)
-    float totalDistanceKm = 0.0;
-    uint32_t totalSteps = 0;
-    uint32_t totalCalories = 0;
-    uint32_t totalDurationSec = 0;
-
-    // Session summary — populated on STOPPED transition so Strava and other
-    // automations can read the final session values after live fields clear to 0.
-    float    sessionDistanceKm  = 0.0;
-    uint32_t sessionSteps       = 0;
-    uint32_t sessionCalories    = 0;
-    uint32_t sessionDurationSec = 0;
-    bool     sessionComplete    = false;
-};

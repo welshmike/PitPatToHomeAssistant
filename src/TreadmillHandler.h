@@ -169,7 +169,6 @@ private:
     TreadMillData::Status m_lastStatus = TreadMillData::DISCONNECTED;
 
     // BA05 protocol state
-    static constexpr uint16_t START_SPEED = 994;             // ~1.0 km/h in mph×1600 encoding
     static constexpr unsigned long KEEPALIVE_INTERVAL  = 200;  // ms — matches QZ poll rate
     static constexpr unsigned long POST_CONNECT_COOLDOWN = 3000; // ms — block commands after
                                                                   // reconnect until device settles
@@ -295,7 +294,9 @@ private:
     {
         log_i("Connected to device!");
         m_sendInitNow = true;
+#if HAS_STATUS_LED
         digitalWrite(LED_BLE_PIN, HIGH); // active-high: on
+#endif
     }
 
     void onDisconnect(BLEClient *pClient, int reason) override
@@ -413,7 +414,9 @@ private:
             m_pendingCmd = PendingCmd::NONE;
         }
 
+#if HAS_STATUS_LED
         digitalWrite(LED_BLE_PIN, LOW); // active-high: off
+#endif
 
         // Always publish DISCONNECTED so HA switch reflects the real state.
         m_lastData.status = TreadMillData::DISCONNECTED;

@@ -57,7 +57,7 @@ void TreadmillHandler::start()
     {
         log_i("start() while disconnected — queuing command and auto-connecting");
         m_pendingCmd   = PendingCmd::START;
-        m_pendingSpeed = START_SPEED;
+        m_pendingSpeed = START_SPEED_RAW;
         m_autoReconnect        = true;
         m_userRequestedConnect = false;
         m_reconnectNotBefore   = 0;
@@ -65,9 +65,9 @@ void TreadmillHandler::start()
         return;
     }
     uint8_t packet[27];
-    m_lastSpeed = START_SPEED;
+    m_lastSpeed = START_SPEED_RAW;
     // CMD1=0x01 for running, MODE=0x0C for running
-    BA05Protocol::makePacket(START_SPEED, 0x01, 0x0C, m_seqCounter++, packet);
+    BA05Protocol::makePacket(START_SPEED_RAW, 0x01, 0x0C, m_seqCounter++, packet);
     printCommandPacket("start", packet, sizeof(packet));
     this->sendCommand(packet, sizeof(packet));
 }

@@ -1,6 +1,6 @@
 #pragma once
-#include <Arduino.h>
-#include "platform.h"
+#include <stddef.h>
+#include "TreadmillData.h"
 
 namespace BA05Protocol {
 
