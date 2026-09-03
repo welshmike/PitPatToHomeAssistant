@@ -10,25 +10,20 @@
 #include <PubSubClient.h>
 #include <MqttDevice.h>
 
-#include <ArduinoOTA.h>
-
 #include "config.h"
 #include "platform.h"
 #include "TreadmillHandler.h"
+#include "NetManager.h"
 #include "mqttview.h"
 
 const uint WATCHDOG_TIMEOUT_S = 300;
-const uint WIFI_DISCONNECT_FORCED_RESTART_S = 60;
 
-WiFiClient net;
-PubSubClient client(net);
-MqttView g_mqttView(&client);
-
-bool g_wifiConnected = false;
-bool g_mqttConnected = false;
-unsigned long g_lastWifiConnect = 0;
-
-String g_bssid = "";
+// Networking is standalone-first: NetManager connects WiFi/MQTT in the
+// background and retries forever, so BLE and local control keep running
+// through any network outage.
+NetManager net(DEFAULT_STA_WIFI_SSID, DEFAULT_STA_WIFI_PASS,
+               MQTT_SERVER, MQTT_PORT, MQTT_USER, MQTT_PASS);
+MqttView g_mqttView(&net.mqtt());
 
 TreadmillHandler treadmill;
 
@@ -43,64 +38,6 @@ char g_restoreTotalsTopic[64];
 // Payload: JSON array e.g. [{"mph":1.0,"spm":68.8},{"mph":1.5,"spm":82.0}]
 char g_restoreCalibTopic[64];
 
-
-bool connectToMqtt()
-{
-  if (client.connected())
-  {
-    return true;
-  }
-
-  log_i("Connecting to MQTT...");
-  if (strlen(MQTT_USER) == 0)
-  {
-    if (!client.connect(composeClientID().c_str()))
-    {
-      return false;
-    }
-  }
-  else
-  {
-    if (!client.connect(composeClientID().c_str(), MQTT_USER, MQTT_PASS))
-    {
-      return false;
-    }
-  }
-
-  client.subscribe(g_mqttView.getSpeed().getCommandTopic(), 1);
-  client.subscribe(g_mqttView.getStartButton().getCommandTopic(), 1);
-  client.subscribe(g_mqttView.getPauseButton().getCommandTopic(), 1);
-  client.subscribe(g_mqttView.getStopButton().getCommandTopic(), 1);
-  client.subscribe(g_mqttView.getAutoReconnectSwitch().getCommandTopic(), 1);
-  client.subscribe(g_mqttView.getConnectSwitch().getCommandTopic(), 1);
-  client.subscribe(g_mqttView.getCalibrate20StepsButton().getCommandTopic(), 1);
-  client.subscribe(g_mqttView.getIdleDisconnectNumber().getCommandTopic(), 1);
-  client.subscribe(g_mqttView.getPauseTimeoutNumber().getCommandTopic(), 1);
-
-  // Recovery topic — build once and subscribe. Topic is logged at INFO so you can
-  // find it in the serial monitor if you need to publish a restore payload.
-  snprintf(g_restoreTotalsTopic, sizeof(g_restoreTotalsTopic),
-           "%s/restore-totals/set", composeClientID().c_str());
-  client.subscribe(g_restoreTotalsTopic);
-  log_i("Restore-totals topic: %s", g_restoreTotalsTopic);
-
-  snprintf(g_restoreCalibTopic, sizeof(g_restoreCalibTopic),
-           "%s/restore-calibration/set", composeClientID().c_str());
-  client.subscribe(g_restoreCalibTopic);
-  log_i("Restore-calibration topic: %s", g_restoreCalibTopic);
-
-  client.subscribe(HOMEASSISTANT_STATUS_TOPIC);
-  client.subscribe(HOMEASSISTANT_STATUS_TOPIC_ALT);
-
-  g_mqttView.publishAllConfigs();
-  delay(200); // give mqtt broker some time to process all config messages
-  g_mqttView.publishState(treadmill.getLastData());
-  g_mqttView.publishAutoReconnectSetting(treadmill.getAutoReconnect());
-  g_mqttView.publishIdleDisconnectSetting(treadmill.getIdleDisconnectMins());
-  g_mqttView.publishPauseTimeoutSetting(treadmill.getPauseTimeoutMins());
-
-  return true;
-}
 
 void handleSpeedCommand(byte *payload, unsigned int length)
 {
@@ -362,80 +299,68 @@ void setup()
   digitalWrite(LED_BLE_PIN, LOW); // active-high: off until BLE connects
 #endif
 
-  WiFi.setHostname(composeClientID().c_str());
-  WiFi.mode(WIFI_STA);
-
-  // select the AP with the strongest signal
-  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
-  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
-
-  WiFi.begin(DEFAULT_STA_WIFI_SSID, DEFAULT_STA_WIFI_PASS);
-
-  log_i("Connecting to wifi...");
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    log_d(".");
-    delay(500);
-  }
-  g_wifiConnected = true;
-  g_lastWifiConnect = millis();
-  log_i("Connected to SSID: %s", DEFAULT_STA_WIFI_SSID);
-  log_i("IP address: %s", WiFi.localIP().toString().c_str());
-
-  char configUrl[256];
-  snprintf(configUrl, sizeof(configUrl), "http://%s/", WiFi.localIP().toString().c_str());
-  g_mqttView.getDevice().setConfigurationUrl(configUrl);
-  client.setBufferSize(1024);
-  client.setServer(MQTT_SERVER, MQTT_PORT);
-  client.setCallback(callback);
-
+  // BLE first: the belt must work with no network at all.
   NimBLEAddress targetAddress(std::string(TARGET_ADDRESS), BLE_ADDR_PUBLIC);
   treadmill.begin(targetAddress);
-
 
   treadmill.setCallback([](const TreadMillData &data)
                         {
     log_d("Speed: %.2f km/h, Distance: %.2f %d", data.speedCmd, data.distanceKm, data.status);
-    g_mqttView.publishState(data); });
+    // Silently drop state updates while MQTT is down — publishing would fail
+    // (and log an error) every 200ms during an outage.
+    if (net.mqttUp())
+    {
+      g_mqttView.publishState(data);
+    } });
 
   log_i("Starting BLE Client...");
   NimBLEDevice::init("PaceKeeper");
 
-  ArduinoOTA.onStart([]()
-                     {
-    String type;
-    if (ArduinoOTA.getCommand() == U_FLASH) {
-      type = "sketch";
-    } else { // U_FS
-      type = "filesystem";
-    }
+  net.setMqttCallback(callback);
 
-    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
-    log_i("Start updating %s", type.c_str()); });
-  ArduinoOTA.onEnd([]()
-                   { log_i("End"); });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
-                        {
-// reset watchdog during update
-#ifdef ESP32
-            esp_task_wdt_reset();
-#endif
-        log_i("Progress: %u%%\r", (progress / (total / 100))); });
-  ArduinoOTA.onError([](ota_error_t error)
-                     {
-    log_e("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) {
-      log_e("Auth Failed");
-    } else if (error == OTA_BEGIN_ERROR) {
-      log_e("Begin Failed");
-    } else if (error == OTA_CONNECT_ERROR) {
-      log_e("Connect Failed");
-    } else if (error == OTA_RECEIVE_ERROR) {
-      log_e("Receive Failed");
-    } else if (error == OTA_END_ERROR) {
-      log_e("End Failed");
-    } });
-  ArduinoOTA.begin();
+  // Everything that has to happen each time the MQTT session comes up.
+  net.onMqttConnected([]()
+                      {
+    PubSubClient &client = net.mqtt();
+
+    char configUrl[256];
+    snprintf(configUrl, sizeof(configUrl), "http://%s/", WiFi.localIP().toString().c_str());
+    g_mqttView.getDevice().setConfigurationUrl(configUrl);
+
+    client.subscribe(g_mqttView.getSpeed().getCommandTopic(), 1);
+    client.subscribe(g_mqttView.getStartButton().getCommandTopic(), 1);
+    client.subscribe(g_mqttView.getPauseButton().getCommandTopic(), 1);
+    client.subscribe(g_mqttView.getStopButton().getCommandTopic(), 1);
+    client.subscribe(g_mqttView.getAutoReconnectSwitch().getCommandTopic(), 1);
+    client.subscribe(g_mqttView.getConnectSwitch().getCommandTopic(), 1);
+    client.subscribe(g_mqttView.getCalibrate20StepsButton().getCommandTopic(), 1);
+    client.subscribe(g_mqttView.getIdleDisconnectNumber().getCommandTopic(), 1);
+    client.subscribe(g_mqttView.getPauseTimeoutNumber().getCommandTopic(), 1);
+
+    // Recovery topic — build once and subscribe. Topic is logged at INFO so you can
+    // find it in the serial monitor if you need to publish a restore payload.
+    snprintf(g_restoreTotalsTopic, sizeof(g_restoreTotalsTopic),
+             "%s/restore-totals/set", composeClientID().c_str());
+    client.subscribe(g_restoreTotalsTopic);
+    log_i("Restore-totals topic: %s", g_restoreTotalsTopic);
+
+    snprintf(g_restoreCalibTopic, sizeof(g_restoreCalibTopic),
+             "%s/restore-calibration/set", composeClientID().c_str());
+    client.subscribe(g_restoreCalibTopic);
+    log_i("Restore-calibration topic: %s", g_restoreCalibTopic);
+
+    client.subscribe(HOMEASSISTANT_STATUS_TOPIC);
+    client.subscribe(HOMEASSISTANT_STATUS_TOPIC_ALT);
+
+    g_mqttView.publishAllConfigs();
+    delay(200); // give mqtt broker some time to process all config messages
+    g_mqttView.publishState(treadmill.getLastData());
+    g_mqttView.publishAutoReconnectSetting(treadmill.getAutoReconnect());
+    g_mqttView.publishIdleDisconnectSetting(treadmill.getIdleDisconnectMins());
+    g_mqttView.publishPauseTimeoutSetting(treadmill.getPauseTimeoutMins()); });
+
+  // Non-blocking: WiFi/MQTT come up in the background, with backoff, forever.
+  net.begin(composeClientID().c_str());
 }
 
 void loop()
@@ -443,47 +368,8 @@ void loop()
   // reset watchdog, important to be called once each loop.
   esp_task_wdt_reset();
 
-  bool wifiConnected = WiFi.status() == WL_CONNECTED;
-  if (!wifiConnected)
-  {
-    if (millis() - g_lastWifiConnect > WIFI_DISCONNECT_FORCED_RESTART_S * 1000)
-    {
-      log_w("Wifi could not connect in time, will force a restart");
-      // persist any session committed on the BLE task while networking is down
-      treadmill.flushTotals();
-      ESP.restart();
-    }
-    g_wifiConnected = false;
-    g_mqttConnected = false;
-    // persist any session committed on the BLE task while networking is down
-    treadmill.flushTotals();
-    delay(1000);
-    return;
-  }
-  g_wifiConnected = true;
-  g_lastWifiConnect = millis();
-
-  ArduinoOTA.handle();
-
-  bool mqttConnected = connectToMqtt();
-  if (!mqttConnected)
-  {
-    g_mqttConnected = false;
-    // persist any session committed on the BLE task while networking is down
-    treadmill.flushTotals();
-    delay(1000);
-    return;
-  }
-  if (!g_mqttConnected)
-  {
-    // now we are successfully reconnected and publish our counters
-    g_bssid = WiFi.BSSIDstr();
-  }
-  g_mqttConnected = true;
-
-  client.loop();
-  treadmill.handle();
-
-  // Notifications are handled in the callback
-  delay(100);
+  const uint32_t now = millis();
+  treadmill.handle(); // BLE first, always — keepalives must never stall
+  net.tick(now);
+  delay(1); // yield to the idle task
 }
