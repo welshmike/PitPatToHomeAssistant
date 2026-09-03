@@ -66,6 +66,13 @@ constexpr int32_t kConnHintY    = 210;
 constexpr int32_t kStartLabelY = 96;
 constexpr int32_t kStartHintY  = 210;
 
+// Selector (start-speed picker) screen. Value uses kCentreY/kCentreX (same
+// centre spot the running/overlay screens draw their big Font7 value at).
+constexpr int32_t kSelectorTitleY = 60;
+constexpr int32_t kSelectorMphY   = 140;
+constexpr int32_t kSelectorHint1Y = 196;
+constexpr int32_t kSelectorHint2Y = 214;
+
 // Halves each RGB565 channel — the ~50% dim used for the whole paused
 // layout. Cheap bit-twiddling, no float, safe to call once per element per
 // frame.
@@ -150,14 +157,47 @@ void DialUi::handleInput(uint32_t nowMs)
 
     applyBrightness();
 
+    // Selector housekeeping (spec 4.7): Connecting/Starting/Running(paused)
+    // always win over an open selector, so close it as soon as any of those
+    // becomes true — silently, no beep — before resolving the screen below.
+    // Otherwise a stale selector (opened before a start elsewhere, e.g. HA)
+    // could resurface once the belt stops again.
+    if (m_selector.isOpen() &&
+        (m_snapshot.status == TreadMillData::RUNNING || isPausedState() ||
+         m_snapshot.status == TreadMillData::COUNTDOWN || m_controller.isConnecting()))
+    {
+        m_selector.close();
+    }
+    // Inactivity timeout: returns true (and closes) exactly once on the tick
+    // that crosses SELECTOR_TIMEOUT_MS. The close is silent (no beep), so
+    // the return value isn't needed here.
+    m_selector.tick(nowMs);
+
+    const Screen screen = currentScreen(isPausedState());
+
     if (ev.tap)
     {
         // The Connecting screen has no running belt to toggle — tap cancels
         // the in-flight connect there, same gesture as hold (C1).
-        if (currentScreen(isPausedState()) == Screen::CONNECTING)
+        if (screen == Screen::CONNECTING)
         {
             const bool cancelled = m_controller.requestDisconnect();
             playStopBeep(nowMs, cancelled);
+        }
+        else if (screen == Screen::SELECTOR)
+        {
+            // Confirm the candidate speed and start.
+            m_controller.startAt(m_selector.value());
+            m_selector.close();
+            playAcceptBeep(true);
+        }
+        else if (screen == Screen::DISCONNECTED)
+        {
+            // Open the picker at the configured start speed rather than
+            // starting immediately (4.7); this is a pure local UI action, so
+            // it always succeeds.
+            m_selector.open(m_controller.startSpeedMph(), nowMs);
+            playAcceptBeep(true);
         }
         else
         {
@@ -168,16 +208,7 @@ void DialUi::handleInput(uint32_t nowMs)
             const float speedBefore = m_snapshot.speedCmd;
             m_controller.toggleStartPause();
             const bool refused = (m_snapshot.status == statusBefore) && (m_snapshot.speedCmd == speedBefore);
-#if DIAL_SOUND
-            if (refused)
-            {
-                M5Dial.Speaker.tone(400, 120);
-            }
-            else
-            {
-                M5Dial.Speaker.tone(2000, 40);
-            }
-#endif
+            playAcceptBeep(!refused);
         }
     }
 
@@ -185,10 +216,27 @@ void DialUi::handleInput(uint32_t nowMs)
     {
         // The Connecting screen's hold gesture cancels the in-flight connect
         // rather than stopping a belt that isn't running yet.
-        if (currentScreen(isPausedState()) == Screen::CONNECTING)
+        if (screen == Screen::CONNECTING)
         {
             const bool cancelled = m_controller.requestDisconnect();
             playStopBeep(nowMs, cancelled);
+        }
+        else if (screen == Screen::SELECTOR)
+        {
+            // Skip the candidate and start at the configured default.
+            m_controller.start();
+            m_selector.close();
+            playAcceptBeep(true);
+        }
+        else if (screen == Screen::DISCONNECTED)
+        {
+            // start() returns void — tell accepted from refused the same way
+            // the tap path does above: compare the snapshot status start()
+            // published synchronously (COUNTDOWN on success) against before.
+            const TreadMillData::Status statusBefore = m_snapshot.status;
+            m_controller.start();
+            const bool accepted = (m_snapshot.status != statusBefore);
+            playAcceptBeep(accepted);
         }
         else
         {
@@ -199,32 +247,58 @@ void DialUi::handleInput(uint32_t nowMs)
 
     if (ev.btnStop)
     {
-        // Emergency stop: the side button always sends stop(), on every
-        // screen — including Connecting, where it does NOT cancel the
-        // connect (only tap/hold do that there); the write is simply
-        // refused because the link is down, and that plays the refused tone
-        // via the same feedback path (I1).
-        const bool stopped = m_controller.stop();
-        playStopBeep(nowMs, stopped);
+        if (screen == Screen::SELECTOR)
+        {
+            // Cancel: closes the picker without sending any belt command —
+            // nothing is running yet, so there's nothing to stop.
+            m_selector.close();
+            playAcceptBeep(true);
+        }
+        else
+        {
+            // Emergency stop: the side button always sends stop(), on every
+            // other screen — including Connecting, where it does NOT cancel
+            // the connect (only tap/hold do that there); the write is simply
+            // refused because the link is down, and that plays the refused
+            // tone via the same feedback path (I1).
+            const bool stopped = m_controller.stop();
+            playStopBeep(nowMs, stopped);
+        }
     }
 
     if (ev.detents != 0)
     {
-        // Rotation only adjusts speed while the belt is actually running.
-        // Rotate-to-start was removed (2026-09-03): while stopped, paused,
-        // connecting or disconnected the knob is reserved for future screen
-        // navigation and is ignored for now.
-        const bool beltRunning =
-            (m_snapshot.status == TreadMillData::RUNNING) && !isPausedState();
-        if (beltRunning)
+        if (screen == Screen::SELECTOR)
         {
-            // nudgeSpeed() synchronously fires onTargetSpeed(mph, pending=true)
-            // via the controller's observer callback, so m_targetPending/
-            // m_targetSpeedMph are already current by the time this returns —
-            // arm the overlay deadline from the nowMs this call actually has.
-            m_controller.nudgeSpeed(ev.detents, nowMs);
-            m_speedOverlayUntilMs = nowMs + DIAL_SPEED_OVERLAY_MS;
+            // The selector consumes detents itself; they must not reach
+            // nudgeSpeed while it's open (4.7).
+            m_selector.step(ev.detents, nowMs);
         }
+        else
+        {
+            // Rotation only adjusts speed while the belt is actually
+            // running. Rotate-to-start was removed (2026-09-03): while
+            // stopped, paused, connecting or disconnected the knob is
+            // reserved for future screen navigation and is ignored for now.
+            const bool beltRunning =
+                (m_snapshot.status == TreadMillData::RUNNING) && !isPausedState();
+            if (beltRunning)
+            {
+                // nudgeSpeed() synchronously fires onTargetSpeed(mph, pending=true)
+                // via the controller's observer callback, so m_targetPending/
+                // m_targetSpeedMph are already current by the time this returns —
+                // arm the overlay deadline from the nowMs this call actually has.
+                m_controller.nudgeSpeed(ev.detents, nowMs);
+                m_speedOverlayUntilMs = nowMs + DIAL_SPEED_OVERLAY_MS;
+            }
+        }
+    }
+
+    if (ev.swipe != 0 && screen == Screen::SELECTOR)
+    {
+        // Horizontal swipe is an alternate way to step the candidate speed
+        // (right = +1 = faster), same grid as a detent (4.7).
+        m_selector.step(ev.swipe, nowMs);
     }
 
     // ev.wake needs no handling beyond the brightness change already applied
@@ -257,6 +331,22 @@ void DialUi::playStopBeep(uint32_t nowMs, bool accepted)
     }
 #else
     (void)nowMs;
+    (void)accepted;
+#endif
+}
+
+void DialUi::playAcceptBeep(bool accepted)
+{
+#if DIAL_SOUND
+    if (accepted)
+    {
+        M5Dial.Speaker.tone(2000, 40);
+    }
+    else
+    {
+        M5Dial.Speaker.tone(400, 120);
+    }
+#else
     (void)accepted;
 #endif
 }
@@ -307,10 +397,6 @@ bool DialUi::isPausedState() const
 
 DialUi::Screen DialUi::currentScreen(bool paused) const
 {
-    if (m_snapshot.status == TreadMillData::RUNNING || paused)
-    {
-        return Screen::RUNNING;
-    }
     // Checked before COUNTDOWN: TreadmillHandler::start() while disconnected
     // queues the command and the controller optimistically publishes
     // COUNTDOWN right away, but the belt hasn't actually started counting
@@ -323,6 +409,19 @@ DialUi::Screen DialUi::currentScreen(bool paused) const
     if (m_snapshot.status == TreadMillData::COUNTDOWN)
     {
         return Screen::STARTING;
+    }
+    if (m_snapshot.status == TreadMillData::RUNNING || paused)
+    {
+        return Screen::RUNNING;
+    }
+    // handleInput() closes the selector as soon as any of the screens above
+    // becomes true, but currentScreen() is also called from draw()/
+    // buildFrameKey() before that housekeeping runs on a given tick (e.g.
+    // the very first render), so the ordering above is what actually makes
+    // those screens win, not just the close call.
+    if (m_selector.isOpen())
+    {
+        return Screen::SELECTOR;
     }
     return Screen::DISCONNECTED;
 }
@@ -348,6 +447,8 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
     key.sessionDurationSec   = m_snapshot.sessionDurationSec;
     key.sessionDistanceCenti = static_cast<int32_t>(m_snapshot.sessionDistanceKm * 100.0f);
     key.sessionSteps         = m_snapshot.sessionSteps;
+    key.selectorOpen   = m_selector.isOpen();
+    key.selectorTenths = static_cast<int32_t>(m_selector.value() * 10.0f);
     return key;
 }
 
@@ -418,6 +519,9 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     case Screen::CONNECTING:
         drawConnecting(gfx);
         break;
+    case Screen::SELECTOR:
+        drawSelector(gfx);
+        break;
     case Screen::DISCONNECTED:
     default:
         drawDisconnected(gfx);
@@ -427,7 +531,11 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     // Speed overlay (I3): drawn on top of whichever screen just painted,
     // for as long as the overlay window from the last nudge is open — not
     // just while Running. See the m_speedOverlayUntilMs comment in DialUi.h.
-    const bool overlayActive = (int32_t)(m_speedOverlayUntilMs - nowMs) > 0;
+    // Never on Selector: it already shows the candidate speed itself, and a
+    // stale overlay window can't be armed there anyway (nudgeSpeed() only
+    // runs while Running), but guard explicitly rather than relying on that.
+    const bool overlayActive =
+        screen != Screen::SELECTOR && (int32_t)(m_speedOverlayUntilMs - nowMs) > 0;
     if (overlayActive)
     {
         drawSpeedOverlay(gfx, paused);
@@ -520,6 +628,36 @@ void DialUi::drawStarting(LovyanGFX& gfx, uint32_t nowMs)
     }
     gfx.setTextColor(kColDim, kColBg);
     gfx.drawString("tap to cancel", kCentreX, kStartHintY, &fonts::Font2);
+}
+
+// Start-speed picker (spec 4.7): opened by a tap on Disconnected. Same ring
+// geometry as the running screen but always amber (the "pending" colour),
+// since nothing has actually started yet.
+void DialUi::drawSelector(LovyanGFX& gfx)
+{
+    gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
+                kRingStartDeg + kRingSweepDeg, kColDim);
+
+    const float value = m_selector.value();
+    const float ringSweep = DialFormat::speedToAngle(value);
+    if (ringSweep > 0.0f)
+    {
+        gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
+                    kRingStartDeg + ringSweep, kColPending);
+    }
+
+    gfx.setTextColor(kColText, kColBg);
+    gfx.drawString("START SPEED", kCentreX, kSelectorTitleY, &fonts::Font2);
+
+    char valueBuf[16];
+    DialFormat::formatSpeedMph(value, valueBuf, sizeof(valueBuf));
+    gfx.setTextColor(kColPending, kColBg);
+    gfx.drawString(valueBuf, kCentreX, kCentreY, &fonts::Font7);
+    gfx.drawString("mph", kCentreX, kSelectorMphY, &fonts::Font2);
+
+    gfx.setTextColor(kColDim, kColBg);
+    gfx.drawString("tap to start", kCentreX, kSelectorHint1Y, &fonts::Font2);
+    gfx.drawString("hold: default", kCentreX, kSelectorHint2Y, &fonts::Font2);
 }
 
 void DialUi::drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs)

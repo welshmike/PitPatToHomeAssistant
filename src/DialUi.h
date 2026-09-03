@@ -8,6 +8,7 @@
 #include "TreadmillController.h"
 #include "NetStatus.h"
 #include "DialInput.h"
+#include "SpeedSelector.h"
 
 // Loop-task ISnapshotObserver that renders treadmill/net state to the Dial's
 // round 240x240 display and drives the controller from the encoder, touch
@@ -50,6 +51,8 @@ private:
     void drawConnecting(LovyanGFX& gfx);
     void drawStarting(LovyanGFX& gfx, uint32_t nowMs);
     void drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs);
+    // Start-speed picker (spec 4.7), opened by a tap on Disconnected.
+    void drawSelector(LovyanGFX& gfx);
     // Centre speed overlay (target speed in Font7 amber + "mph" caption, and
     // the amber target ring) — called from draw() for whichever screen is
     // showing, on top of it, while the overlay window (m_speedOverlayUntilMs)
@@ -59,16 +62,19 @@ private:
     // screen is showing, on top of it, whenever a hold is in progress (I4).
     void drawHoldArc(LovyanGFX& gfx);
 
-    // Which of the four top-level screens is showing right now. Selection
-    // order: (RUNNING or paused) -> Running/Paused; controller.isConnecting()
-    // -> Connecting (checked BEFORE the COUNTDOWN test below — a start()
-    // queued while disconnected makes the controller publish an optimistic
-    // COUNTDOWN even though nothing is actually counting down yet, so
-    // Connecting must win that race or the Starting screen shows with no way
-    // to cancel it); COUNTDOWN -> Starting; else Disconnected. `paused` is
+    // Which of the five top-level screens is showing right now. Selection
+    // order: controller.isConnecting() -> Connecting (checked BEFORE the
+    // COUNTDOWN test below — a start() queued while disconnected makes the
+    // controller publish an optimistic COUNTDOWN even though nothing is
+    // actually counting down yet, so Connecting must win that race or the
+    // Starting screen shows with no way to cancel it); COUNTDOWN -> Starting;
+    // (RUNNING or paused) -> Running/Paused; m_selector.isOpen() -> Selector;
+    // else Disconnected. Connecting/Starting/Running all win over an open
+    // selector — handleInput() closes it as soon as any of those becomes
+    // true, so a stale selector can't resurface once they clear. `paused` is
     // passed in rather than recomputed so callers that already have it (draw(),
     // handleInput()) don't pay for isPausedState() twice in the same tick.
-    enum class Screen : uint8_t { DISCONNECTED, CONNECTING, STARTING, RUNNING };
+    enum class Screen : uint8_t { DISCONNECTED, CONNECTING, STARTING, RUNNING, SELECTOR };
     Screen currentScreen(bool paused) const;
 
     void handleInput(uint32_t nowMs);
@@ -77,6 +83,11 @@ private:
     // (Connecting-screen cancel, hold-to-stop, side button). No-op when
     // DIAL_SOUND is off.
     void playStopBeep(uint32_t nowMs, bool accepted);
+    // Plays the tap-style accepted/refused tone (a single short beep, either
+    // pitch) used for Selector open/confirm/cancel and start/pause toggling —
+    // distinct from playStopBeep()'s two-tone stop/cancel pattern. No-op when
+    // DIAL_SOUND is off.
+    void playAcceptBeep(bool accepted);
 
     // Redraw-skip key for the render() throttle below: every field that can
     // change what drawRunning()/drawIdle() puts on screen, coarsened to the
@@ -103,6 +114,8 @@ private:
         uint32_t sessionDurationSec = 0;
         int32_t  sessionDistanceCenti = 0;
         uint32_t sessionSteps        = 0;
+        bool     selectorOpen   = false;
+        int32_t  selectorTenths = 0;
 
         bool operator==(const FrameKey& o) const
         {
@@ -115,7 +128,8 @@ private:
                    connectAttempts == o.connectAttempts &&
                    sessionDurationSec == o.sessionDurationSec &&
                    sessionDistanceCenti == o.sessionDistanceCenti &&
-                   sessionSteps == o.sessionSteps;
+                   sessionSteps == o.sessionSteps &&
+                   selectorOpen == o.selectorOpen && selectorTenths == o.selectorTenths;
         }
     };
     FrameKey buildFrameKey(uint32_t nowMs) const;
@@ -132,6 +146,7 @@ private:
 
     TreadmillController& m_controller;
     DialInput m_input;
+    SpeedSelector m_selector;
     DialInput::Backlight m_lastBacklight = DialInput::Backlight::FULL;
     float m_holdProgress = 0.0f; // last tick's hold-in-progress fraction [0,1]; drives the long-press ring
 
