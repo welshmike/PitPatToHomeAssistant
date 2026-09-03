@@ -6,6 +6,7 @@
 #include "platform.h"
 #include "TreadmillState.h"
 #include "SessionTracker.h"
+#include "SnapshotStore.h"
 
 class TreadmillHandler : public NimBLEClientCallbacks, public ISessionEvents
 {
@@ -86,7 +87,7 @@ public:
     }
 
     // Dynamic Step Calibration
-    void toggleCalibration() { m_state.toggleCalibration(m_lastData.speedFeedback); }
+    void toggleCalibration() { m_state.toggleCalibration(m_snapshot.read().speedFeedback); }
     uint8_t getCalibrationPointCount() const { return m_state.getCalibrationPointCount(); }
     const CalibrationPoint* getCalibrationPoints() const { return m_state.getCalibrationPoints(); }
     void restoreCalibrationPoints(const CalibrationPoint* pts, uint8_t count) { m_state.restoreCalibrationPoints(pts, count); }
@@ -110,10 +111,12 @@ public:
     //   total_distance_km, total_steps, total_calories, total_duration_sec.
     void restoreTotals(float distKm, uint32_t steps, uint32_t calories, uint32_t durationSec) {
         m_state.restoreTotals(distKm, steps, calories, durationSec);
-        m_lastData.totalDistanceKm  = m_state.getTotalDistanceKm();
-        m_lastData.totalSteps       = m_state.getTotalSteps();
-        m_lastData.totalCalories    = m_state.getTotalCalories();
-        m_lastData.totalDurationSec = m_state.getTotalDurationSec();
+        m_snapshot.modify([&](TreadMillData& d) {
+            d.totalDistanceKm  = m_state.getTotalDistanceKm();
+            d.totalSteps       = m_state.getTotalSteps();
+            d.totalCalories    = m_state.getTotalCalories();
+            d.totalDurationSec = m_state.getTotalDurationSec();
+        });
     }
 
     bool isConnected() const
@@ -127,11 +130,12 @@ public:
         if (isConnected())
         {
             // Safety check — don't disconnect while belt is active
-            if (m_lastData.status == TreadMillData::RUNNING ||
-                m_lastData.status == TreadMillData::PAUSED ||
-                m_lastData.status == TreadMillData::COUNTDOWN)
+            TreadMillData snap = m_snapshot.read();
+            if (snap.status == TreadMillData::RUNNING ||
+                snap.status == TreadMillData::PAUSED ||
+                snap.status == TreadMillData::COUNTDOWN)
             {
-                log_w("Disconnect blocked — belt is active (status=%d)", (int)m_lastData.status);
+                log_w("Disconnect blocked — belt is active (status=%d)", (int)snap.status);
                 return false;
             }
             log_i("Manual disconnect requested from HA");
@@ -156,7 +160,7 @@ public:
 
     TreadMillData getLastData() const
     {
-        return m_lastData;
+        return m_snapshot.read();
     }
 
     void setCallback(std::function<void(const TreadMillData&)> callback)
@@ -196,8 +200,8 @@ private:
 
     unsigned long m_lastConnectAttempt = 0;
 
-    unsigned long m_lastDataTimestamp = 0;
-    TreadMillData m_lastData;
+    unsigned long m_lastPacketMs = 0;
+    SnapshotStore m_snapshot;
 
     // Set true in connectToDevice() so notifyCallback() can dump the raw bytes of
     // the first post-connect packet — helps diagnose the phantom RUNNING state on
@@ -370,7 +374,8 @@ private:
         // Read BEFORE onDisconnected() so the backoff decision below is unaffected
         // by any state the commit clears.
         bool beltWasActive = m_tracker.sessionActive();
-        m_tracker.onDisconnected(m_lastData);
+        TreadMillData last = m_snapshot.read();
+        m_tracker.onDisconnected(last);
 
         // Reason 531 (HCI 0x13: remote user terminated) = treadmill kicked us.
         // When the belt is idle (stopped/disconnected) this is just the treadmill's
@@ -431,7 +436,7 @@ private:
 #endif
 
         // Always publish DISCONNECTED so HA switch reflects the real state.
-        m_lastData.status = TreadMillData::DISCONNECTED;
+        m_snapshot.modify([&](TreadMillData& d) { d.status = TreadMillData::DISCONNECTED; });
         m_newDataAvailable = true;
 
         // Do NOT deleteClient here — calling NimBLEDevice::deleteClient() from within

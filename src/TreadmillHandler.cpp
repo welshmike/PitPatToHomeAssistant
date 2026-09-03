@@ -143,15 +143,17 @@ void TreadmillHandler::begin(NimBLEAddress address)
               m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins);
     }
 
-    // Pre-populate m_lastData totals from NVS so that the first publishState()
+    // Pre-populate m_snapshot totals from NVS so that the first publishState()
     // call (before any BLE connection) sends the correct cumulative values.
-    // Without this, m_lastData.total* = 0, the retained MQTT topic gets overwritten
+    // Without this, totals start at 0, the retained MQTT topic gets overwritten
     // with "0", and the HA utility_meter counts the full NVS total as a fresh
     // daily increase on every reboot — causing a spike equal to the entire NVS total.
-    m_lastData.totalDistanceKm  = m_state.getTotalDistanceKm();
-    m_lastData.totalSteps       = m_state.getTotalSteps();
-    m_lastData.totalCalories    = m_state.getTotalCalories();
-    m_lastData.totalDurationSec = m_state.getTotalDurationSec();
+    m_snapshot.modify([&](TreadMillData& d) {
+        d.totalDistanceKm  = m_state.getTotalDistanceKm();
+        d.totalSteps       = m_state.getTotalSteps();
+        d.totalCalories    = m_state.getTotalCalories();
+        d.totalDurationSec = m_state.getTotalDurationSec();
+    });
 
     m_targetAddress = address;
     m_doConnect = true;
@@ -208,7 +210,7 @@ bool TreadmillHandler::sendCommand(const uint8_t *data, size_t length)
             // Link layer also gone — onDisconnect() will fire, but set state now so
             // HA gets a DISCONNECTED update immediately rather than waiting for the callback.
             log_e("Write failed: link layer gone — triggering immediate reconnect");
-            m_lastData.status = TreadMillData::DISCONNECTED;
+            m_snapshot.modify([&](TreadMillData& d) { d.status = TreadMillData::DISCONNECTED; });
             m_newDataAvailable = true;
             if (isUserCommand)
             {
@@ -233,7 +235,7 @@ bool TreadmillHandler::sendCommand(const uint8_t *data, size_t length)
             // local host terminated) within milliseconds, and unblocks the reconnect
             // loop — no waiting for supervision timeout.
             log_e("Write failed: GATT layer broken despite isConnected()=true (zombie) — forcing disconnect");
-            m_lastData.status = TreadMillData::DISCONNECTED;
+            m_snapshot.modify([&](TreadMillData& d) { d.status = TreadMillData::DISCONNECTED; });
             m_newDataAvailable = true;
             if (isUserCommand)
             {
@@ -305,8 +307,9 @@ void TreadmillHandler::handle()
 
         // Commits the paused snapshot, clears the tracker's session flags (so the
         // stop() below can't double-commit) and returns the summary to publish.
-        m_lastData = m_tracker.onPauseTimeout(m_lastData);
-        if (m_onDataUpdate) m_onDataUpdate(m_lastData);
+        TreadMillData committed = m_tracker.onPauseTimeout(m_snapshot.read());
+        m_snapshot.write(committed);
+        if (m_onDataUpdate) m_onDataUpdate(committed);
 
         m_autoReconnect        = false;
         m_userRequestedConnect = false;
@@ -353,29 +356,31 @@ void TreadmillHandler::handle()
     }
 
     // Publish new BLE packet data from Core 1 (main loop).
-    // notifyCallback() (Core 0) sets this flag when it has written fresh data to m_lastData.
+    // notifyCallback() (Core 0) sets this flag when it has written fresh data to m_snapshot.
     // We clear it before calling m_onDataUpdate so that another notifyCallback packet
     // arriving during the publish will re-set the flag and get published next cycle.
     if (m_newDataAvailable && m_onDataUpdate)
     {
         m_newDataAvailable = false;
-        m_onDataUpdate(m_lastData);
+        m_onDataUpdate(m_snapshot.read());
     }
 
     // Check for connection timeout — catches radio loss / silent disconnects where
     // onDisconnect() never fired. Skip if already DISCONNECTED to avoid repeated
     // MQTT publishes every 30s when the idle kick has cleanly stopped auto-reconnect.
-    if (m_lastData.status != TreadMillData::DISCONNECTED &&
-        millis() - m_lastDataTimestamp > CONNECTION_TIMEOUT * 1000)
+    TreadMillData connCheck = m_snapshot.read();
+    if (connCheck.status != TreadMillData::DISCONNECTED &&
+        millis() - m_lastPacketMs > CONNECTION_TIMEOUT * 1000)
     {
-        unsigned long elapsedSec = (millis() - m_lastDataTimestamp) / 1000;
+        unsigned long elapsedSec = (millis() - m_lastPacketMs) / 1000;
         log_w("No data received for %lus (threshold %ds) - marking disconnected.",
               elapsedSec, CONNECTION_TIMEOUT);
-        m_lastData.status = TreadMillData::DISCONNECTED;
-        m_lastDataTimestamp = millis(); // reset so the check doesn't re-fire immediately
+        m_snapshot.modify([&](TreadMillData& d) { d.status = TreadMillData::DISCONNECTED; });
+        m_lastPacketMs = millis(); // reset so the check doesn't re-fire immediately
         if (m_onDataUpdate)
         {
-            m_onDataUpdate(m_lastData);
+            connCheck.status = TreadMillData::DISCONNECTED;
+            m_onDataUpdate(connCheck);
         }
     }
 
@@ -537,7 +542,8 @@ void TreadmillHandler::notifyCallback(
     }
 
     // All session accounting happens in SessionTracker (pure, host-tested).
-    TreadMillData data = m_tracker.onPacket(parsed, m_lastData, millis());
+    TreadMillData prev = m_snapshot.read();
+    TreadMillData data = m_tracker.onPacket(parsed, prev, millis());
 
     // Raw hex dump of the first full packet after connect. The tracker logs the
     // decoded form; only the handler still has the bytes to dump.
@@ -551,8 +557,8 @@ void TreadmillHandler::notifyCallback(
         log_w("FIRST POST-CONNECT RAW: %s", hex);
     }
 
-    m_lastData = data;
-    m_lastDataTimestamp = millis();
+    m_snapshot.write(data);
+    m_lastPacketMs = millis();
     // Signal handle() (Core 1) that new data is ready to publish.
     // Do NOT call m_onDataUpdate() here — notifyCallback runs on Core 0 (NimBLE task)
     // and PubSubClient::publish() is not thread-safe. Calling it concurrently from
