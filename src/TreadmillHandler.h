@@ -22,6 +22,7 @@ public:
     void setAutoReconnect(const bool enable)
     {
         m_autoReconnect = enable;
+        saveSettings();
     }
 
     bool getAutoReconnect() const
@@ -29,13 +30,65 @@ public:
         return m_autoReconnect;
     }
 
+    void setIdleDisconnectMins(uint16_t mins)
+    {
+        m_idleDisconnectMins = mins;
+        saveSettings();
+        // If the timer is currently armed, rearm it with the new duration.
+        if (m_idleDisconnectDeadline != 0)
+        {
+            if (mins == 0)
+            {
+                m_idleDisconnectDeadline = 0;
+                log_i("Idle disconnect timer disarmed (mins=0)");
+            }
+            else
+            {
+                m_idleDisconnectDeadline = m_idleDisconnectArmedAt + (uint32_t)mins * 60000UL;
+                unsigned long elapsed = millis() - m_idleDisconnectArmedAt;
+                log_i("Idle disconnect timer rearmed: %u min (%lu s elapsed)",
+                      mins, elapsed / 1000);
+            }
+        }
+    }
+
+    uint16_t getIdleDisconnectMins() const
+    {
+        return m_idleDisconnectMins;
+    }
+
+    void setPauseTimeoutMins(uint16_t mins)
+    {
+        m_pauseTimeoutMins = mins;
+        saveSettings();
+        // If the timer is currently armed, rearm it with the new duration.
+        if (m_pauseTimeoutDeadline != 0)
+        {
+            if (mins == 0)
+            {
+                m_pauseTimeoutDeadline = 0;
+                log_i("Pause timeout timer disarmed (mins=0)");
+            }
+            else
+            {
+                m_pauseTimeoutDeadline = m_pauseTimeoutArmedAt + (uint32_t)mins * 60000UL;
+                unsigned long elapsed = millis() - m_pauseTimeoutArmedAt;
+                log_i("Pause timeout timer rearmed: %u min (%lu s elapsed)",
+                      mins, elapsed / 1000);
+            }
+        }
+    }
+
+    uint16_t getPauseTimeoutMins() const
+    {
+        return m_pauseTimeoutMins;
+    }
+
     // Dynamic Step Calibration
     void toggleCalibration() { m_state.toggleCalibration(m_lastData.speedFeedback); }
     uint8_t getCalibrationPointCount() const { return m_state.getCalibrationPointCount(); }
     const CalibrationPoint* getCalibrationPoints() const { return m_state.getCalibrationPoints(); }
     void restoreCalibrationPoints(const CalibrationPoint* pts, uint8_t count) { m_state.restoreCalibrationPoints(pts, count); }
-
-    void setStepLength(float stepM) { m_state.setStepLength(stepM); }
 
     // Getters for current NVS totals — used by the MQTT restore handler to supply
     // default values for any JSON fields that are absent from the restore payload.
@@ -50,11 +103,10 @@ public:
     //   total_distance_km, total_steps, total_calories, total_duration_sec.
     void restoreTotals(float distKm, uint32_t steps, uint32_t calories, uint32_t durationSec) {
         m_state.restoreTotals(distKm, steps, calories, durationSec);
-    }
-
-    float getStepLength() const
-    {
-        return m_state.getStepLength();
+        m_lastData.totalDistanceKm  = m_state.getTotalDistanceKm();
+        m_lastData.totalSteps       = m_state.getTotalSteps();
+        m_lastData.totalCalories    = m_state.getTotalCalories();
+        m_lastData.totalDurationSec = m_state.getTotalDurationSec();
     }
 
     bool isConnected() const
@@ -134,7 +186,6 @@ private:
     NimBLEClient *m_pClient = nullptr;
     NimBLERemoteCharacteristic *m_pNotifyCharacteristic = nullptr;
     NimBLERemoteCharacteristic *m_pWriteCharacteristic = nullptr;
-    NimBLERemoteCharacteristic *m_pUnlockCharacteristic = nullptr;  // secondary handshake char
     NimBLEAddress m_targetAddress;
     bool m_doConnect = false;
     bool m_autoReconnect = true;
@@ -148,22 +199,18 @@ private:
     // packet in full — helps diagnose the phantom RUNNING state on connect.
     volatile bool m_firstPacketAfterConnect = false;
 
-    // Set true by notifyCallback() (Core 0) when a 0x34 packet is received, to request
-    // an immediate keepalive response. NEVER call sendKeepalive()/writeValue() directly
-    // from notifyCallback() — writeValue(true) blocks waiting for an ATT acknowledgement
-    // that is processed by the same NimBLE task, causing a self-deadlock and watchdog reset.
-    // handle() (Core 1) reads this flag, clears it, and sends the keepalive safely.
-    volatile bool m_sendKeepaliveNow = false;
+    // Set by onConnect() (Core 0) when GATT is ready. handle() (Core 1) sends the
+    // initial keepalive — writeValue(true) cannot be called from a NimBLE callback
+    // because it blocks waiting for an ATT response processed by the same task.
+    volatile bool m_sendInitNow = false;
 
-    // Set true by notifyCallback() (Core 0) when the packet type FIRST changes TO 0x34
-    // (i.e. once per connection, on 0x34 onset). handle() (Core 1) re-sends the PitPat
-    // unlock bytes to 0x2b11 as an explicit challenge response.
-    //
-    // During active-walk reconnects the pad sends 0x34 before accepting a stable 0x2F
-    // session. Our init sequence sends unlock BEFORE the first notification arrives, but
-    // the pad may only honour the unlock if it is sent AFTER the 0x34 challenge is issued.
-    // Re-sending unlock in response to 0x34 onset tests this hypothesis.
-    volatile bool m_sendUnlockNow = false;
+    // Belt odometer values recorded at the START of the current BLE connection.
+    // Used to compute per-connection deltas so that reconnects mid-session don't
+    // cause the same distance/calories/duration to be committed multiple times.
+    // Set on the first full packet after connect (notifyCallback); reset per-connection.
+    float    m_connectionBaseDistKm  = 0.0f;
+    uint16_t m_connectionBaseCal     = 0;
+    uint32_t m_connectionBaseDurSec  = 0;
 
     // Tracks the packet type byte (0x2F or 0x34) seen most recently.
     // Reset to 0 on each new connection. Used to log the moment the device
@@ -198,9 +245,42 @@ private:
     bool m_userRequestedConnect = false;
 
     // millis() timestamp — don't attempt reconnect before this time.
-    // Set after an idle kick when m_userRequestedConnect is true to back off 80s,
-    // giving a ~90s cycle (80s wait + ~10s idle before next kick) = ~2 beeps/90s.
+    // Set in onDisconnect() after an idle kick: 5s for user-requested connect,
+    // 20s for background auto-reconnect. Controls beep rate during kick phase.
     unsigned long m_reconnectNotBefore = 0;
+
+    // Configurable timers — persisted to NVS so settings survive reboots.
+    // NVS namespace "pk_cfg"; keys "ar", "idle", "pause".
+    // Only saved by the public setters (setAutoReconnect / setIdleDisconnectMins /
+    // setPauseTimeoutMins). Internal runtime changes to m_autoReconnect (session end,
+    // kicks, etc.) bypass the setter so they do NOT overwrite the user's preference.
+    void saveSettings();
+
+    // Idle-disconnect timer: fires after m_idleDisconnectMins of idle (post-session STOPPED).
+    // 0 = disabled.
+    uint16_t      m_idleDisconnectMins     = 30;
+    unsigned long m_idleDisconnectDeadline = 0;
+    unsigned long m_idleDisconnectArmedAt  = 0;
+
+    // Pause timeout: fires if the belt is paused for longer than m_pauseTimeoutMins.
+    // Commits the paused session and disconnects immediately.
+    // 0 = disabled.
+    uint16_t      m_pauseTimeoutMins     = 10;
+    unsigned long m_pauseTimeoutDeadline = 0;
+    unsigned long m_pauseTimeoutArmedAt  = 0;
+
+    // Pending command — queued when start()/setSpeed() is called while disconnected.
+    // Executed in handle() once reconnected and POST_CONNECT_COOLDOWN has elapsed.
+    enum class PendingCmd : uint8_t { NONE, START, SET_SPEED };
+    PendingCmd m_pendingCmd   = PendingCmd::NONE;
+    uint16_t   m_pendingSpeed = 0;
+
+    // Intentional drop via supervision timeout — set before we stop keepalives so
+    // that onDisconnect() knows the disconnect was deliberate, not radio loss.
+    // In practice Q1 beats the 6s supervision timer with its own HCI 0x13 kick,
+    // so onDisconnect() uses the m_intentionalDrop flag regardless of reason code.
+    bool m_intentionalDrop = false;
+    bool m_stopKeepalives  = false;
 
     // Set by notifyCallback() (Core 0) when a fresh BLE packet is ready.
     // Cleared by handle() (Core 1) after publishing. This keeps ALL m_onDataUpdate
@@ -214,6 +294,8 @@ private:
     void onConnect(BLEClient *pClient) override
     {
         log_i("Connected to device!");
+        m_sendInitNow = true;
+        digitalWrite(LED_BLE_PIN, HIGH); // active-high: on
     }
 
     void onDisconnect(BLEClient *pClient, int reason) override
@@ -230,8 +312,22 @@ private:
             case 0x16: desc = "local host terminated";          break;
             case 0x3E: desc = "failed to establish connection"; break;
         }
-        log_w("Disconnected reason=%d (HCI 0x%02X: %s) – will reconnect...",
+        log_w("Disconnected reason=%d (HCI 0x%02X: %s)",
               reason, reason - 512, desc);
+
+        // Intentional drop via supervision timeout — we stopped keepalives deliberately
+        // so Q1 sees a supervision timeout (0x08) rather than HCI 0x16 (local host terminated).
+        // Clear both flags regardless of the actual reason code; if something else fired
+        // first (e.g., Q1 kicked us), we still want to clean up.
+        if (m_intentionalDrop)
+        {
+            if ((reason - 512) == 0x08)
+                log_i("Intentional drop: supervision timeout fired as expected — Q1 should see lighter kick phase");
+            else
+                log_w("Intentional drop: expected 0x08 but got HCI 0x%02X — cleaning up anyway", reason - 512);
+            m_intentionalDrop = false;
+            m_stopKeepalives  = false;
+        }
 
         if (m_sessionActive)
         {
@@ -244,11 +340,16 @@ private:
             }
             else if (m_lastData.distanceKm > 0.0f)
             {
-                log_w("Disconnect mid-session — committing live session: dist=%.3f km steps=%u cal=%u dur=%u s",
-                      m_lastData.distanceKm, m_lastData.steps,
-                      (uint32_t)m_lastData.calories, m_lastData.durationSec);
-                m_state.addSession(m_lastData.distanceKm, m_lastData.steps,
-                                   (uint32_t)m_lastData.calories, m_lastData.durationSec);
+                float dDist = m_lastData.distanceKm - m_connectionBaseDistKm;
+                if (dDist < 0.0f) dDist = m_lastData.distanceKm;
+                uint32_t dSteps = (uint32_t)(dDist * 1000.0f / m_state.getDynamicStepLength(m_lastData.speedFeedback));
+                uint32_t dCal = (m_lastData.calories >= m_connectionBaseCal)
+                                ? m_lastData.calories - m_connectionBaseCal : m_lastData.calories;
+                uint32_t dDur = (m_lastData.durationSec >= m_connectionBaseDurSec)
+                                ? m_lastData.durationSec - m_connectionBaseDurSec : m_lastData.durationSec;
+                log_w("Disconnect mid-session — committing delta: dist=%.3f km steps=%u cal=%u dur=%u s",
+                      dDist, dSteps, dCal, dDur);
+                m_state.addSession(dDist, dSteps, dCal, dDur);
             }
         }
 
@@ -271,23 +372,48 @@ private:
         {
             if (m_userRequestedConnect)
             {
-                // User explicitly asked to connect from HA — back off 80s between
-                // reconnects (~90s cycle including the ~10s idle window before the kick).
-                m_reconnectNotBefore = millis() + 80000UL;
-                log_w("Idle kick — user-requested connect, backing off 80s before reconnect");
+                // User explicitly pressed Connect — use a short 5s backoff so the Q1's
+                // kick phase (~5-8 cycles) settles in ~2 min. The longer 20s backoff
+                // made the kick phase take 4+ min (30s/cycle × 8 kicks), which felt
+                // like the device was broken.
+                m_reconnectNotBefore = millis() + 5000UL;
+                log_w("Idle kick (user-requested) — backing off 5s before reconnect");
             }
             else if (m_autoReconnect)
             {
-                // Auto-connect (boot or nightly reconnect). The Q1 goes through a
-                // ~1-2 minute "kicking phase" after certain state changes where it
-                // terminates every connection after ~10s, then accepts a stable one.
-                // Keep reconnecting to work through this phase, but back off 30s to
-                // reduce beeping (was every 10s, now every ~40s = ~3 beeps/min → stable).
-                m_reconnectNotBefore = millis() + 30000UL;
-                log_w("Idle kick (auto-connect) — backing off 30s before reconnect to work through kicking phase");
+                // Auto-reconnect (background, no user session): back off 20s to keep
+                // beeping infrequent while working through the kick phase.
+                m_reconnectNotBefore = millis() + 20000UL;
+                log_w("Idle kick (auto-reconnect) — backing off 20s before reconnect");
             }
             // else: m_autoReconnect is already false (session ended) — don't reconnect.
         }
+        else if (isIdleKick && beltWasActive)
+        {
+            // Mid-session kick: Q1 kicked us (reason=531) while the belt was active.
+            // Without backoff we reconnect immediately, Q1 kicks again, and this loops
+            // for minutes. Add a 10s pause to let Q1 cycle out of its kicking phase
+            // before the next connect attempt (~10s connect + 10s wait = ~20s/cycle).
+            m_reconnectNotBefore = millis() + 10000UL;
+            log_w("Mid-session kick — backing off 10s before reconnect to work through kicking phase");
+        }
+
+        // Disarm both timers — either they fired and triggered this disconnect, or we
+        // were kicked/timed-out externally. Either way, nothing left to fire.
+        m_idleDisconnectDeadline = 0;
+        m_pauseTimeoutDeadline   = 0;
+
+        // Clear pending command only when we're not going to reconnect.
+        // If m_autoReconnect is still true (kicked while connecting to execute a
+        // command), preserve the command so it fires once the belt settles.
+        // If we're disconnecting cleanly (pause timeout, user disconnect), the
+        // command is stale and should be dropped.
+        if (!m_autoReconnect)
+        {
+            m_pendingCmd = PendingCmd::NONE;
+        }
+
+        digitalWrite(LED_BLE_PIN, LOW); // active-high: off
 
         // Always publish DISCONNECTED so HA switch reflects the real state.
         m_lastData.status = TreadMillData::DISCONNECTED;
@@ -302,7 +428,6 @@ private:
         // connectToDevice() re-fetches them on the next successful connection.
         m_pWriteCharacteristic  = nullptr;
         m_pNotifyCharacteristic = nullptr;
-        m_pUnlockCharacteristic = nullptr;
 
         if (m_autoReconnect)
         {

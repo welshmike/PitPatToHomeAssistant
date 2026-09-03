@@ -1,6 +1,9 @@
 #pragma once
 #include <Arduino.h>
 
+// Built-in blue LED on ESP32 DevKit v1 — active-high (HIGH = on, LOW = off).
+#define LED_BLE_PIN 2
+
 #define SYSTEM_NAME "PaceKeeper"
 #define VERSION "2026.1.1"
 
@@ -26,12 +29,6 @@
 #ifndef STEP_LENGTH_M
 #define STEP_LENGTH_M 0.30f   // ~12 inches — calibrated for slow walking pad speeds (1–4 mph)
 #endif
-
-// Secondary service used for unlock handshake (best-effort, optional)
-// The Q1 Classic Pro exposes this service; QZ writes the PitPat unlock bytes here
-// to complete the connection handshake before data flows reliably.
-#define SERVICE_UNLOCK_UUID "00001910-0000-1000-8000-00805f9b34fb"
-#define CHARACTERISTIC_UNLOCK_UUID "00002b11-0000-1000-8000-00805f9b34fb"
 
 // Declare strings as extern to avoid multiple-definition linker errors
 extern const char* HOMEASSISTANT_STATUS_TOPIC;

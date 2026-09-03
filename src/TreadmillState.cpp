@@ -4,7 +4,6 @@
 void TreadmillState::loadFromNVS() {
   Preferences prefs;
   prefs.begin("pacekeeper", true); // true = read-only
-  m_stepLength = prefs.getFloat("step", STEP_LENGTH_M);
   m_totalDistanceKm = prefs.getFloat("tot_dist", 0.0f);
   m_totalSteps = prefs.getUInt("tot_steps", 0);
   m_totalCalories = prefs.getUInt("tot_cals", 0);
@@ -13,7 +12,6 @@ void TreadmillState::loadFromNVS() {
   
   loadCalibrationFromNVS();
 
-  log_i("Step length loaded from NVS: %.2f m", m_stepLength);
   log_i("Totals loaded from NVS: dist=%.2f km  steps=%u  cal=%u  dur=%u s",
         m_totalDistanceKm, m_totalSteps, m_totalCalories, m_totalDurationSec);
 }
@@ -56,63 +54,10 @@ void TreadmillState::addSession(float distKm, uint32_t steps, uint32_t calories,
   saveTotalsToNVS();
 }
 
-void TreadmillState::setStepLength(float stepM) {
-  m_stepLength = stepM;
-  Preferences prefs;
-  prefs.begin("pacekeeper", false); // false = read-write
-  prefs.putFloat("step", stepM);
-  prefs.end();
-  log_i("Step length saved to NVS: %.2f m", stepM);
-}
-
-void TreadmillState::updateSession(float parsedDistanceM, float speedMph, uint32_t durationSec, uint16_t calories, TreadMillData& data)
-{
-    float distDelta = parsedDistanceM - m_lastDistanceM;
-    if (distDelta < 0) {
-        // Treadmill distance wrapped or reset
-        distDelta = parsedDistanceM;
-    }
-    m_lastDistanceM = parsedDistanceM;
-
-    if (distDelta > 0.0f) {
-        float stepLen = getDynamicStepLength(speedMph);
-        m_sessionAccumulatedSteps += (distDelta / stepLen);
-    }
-
-    data.steps = (uint32_t)m_sessionAccumulatedSteps;
-    data.distanceKm = parsedDistanceM / 1000.0f;
-    data.calories = calories;
-    data.durationSec = durationSec;
-}
-
-void TreadmillState::endSession(TreadMillData& data)
-{
-    data.sessionDistanceKm  = data.distanceKm;
-    data.sessionSteps       = data.steps;
-    data.sessionCalories    = (uint32_t)data.calories;
-    data.sessionDurationSec = data.durationSec;
-    data.sessionComplete    = true;
-
-    addSession(data.distanceKm, data.steps, (uint32_t)data.calories, data.durationSec);
-    
-    log_i("Session ended — totals: dist=%.2f km  steps=%u  cal=%u  dur=%u s",
-          m_totalDistanceKm, m_totalSteps, m_totalCalories, m_totalDurationSec);
-    log_i("Session summary: dist=%.3f km  steps=%u  cal=%u  dur=%u s",
-          data.sessionDistanceKm, data.sessionSteps,
-          data.sessionCalories, data.sessionDurationSec);
-}
-
-void TreadmillState::resetSession()
-{
-    m_lastDistanceM = 0.0f;
-    m_sessionAccumulatedSteps = 0.0f;
-    m_isCalibrating = false;
-}
-
 float TreadmillState::getDynamicStepLength(float speedMph) const
 {
     if (m_numCalibrationPoints == 0) {
-        return m_stepLength; // fallback to static
+        return STEP_LENGTH_M; // no calibration yet — use compile-time default
     }
     
     // If only 1 point, use it as a flat baseline
@@ -122,19 +67,23 @@ float TreadmillState::getDynamicStepLength(float speedMph) const
         return speedMperMin / spm;
     }
 
-    // Find the two points bounding the current speed
+    // Find the two calibration points bounding the current speed.
+    // Default to first pair (below-range extrapolation).
+    // For in-range: break at the matching pair.
+    // For above-range: advance to the last pair via the second condition.
     int idxA = 0;
     int idxB = 1;
     for (int i = 0; i < m_numCalibrationPoints - 1; i++) {
-        if (speedMph >= m_calibrationPoints[i].speedMph && 
+        if (speedMph >= m_calibrationPoints[i].speedMph &&
             speedMph <= m_calibrationPoints[i+1].speedMph) {
             idxA = i;
             idxB = i + 1;
             break;
         }
-        // If speed is higher than all points, we'll end up extrapolating from the last two
-        idxA = i;
-        idxB = i + 1;
+        if (speedMph > m_calibrationPoints[i+1].speedMph) {
+            idxA = i;
+            idxB = i + 1;
+        }
     }
 
     float pA_speed = m_calibrationPoints[idxA].speedMph;

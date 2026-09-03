@@ -49,9 +49,14 @@ public:
         return m_autoreconnectSwitch;
     }
 
-    const MqttNumber &getStepLengthNumber() const
+    const MqttNumber &getIdleDisconnectNumber() const
     {
-        return m_stepLengthNum;
+        return m_idleDisconnectMins;
+    }
+
+    const MqttNumber &getPauseTimeoutNumber() const
+    {
+        return m_pauseTimeoutMins;
     }
 
     const MqttButton &getCalibrate20StepsButton() const
@@ -59,10 +64,11 @@ public:
         return m_calibrate20StepsBtn;
     }
 
-    void publishStepLengthSetting(float stepM);
     void publishCalibrationPoints(const CalibrationPoint* points, uint8_t count);
     void publishAllConfigs();
     void publishAutoReconnectSetting(bool enabled);
+    void publishIdleDisconnectSetting(uint16_t mins);
+    void publishPauseTimeoutSetting(uint16_t mins);
     void publishState(TreadMillData data);
 
 private:
@@ -102,7 +108,8 @@ private:
 
     // Configuration
     MqttSwitch m_autoreconnectSwitch;
-    MqttNumber m_stepLengthNum;
+    MqttNumber m_idleDisconnectMins;
+    MqttNumber m_pauseTimeoutMins;
 
     // Diagnostics
     MqttSensor m_maxSpeed;

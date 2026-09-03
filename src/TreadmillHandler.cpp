@@ -6,7 +6,6 @@ TreadmillHandler::TreadmillHandler()
     m_pClient = nullptr;
     m_pNotifyCharacteristic = nullptr;
     m_pWriteCharacteristic = nullptr;
-    m_pUnlockCharacteristic = nullptr;
     m_doConnect = false;
 }
 
@@ -32,8 +31,19 @@ void printCommandPacket(const char* cmdName, const uint8_t* packet, size_t lengt
 // BA05 Protocol: Set speed (speed in mph * 1000, e.g., 2500 = 2.5 mph)
 void TreadmillHandler::setSpeed(uint16_t speed)
 {
-    uint8_t packet[27];
     m_lastSpeed = speed;
+    if (!isConnected())
+    {
+        log_i("setSpeed() while disconnected — queuing command and auto-connecting");
+        m_pendingCmd   = PendingCmd::SET_SPEED;
+        m_pendingSpeed = speed;
+        m_autoReconnect        = true;
+        m_userRequestedConnect = false;
+        m_reconnectNotBefore   = 0;
+        m_doConnect            = true;
+        return;
+    }
+    uint8_t packet[27];
     // CMD1=0x01 for running, MODE=0x0C for running
     BA05Protocol::makePacket(speed, 0x01, 0x0C, m_seqCounter++, packet);
     printCommandPacket("setSpeed", packet, sizeof(packet));
@@ -43,6 +53,17 @@ void TreadmillHandler::setSpeed(uint16_t speed)
 // BA05 Protocol: Start at 1.0 km/h
 void TreadmillHandler::start()
 {
+    if (!isConnected())
+    {
+        log_i("start() while disconnected — queuing command and auto-connecting");
+        m_pendingCmd   = PendingCmd::START;
+        m_pendingSpeed = START_SPEED;
+        m_autoReconnect        = true;
+        m_userRequestedConnect = false;
+        m_reconnectNotBefore   = 0;
+        m_doConnect            = true;
+        return;
+    }
     uint8_t packet[27];
     m_lastSpeed = START_SPEED;
     // CMD1=0x01 for running, MODE=0x0C for running
@@ -54,6 +75,10 @@ void TreadmillHandler::start()
 // BA05 Protocol: Stop
 void TreadmillHandler::stop()
 {
+    // Always disarm the pause timeout — either we're explicitly stopping, or the
+    // pause timeout handler cleared the session flags and is about to disconnect.
+    m_pauseTimeoutDeadline = 0;
+
     if (m_isPaused && m_sessionActive)
     {
         // Belt is paused (stuck in STOPPED) — commit the stored paused session now,
@@ -90,6 +115,7 @@ void TreadmillHandler::pause()
 void TreadmillHandler::sendKeepalive()
 {
     if (!isConnected()) return;
+    if (m_stopKeepalives) return; // intentional drop in progress — let supervision timeout fire
 
     uint8_t packet[9];
     BA05Protocol::makeKeepalive(m_seqCounter++, packet);
@@ -98,29 +124,10 @@ void TreadmillHandler::sendKeepalive()
 
 // Sent immediately after subscribing to notifications.
 // The Q1 Classic Pro silently disconnects (BLE reason=531, remote user terminated)
-// if nothing is written to it within ~300ms of connection. Two-step approach:
-//   1. If the secondary unlock characteristic (0x2b11) is present, write the
-//      PitPat unlock bytes to it (raw, no BA05 envelope) - same as QZ does.
-//   2. Send an immediate keepalive on the primary write characteristic so the
-//      device knows we're a valid client.
+// if nothing is written to it within ~300ms of connection.
 void TreadmillHandler::sendInitSequence()
 {
-    if (!isConnected()) return;
-
-    // Step 1: write unlock bytes to secondary characteristic (best-effort)
-    if (m_pUnlockCharacteristic)
-    {
-        // Raw PitPat unlock command - no BA05 envelope needed for this characteristic
-        uint8_t unlockData[] = {0x6B, 0x05, 0x9D, 0x98, 0x43};
-        bool ok = m_pUnlockCharacteristic->writeValue(unlockData, sizeof(unlockData), false);
-        log_i("Unlock write %s", ok ? "succeeded" : "failed (non-fatal)");
-    }
-    else
-    {
-        log_w("No unlock characteristic - skipping unlock step");
-    }
-
-    // Step 2: immediate keepalive on the main write characteristic
+    if (!isConnected() || !m_pWriteCharacteristic) return;
     sendKeepalive();
     log_i("Init sequence complete - keepalive sent");
 }
@@ -129,8 +136,42 @@ void TreadmillHandler::begin(NimBLEAddress address)
 {
     m_state.loadFromNVS();
 
+    // Load user-configurable settings from NVS. Defaults apply on first boot.
+    {
+        Preferences prefs;
+        prefs.begin("pk_cfg", true); // read-only
+        m_autoReconnect      = prefs.getBool("ar",    true);
+        m_idleDisconnectMins = prefs.getUShort("idle", 30);
+        m_pauseTimeoutMins   = prefs.getUShort("pause", 10);
+        prefs.end();
+        log_i("Settings loaded: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min",
+              m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins);
+    }
+
+    // Pre-populate m_lastData totals from NVS so that the first publishState()
+    // call (before any BLE connection) sends the correct cumulative values.
+    // Without this, m_lastData.total* = 0, the retained MQTT topic gets overwritten
+    // with "0", and the HA utility_meter counts the full NVS total as a fresh
+    // daily increase on every reboot — causing a spike equal to the entire NVS total.
+    m_lastData.totalDistanceKm  = m_state.getTotalDistanceKm();
+    m_lastData.totalSteps       = m_state.getTotalSteps();
+    m_lastData.totalCalories    = m_state.getTotalCalories();
+    m_lastData.totalDurationSec = m_state.getTotalDurationSec();
+
     m_targetAddress = address;
     m_doConnect = true;
+}
+
+void TreadmillHandler::saveSettings()
+{
+    Preferences prefs;
+    prefs.begin("pk_cfg", false); // read-write
+    prefs.putBool("ar",     m_autoReconnect);
+    prefs.putUShort("idle",  m_idleDisconnectMins);
+    prefs.putUShort("pause", m_pauseTimeoutMins);
+    prefs.end();
+    log_i("Settings saved: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min",
+          m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins);
 }
 
 
@@ -241,36 +282,14 @@ void TreadmillHandler::handle()
         }
     }
 
-    // Re-send PitPat unlock bytes to 0x2b11 in response to first 0x34 packet this
-    // connection. The Q1 pad may require the unlock handshake to be sent AFTER it
-    // issues the 0x34 challenge (especially during active-walk reconnects) rather than
-    // accepting the upfront unlock sent in sendInitSequence() before any notification.
-    // This fires once per connection (m_sendUnlockNow set on type change TO 0x34).
-    if (m_sendUnlockNow && isConnected())
+    // Send the initial keepalive once GATT is ready (onConnect set this flag).
+    // Cannot write from onConnect() directly — writeValue(true) blocks for an ATT
+    // response that would be processed by the same NimBLE task, causing deadlock.
+    if (m_sendInitNow && isConnected())
     {
-        m_sendUnlockNow = false;
-        if (m_pUnlockCharacteristic)
-        {
-            uint8_t unlockData[] = {0x6B, 0x05, 0x9D, 0x98, 0x43};
-            bool ok = m_pUnlockCharacteristic->writeValue(unlockData, sizeof(unlockData), false);
-            log_i("0x34 challenge → unlock re-sent to 0x2b11: %s", ok ? "OK" : "FAILED");
-        }
-        else
-        {
-            log_w("0x34 challenge → unlock re-send skipped (0x2b11 not available this connection)");
-        }
-    }
-
-    // Immediate keepalive requested by notifyCallback() (Core 0) in response to a 0x34
-    // packet. Sent here on Core 1 to avoid calling writeValue() inside a NimBLE callback,
-    // which deadlocks (writeValue blocks waiting for an ATT response processed by the same
-    // NimBLE task that's currently blocked in the callback).
-    if (m_sendKeepaliveNow && isConnected())
-    {
-        m_sendKeepaliveNow = false;
-        sendKeepalive();
-        m_lastKeepalive = millis(); // reset timer so we don't double-send immediately after
-        log_i("Immediate keepalive sent (0x34 response, Core 1)");
+        m_sendInitNow = false;
+        sendInitSequence();
+        m_lastKeepalive = millis();
     }
 
     // Send keepalive every KEEPALIVE_INTERVAL ms (200ms) to maintain connection
@@ -278,6 +297,85 @@ void TreadmillHandler::handle()
     {
         sendKeepalive();
         m_lastKeepalive = millis();
+    }
+
+    // Pause timeout: commit session and disconnect if belt has been paused too long.
+    // Prevents data loss if the user walks away and never resumes or stops.
+    if (m_pauseTimeoutDeadline != 0 && millis() >= m_pauseTimeoutDeadline &&
+        m_isPaused && isConnected())
+    {
+        log_w("Pause timeout (%u min) — committing paused session and disconnecting",
+              m_pauseTimeoutMins);
+        m_pauseTimeoutDeadline = 0;
+
+        // Commit the stored paused session snapshot.
+        m_state.addSession(m_pausedDistKm, m_pausedSteps, m_pausedCalories, m_pausedDurationSec);
+        log_i("Pause timeout session committed: dist=%.3f km  steps=%u  cal=%u  dur=%u s",
+              m_pausedDistKm, m_pausedSteps, m_pausedCalories, m_pausedDurationSec);
+
+        // Publish session summary to MQTT before disconnecting.
+        m_lastData.sessionDistanceKm  = m_pausedDistKm;
+        m_lastData.sessionSteps       = m_pausedSteps;
+        m_lastData.sessionCalories    = m_pausedCalories;
+        m_lastData.sessionDurationSec = m_pausedDurationSec;
+        m_lastData.sessionComplete    = true;
+        m_lastData.totalDistanceKm    = m_state.getTotalDistanceKm();
+        m_lastData.totalSteps         = m_state.getTotalSteps();
+        m_lastData.totalCalories      = m_state.getTotalCalories();
+        m_lastData.totalDurationSec   = m_state.getTotalDurationSec();
+        m_lastData.distanceKm  = 0.0f;
+        m_lastData.calories    = 0;
+        m_lastData.steps       = 0;
+        m_lastData.durationSec = 0;
+        m_lastData.status      = TreadMillData::STOPPED;
+        if (m_onDataUpdate) m_onDataUpdate(m_lastData);
+
+        // Clear session flags before stop() so it doesn't double-commit.
+        m_sessionActive        = false;
+        m_isPaused             = false;
+        m_autoReconnect        = false;
+        m_userRequestedConnect = false;
+        m_justResumedFromPause = false;
+
+        stop(); // sends stop command to belt
+        // Stop keepalives — let supervision timeout fire naturally (reason=520, HCI 0x08).
+        // Calling disconnect() would send HCI 0x16, putting Q1 in a deep kicking phase
+        // (8 cycles) on the next reconnect. Supervision timeout → lighter phase (2-3 cycles).
+        m_intentionalDrop = true;
+        m_stopKeepalives  = true;
+        log_i("Pause timeout: stopping keepalives for intentional supervision timeout");
+    }
+
+    // Idle-disconnect timer: auto-disconnect after configured idle period.
+    // Only fires when connected and not mid-session (timer is disarmed on RUNNING).
+    if (m_idleDisconnectDeadline != 0 && millis() >= m_idleDisconnectDeadline && isConnected())
+    {
+        log_i("Idle disconnect timer fired (%u min) — stopping keepalives for intentional supervision timeout",
+              m_idleDisconnectMins);
+        m_idleDisconnectDeadline = 0; // onDisconnect() also clears this, but be explicit
+        m_autoReconnect          = false;
+        m_userRequestedConnect   = false;
+        // Stop keepalives — let supervision timeout fire naturally (reason=520, HCI 0x08).
+        // Calling disconnect() sends HCI 0x16, putting Q1 in a deep kicking phase (8 cycles)
+        // on the next connect. Supervision timeout → lighter phase (2-3 cycles).
+        m_intentionalDrop = true;
+        m_stopKeepalives  = true;
+    }
+
+    // Execute pending command once reconnected and POST_CONNECT_COOLDOWN has elapsed.
+    // Pending commands are queued by start()/setSpeed() when called while disconnected.
+    if (m_pendingCmd != PendingCmd::NONE &&
+        isConnected() &&
+        !m_sendInitNow &&
+        millis() - m_lastConnectTime >= POST_CONNECT_COOLDOWN)
+    {
+        log_i("Executing pending command after reconnect");
+        PendingCmd cmd = m_pendingCmd;
+        m_pendingCmd = PendingCmd::NONE;
+        if (cmd == PendingCmd::START)
+            start();
+        else if (cmd == PendingCmd::SET_SPEED)
+            setSpeed(m_pendingSpeed);
     }
 
     // Publish new BLE packet data from Core 1 (main loop).
@@ -374,6 +472,15 @@ bool TreadmillHandler::connectToDevice()
     }
     log_i("Write characteristic initialized");
 
+    // Send an immediate keepalive now that we have the write characteristic.
+    // The Q1 kicks the connection (reason=531) if it receives no BLE write within
+    // ~300ms of connecting. On ESP32 dual-core, characteristic discovery takes
+    // 600-1100ms, and by the time we reach the subscribe below the belt has already
+    // kicked. Sending here resets the belt's kick timer before we retrieve the
+    // notify characteristic.
+    sendKeepalive();
+    log_i("Early keepalive sent to reset belt kick timer");
+
     m_pNotifyCharacteristic = pService->getCharacteristic(CHARACTERISTIC_NOTIFY_STATE_UUID);
     if (!m_pNotifyCharacteristic)
     {
@@ -382,65 +489,44 @@ bool TreadmillHandler::connectToDevice()
         return false;
     }
 
-    if (m_pNotifyCharacteristic->canNotify())
-    {
-        // Reset ALL per-connection state BEFORE subscribing so that any notification
-        // that arrives during the remainder of connectToDevice() (unlock discovery,
-        // BLE param logging, sendInitSequence) sees a clean slate.
-        //
-        // Previously these resets lived at the END of connectToDevice(), which caused
-        // a race: the first 0x34 notification arrived during setup and set flags
-        // (m_lastPacketType=0x34, m_sendUnlockNow=true), then the end-of-function
-        // resets wiped them — so the 0x2F transition was logged as "First packet"
-        // instead of "Packet type changed", and m_sendUnlockNow was silently cleared.
-        //
-        // Setting m_lastConnectTime here also gives accurate t=+Xms timing for all
-        // notifications that arrive during the connection setup window.
-        m_lastConnectTime         = millis();
-        m_firstPacketAfterConnect = true;
-        m_lastPacketType          = 0;
-        m_sendKeepaliveNow        = false;
-        m_sendUnlockNow           = false;
-        m_sessionActive           = false;
-        m_isPaused                = false;
-        m_justResumedFromPause    = false;
-        m_reconnectNotBefore      = 0;
-
-        m_pNotifyCharacteristic->subscribe(
-            true,
-            [this](NimBLERemoteCharacteristic *chr,
-                   uint8_t *data,
-                   size_t length,
-                   bool isNotify)
-            {
-                this->notifyCallback(chr, data, length, isNotify);
-            });
-        log_i("Subscribed to notifications.");
-    }
-    else
+    if (!m_pNotifyCharacteristic->canNotify())
     {
         log_e("Notify characteristic cannot notify!");
         m_pClient->disconnect();
         return false;
     }
 
-    // Best-effort: discover the secondary unlock characteristic (service 0x1910, char 0x2b11).
-    // QZ uses this for the PitPat unlock handshake. The Q1's variant may or may not need it,
-    // but we try - failure here is non-fatal.
-    m_pUnlockCharacteristic = nullptr;
-    NimBLERemoteService *pUnlockService = m_pClient->getService(SERVICE_UNLOCK_UUID);
-    if (pUnlockService)
-    {
-        m_pUnlockCharacteristic = pUnlockService->getCharacteristic(CHARACTERISTIC_UNLOCK_UUID);
-        if (m_pUnlockCharacteristic)
-            log_i("Unlock characteristic (0x2b11) found.");
-        else
-            log_w("Unlock characteristic not found - continuing without it.");
-    }
-    else
-    {
-        log_w("Unlock service (0x1910) not found - continuing without it.");
-    }
+    // Reset ALL per-connection state BEFORE subscribing so that any notification
+    // that arrives during the remainder of connectToDevice() sees a clean slate.
+    m_lastConnectTime         = millis();
+    m_firstPacketAfterConnect = true;
+    m_lastPacketType          = 0;
+    m_sendInitNow             = false;
+    m_connectionBaseDistKm    = 0.0f;
+    m_connectionBaseCal       = 0;
+    m_connectionBaseDurSec    = 0;
+    m_sessionActive           = false;
+    m_isPaused                = false;
+    m_justResumedFromPause    = false;
+    m_reconnectNotBefore      = 0;
+    m_intentionalDrop         = false;
+    m_stopKeepalives          = false;
+
+    // Subscribe early — the Q1 needs BLE activity within the first few hundred ms
+    // of connect or it terminates the session. Calling subscribe() here (before
+    // onConnect fires) provides that early traffic. The write may log rc:7 if the
+    // ATT layer isn't fully ready yet, but NimBLE retries internally and the
+    // Q1's cached CCCD keeps notifications flowing regardless.
+    m_pNotifyCharacteristic->subscribe(
+        true,
+        [this](NimBLERemoteCharacteristic *chr,
+               uint8_t *data,
+               size_t length,
+               bool isNotify)
+        {
+            this->notifyCallback(chr, data, length, isNotify);
+        });
+    log_i("Subscribed to notifications.");
 
     // Log the actual negotiated connection parameters so we can verify the supervision
     // timeout the pad accepted. Our requested values: interval=12-24 (15-30ms),
@@ -452,15 +538,6 @@ bool TreadmillHandler::connectToDevice()
           connInfo.getConnLatency(),
           connInfo.getConnTimeout(),
           connInfo.getConnTimeout() * 10);
-
-    // CRITICAL: send the init/handshake immediately - don't wait for the keepalive timer.
-    // The Q1 disconnects (reason=531) if it sees no write within ~300ms of connection.
-    sendInitSequence();
-    m_lastKeepalive = millis(); // prevent double-send when handle() fires next
-
-    // Per-connection state was already reset above (before subscribe) to avoid
-    // the race where notifications arrive during setup and then get wiped by resets
-    // that execute after them. Nothing to do here.
 
     return true;
 }
@@ -505,10 +582,21 @@ void TreadmillHandler::notifyCallback(
         }
         m_lastPacketType = packetType;
 
-        if (packetType == 0x34)
+        // Fix 2: arm idle timer when the device settles to stable 0x2F mode with
+        // no active session. Covers: manual reconnect to idle belt, post-pause-timeout
+        // reconnect, and boot connect to an already-idle belt.
+        // Without this, Q1's own ~3.5h idle kick fires while m_autoReconnect=true
+        // (left true from the initial connect intent), triggering an infinite reconnect loop.
+        if (packetType == 0x2F &&
+            parsed.status == TreadMillData::STOPPED &&
+            !m_sessionActive &&
+            !m_isPaused &&
+            m_idleDisconnectMins > 0 &&
+            m_idleDisconnectDeadline == 0)
         {
-            m_sendUnlockNow = true;
-            log_i("0x34 onset → queued unlock re-send to 0x2b11 (Core 1)");
+            m_idleDisconnectArmedAt  = millis();
+            m_idleDisconnectDeadline = m_idleDisconnectArmedAt + (uint32_t)m_idleDisconnectMins * 60000UL;
+            log_i("Idle disconnect timer armed on stable idle connection: %u min", m_idleDisconnectMins);
         }
     }
 
@@ -522,23 +610,22 @@ void TreadmillHandler::notifyCallback(
         if (m_firstPacketAfterConnect)
         {
             m_firstPacketAfterConnect = false;
+            // Record belt odometer at connection start. Every addSession() call uses
+            // (current - base) so that reconnects mid-session don't double-count.
+            m_connectionBaseDistKm  = parsed.distanceM / 1000.0f;
+            m_connectionBaseCal     = parsed.calories;
+            m_connectionBaseDurSec  = parsed.durationSec;
             const char* statusName[] = {"COUNTDOWN","RUNNING","PAUSED","STOPPED","DISCONNECTED"};
             const char* sn = (data.status <= TreadMillData::DISCONNECTED)
                              ? statusName[(int)data.status] : "UNKNOWN";
             log_w("FIRST POST-CONNECT PACKET: type=0x%02X len=%d → status=%s "
-                  "speed=%.3f dist=%dm dur=%u cal=%u",
+                  "speed=%.3f dist=%dm dur=%u cal=%u (baseline captured)",
                   packetType, length, sn,
                   parsed.speedFeedback, parsed.distanceM, parsed.durationSec, parsed.calories);
             char hex[length * 3 + 1];
             for (size_t i = 0; i < length; i++) sprintf(hex + i * 3, "%02X ", pData[i]);
             hex[length * 3 - 1] = '\0';
             log_w("FIRST POST-CONNECT RAW: %s", hex);
-        }
-
-        if (packetType == 0x34)
-        {
-            m_sendKeepaliveNow = true;
-            log_i("0x34 → queued immediate keepalive (Core 1)");
         }
 
         // STATUS TRANSITION LOGGING — temporary, for pause vs stop diagnosis
@@ -588,15 +675,38 @@ void TreadmillHandler::notifyCallback(
                     m_state.addSession(m_pausedDistKm, m_pausedSteps, m_pausedCalories, m_pausedDurationSec);
                 }
                 m_isPaused = false;
+                // Cancel pause timeout — belt has resumed.
+                m_pauseTimeoutDeadline = 0;
             }
             m_sessionActive = true;
+
+            // Cancel idle-disconnect timer — belt is active.
+            if (m_idleDisconnectDeadline != 0)
+            {
+                log_i("Idle disconnect timer cancelled — session started");
+                m_idleDisconnectDeadline = 0;
+            }
+
+            // If the belt's odometer is below our connection baseline, the user
+            // pressed START and the belt reset its session counter since we connected.
+            // Reset the bases to 0 so all deltas are relative to this walk's start.
+            // This prevents long-session undercount (residual odometer from last session
+            // at connect time was being subtracted from the committed delta).
+            // NOTE: use parsed.distanceM directly — data.distanceKm is not yet set at
+            // this point in the function (it's populated a few lines below).
+            if (parsed.distanceM / 1000.0f < m_connectionBaseDistKm) {
+                m_connectionBaseDistKm  = 0.0f;
+                m_connectionBaseCal     = 0;
+                m_connectionBaseDurSec  = 0;
+                log_i("Belt odometer reset detected — connection bases updated to 0");
+            }
         }
 
         if (data.status != TreadMillData::STOPPED)
         {
             data.distanceKm  = parsed.distanceM / 1000.0f;
             data.calories    = parsed.calories;
-            data.steps       = (uint32_t)(parsed.distanceM / m_state.getStepLength());
+            data.steps       = (uint32_t)(parsed.distanceM / m_state.getDynamicStepLength(data.speedFeedback));
             data.durationSec = parsed.durationSec;
         }
 
@@ -618,23 +728,45 @@ void TreadmillHandler::notifyCallback(
                 // Belt reports STOPPED because we sent a pause command — defer the commit.
                 // We'll commit when the belt resumes (RUNNING with dist=0 = reset) or
                 // when stop()/onDisconnect() is called explicitly.
-                m_pausedDistKm         = data.distanceKm;
-                m_pausedSteps          = data.steps;
-                m_pausedCalories       = (uint32_t)data.calories;
-                m_pausedDurationSec    = data.durationSec;
+                float pDist = data.distanceKm - m_connectionBaseDistKm;
+                if (pDist < 0.0f) pDist = data.distanceKm;
+                m_pausedDistKm      = pDist;
+                m_pausedSteps       = (uint32_t)(pDist * 1000.0f / m_state.getDynamicStepLength(data.speedFeedback));
+                m_pausedCalories    = (data.calories >= m_connectionBaseCal)
+                                      ? data.calories - m_connectionBaseCal : data.calories;
+                m_pausedDurationSec = (data.durationSec >= m_connectionBaseDurSec)
+                                      ? data.durationSec - m_connectionBaseDurSec : data.durationSec;
                 m_justResumedFromPause = false; // clear in case user re-paused right after resume
                 log_i("Pause-stop: deferring commit (dist=%.3f km steps=%u) — waiting for resume or stop",
                       m_pausedDistKm, m_pausedSteps);
+
+                // Arm pause timeout — if the user never resumes, commit and disconnect.
+                if (m_pauseTimeoutMins > 0)
+                {
+                    m_pauseTimeoutArmedAt  = millis();
+                    m_pauseTimeoutDeadline = m_pauseTimeoutArmedAt + (uint32_t)m_pauseTimeoutMins * 60000UL;
+                    log_i("Pause timeout armed: %u min", m_pauseTimeoutMins);
+                }
             }
             else
             {
+                // Session summary: show the full belt distance for display in HA.
                 data.sessionDistanceKm  = data.distanceKm;
                 data.sessionSteps       = data.steps;
                 data.sessionCalories    = (uint32_t)data.calories;
                 data.sessionDurationSec = data.durationSec;
                 data.sessionComplete    = true;
 
-                m_state.addSession(data.distanceKm, data.steps, (uint32_t)data.calories, data.durationSec);
+                // Totals: commit only the delta since this BLE connection started,
+                // so reconnects mid-session don't double-count earlier distance.
+                float sDist = data.distanceKm - m_connectionBaseDistKm;
+                if (sDist < 0.0f) sDist = data.distanceKm;
+                uint32_t sSteps = (uint32_t)(sDist * 1000.0f / m_state.getDynamicStepLength(data.speedFeedback));
+                uint32_t sCal = (data.calories >= m_connectionBaseCal)
+                                ? data.calories - m_connectionBaseCal : data.calories;
+                uint32_t sDur = (data.durationSec >= m_connectionBaseDurSec)
+                                ? data.durationSec - m_connectionBaseDurSec : data.durationSec;
+                m_state.addSession(sDist, sSteps, sCal, sDur);
 
                 log_i("Session ended — totals: dist=%.2f km  steps=%u  cal=%u  dur=%u s",
                       m_state.getTotalDistanceKm(), m_state.getTotalSteps(),
@@ -648,6 +780,16 @@ void TreadmillHandler::notifyCallback(
                 m_userRequestedConnect = false;
                 m_justResumedFromPause = false;
 
+                // Arm idle-disconnect timer so BLE disconnects automatically after
+                // the configured idle period. Prevents the Q1 kicking loop that
+                // occurs when we stay connected with no belt activity.
+                if (m_idleDisconnectMins > 0)
+                {
+                    m_idleDisconnectArmedAt  = millis();
+                    m_idleDisconnectDeadline = m_idleDisconnectArmedAt + (uint32_t)m_idleDisconnectMins * 60000UL;
+                    log_i("Idle disconnect timer armed: %u min", m_idleDisconnectMins);
+                }
+
                 data.distanceKm  = 0.0f;
                 data.calories    = 0;
                 data.steps       = 0;
@@ -657,10 +799,30 @@ void TreadmillHandler::notifyCallback(
 
         if (data.status != TreadMillData::STOPPED && m_sessionActive)
         {
-            data.totalDistanceKm  = m_state.getTotalDistanceKm() + data.distanceKm;
-            data.totalSteps       = m_state.getTotalSteps() + data.steps;
-            data.totalCalories    = m_state.getTotalCalories() + (uint32_t)data.calories;
-            data.totalDurationSec = m_state.getTotalDurationSec() + data.durationSec;
+            // Use connection-relative delta, not the raw belt odometer.
+            // Raw odometer causes a spike on mid-session reconnect: onDisconnect()
+            // already committed the pre-reconnect delta to NVS, so adding the full
+            // belt odometer again would double-count it in the HA utility_meter.
+            float lDelta = data.distanceKm - m_connectionBaseDistKm;
+            if (lDelta < 0.0f) lDelta = data.distanceKm;  // safety fallback
+            uint32_t lSteps = (uint32_t)(lDelta * 1000.0f / m_state.getDynamicStepLength(data.speedFeedback));
+            uint32_t lCal   = (data.calories   >= m_connectionBaseCal)     ? data.calories   - m_connectionBaseCal     : data.calories;
+            uint32_t lDur   = (data.durationSec >= m_connectionBaseDurSec) ? data.durationSec - m_connectionBaseDurSec : data.durationSec;
+            data.totalDistanceKm  = m_state.getTotalDistanceKm() + lDelta;
+            data.totalSteps       = m_state.getTotalSteps()       + lSteps;
+            data.totalCalories    = m_state.getTotalCalories()    + lCal;
+            data.totalDurationSec = m_state.getTotalDurationSec() + lDur;
+        }
+        else if (m_isPaused && m_sessionActive)
+        {
+            // Belt is paused (STOPPED state) — hold totals at the paused snapshot.
+            // Without this, total sensors drop back to bare NVS values during the pause
+            // window. When the session resumes and totals rise again, utility_meter in HA
+            // would count the pre-pause distance a second time (double-counting bug).
+            data.totalDistanceKm  = m_state.getTotalDistanceKm() + m_pausedDistKm;
+            data.totalSteps       = m_state.getTotalSteps()       + m_pausedSteps;
+            data.totalCalories    = m_state.getTotalCalories()    + m_pausedCalories;
+            data.totalDurationSec = m_state.getTotalDurationSec() + m_pausedDurationSec;
         }
         else
         {

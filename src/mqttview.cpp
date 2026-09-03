@@ -19,7 +19,8 @@ MqttView::MqttView(PubSubClient *client)
 
       // Configuration Settings
       m_autoreconnectSwitch(&m_device, "auto-reconnect", "Auto Reconnect"),
-      m_stepLengthNum(&m_device, "step-length", "Step Length"),
+      m_idleDisconnectMins(&m_device, "idle-disconnect-mins", "Idle Disconnect Minutes"),
+      m_pauseTimeoutMins(&m_device, "pause-timeout-mins", "Pause Timeout Minutes"),
       // Cumulative totals
       m_totalDistance(&m_device, "total-distance", "Total Distance"),
       m_totalSteps(&m_device, "total-steps", "Total Steps"),
@@ -88,13 +89,21 @@ MqttView::MqttView(PubSubClient *client)
     m_autoreconnectSwitch.setEntityType(EntityCategory::CONFIG);
     m_autoreconnectSwitch.setIcon("mdi:autorenew");
 
-    m_stepLengthNum.setEntityType(EntityCategory::CONFIG);
-    m_stepLengthNum.setUnit("m");
-    m_stepLengthNum.setMin(0.10f);
-    m_stepLengthNum.setMax(0.80f);
-    m_stepLengthNum.setStep(0.01f);
-    m_stepLengthNum.setMode(NumberMode::BOX);
-    m_stepLengthNum.setIcon("mdi:shoe-print");
+    m_idleDisconnectMins.setEntityType(EntityCategory::CONFIG);
+    m_idleDisconnectMins.setMin(0.0f);
+    m_idleDisconnectMins.setMax(300.0f);
+    m_idleDisconnectMins.setStep(1.0f);
+    m_idleDisconnectMins.setMode(NumberMode::BOX);
+    m_idleDisconnectMins.setIcon("mdi:timer-stop-outline");
+    m_idleDisconnectMins.setUnit("min");
+
+    m_pauseTimeoutMins.setEntityType(EntityCategory::CONFIG);
+    m_pauseTimeoutMins.setMin(0.0f);
+    m_pauseTimeoutMins.setMax(60.0f);
+    m_pauseTimeoutMins.setStep(1.0f);
+    m_pauseTimeoutMins.setMode(NumberMode::BOX);
+    m_pauseTimeoutMins.setIcon("mdi:timer-pause-outline");
+    m_pauseTimeoutMins.setUnit("min");
 
     // Cumulative totals — each has its own state topic so they can use retain=true
     // and survive MQTT reconnects without waiting for the next live packet.
@@ -159,13 +168,6 @@ MqttView::MqttView(PubSubClient *client)
     m_calibrate20StepsBtn.setIcon("mdi:shoe-print");
 }
 
-void MqttView::publishStepLengthSetting(float stepM)
-{
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%.2f", stepM);
-    publishMqttState(m_stepLengthNum, buf);
-}
-
 void MqttView::publishCalibrationPoints(const CalibrationPoint* points, uint8_t count)
 {
     // HA state values are limited to 255 characters — the full JSON array for
@@ -214,7 +216,8 @@ void MqttView::publishAllConfigs()
 
     // Configuration
     publishConfig(m_autoreconnectSwitch);
-    publishConfig(m_stepLengthNum);
+    publishConfig(m_idleDisconnectMins);
+    publishConfig(m_pauseTimeoutMins);
 
     // Diagnostics
     publishConfig(m_maxSpeed);
@@ -236,6 +239,20 @@ void MqttView::publishAutoReconnectSetting(bool enabled)
     }
 }
 
+void MqttView::publishIdleDisconnectSetting(uint16_t mins)
+{
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%u", mins);
+    publishMqttState(m_idleDisconnectMins, buf);
+}
+
+void MqttView::publishPauseTimeoutSetting(uint16_t mins)
+{
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%u", mins);
+    publishMqttState(m_pauseTimeoutMins, buf);
+}
+
 void MqttView::publishState(TreadMillData data)
 {
     if (m_publishingConfigs) return; // avoid concurrent publish with publishAllConfigs()
@@ -248,12 +265,6 @@ void MqttView::publishState(TreadMillData data)
     state["calories"] = data.calories;
     state["steps"] = data.steps;
     state["fw"] = data.fwVersion;
-    
-    // We add calib_pts to the main JSON payload so it updates dynamically.
-    // However, it's not held in TreadMillData, so we will need to populate 
-    // it in main.cpp when we call publishState. Wait, let's just use the direct 
-    // publishCalibrationPoints function instead of polluting TreadMillData.
-    // Removing value_json binding for calibrationPoints - handled below.
 
     switch (data.status)
     {

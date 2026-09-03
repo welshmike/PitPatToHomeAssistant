@@ -2,7 +2,6 @@
 #include "esp_log.h"
 #include <Arduino.h>
 #include <NimBLEDevice.h>
-#include <LittleFS.h>
 
 #include <WiFi.h>
 #include <mdns.h>
@@ -12,7 +11,6 @@
 #include <PubSubClient.h>
 #include <MqttDevice.h>
 
-// #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 
 #include "config.h"
@@ -40,6 +38,11 @@ TreadmillHandler treadmill;
 // Payload: JSON e.g. {"dist_km":12.34,"steps":15000,"calories":200,"duration_sec":5400}
 // Publish from HA Developer Tools → MQTT. All fields are optional (omit to keep current).
 char g_restoreTotalsTopic[64];
+
+// Recovery topic — allows restoring calibration points after "Erase Flash".
+// Topic: pacekeeper-{mac}/restore-calibration/set
+// Payload: JSON array e.g. [{"mph":1.0,"spm":68.8},{"mph":1.5,"spm":82.0}]
+char g_restoreCalibTopic[64];
 
 
 bool connectToMqtt()
@@ -70,9 +73,10 @@ bool connectToMqtt()
   client.subscribe(g_mqttView.getPauseButton().getCommandTopic(), 1);
   client.subscribe(g_mqttView.getStopButton().getCommandTopic(), 1);
   client.subscribe(g_mqttView.getAutoReconnectSwitch().getCommandTopic(), 1);
-  client.subscribe(g_mqttView.getStepLengthNumber().getCommandTopic(), 1);
   client.subscribe(g_mqttView.getConnectSwitch().getCommandTopic(), 1);
   client.subscribe(g_mqttView.getCalibrate20StepsButton().getCommandTopic(), 1);
+  client.subscribe(g_mqttView.getIdleDisconnectNumber().getCommandTopic(), 1);
+  client.subscribe(g_mqttView.getPauseTimeoutNumber().getCommandTopic(), 1);
 
   // Recovery topic — build once and subscribe. Topic is logged at INFO so you can
   // find it in the serial monitor if you need to publish a restore payload.
@@ -81,6 +85,11 @@ bool connectToMqtt()
   client.subscribe(g_restoreTotalsTopic);
   log_i("Restore-totals topic: %s", g_restoreTotalsTopic);
 
+  snprintf(g_restoreCalibTopic, sizeof(g_restoreCalibTopic),
+           "%s/restore-calibration/set", composeClientID().c_str());
+  client.subscribe(g_restoreCalibTopic);
+  log_i("Restore-calibration topic: %s", g_restoreCalibTopic);
+
   client.subscribe(HOMEASSISTANT_STATUS_TOPIC);
   client.subscribe(HOMEASSISTANT_STATUS_TOPIC_ALT);
 
@@ -88,14 +97,10 @@ bool connectToMqtt()
   delay(200); // give mqtt broker some time to process all config messages
   g_mqttView.publishState(treadmill.getLastData());
   g_mqttView.publishAutoReconnectSetting(treadmill.getAutoReconnect());
-  g_mqttView.publishStepLengthSetting(treadmill.getStepLength());
+  g_mqttView.publishIdleDisconnectSetting(treadmill.getIdleDisconnectMins());
+  g_mqttView.publishPauseTimeoutSetting(treadmill.getPauseTimeoutMins());
 
   return true;
-}
-
-bool connectToWifi()
-{
-  return WiFi.status() == WL_CONNECTED;
 }
 
 void handleSpeedCommand(byte *payload, unsigned int length)
@@ -172,41 +177,52 @@ void handleConnectSwitchCommand(byte *payload, unsigned int length)
 {
   String command = String((char *)payload).substring(0, length);
   command.trim();
-  bool wasConnected = treadmill.isConnected();
-  bool actionTaken = treadmill.toggleConnection();
-  // Sync auto-reconnect switch in HA to reflect the new state
-  g_mqttView.publishAutoReconnectSetting(treadmill.getAutoReconnect());
-  if (wasConnected && actionTaken)
+  bool isConnected = treadmill.isConnected();
+  bool wantConnect = command.equalsIgnoreCase(g_mqttView.getConnectSwitch().getOnState());
+
+  if (wantConnect == isConnected)
   {
-    // Disconnect initiated — onDisconnect() will set DISCONNECTED + m_newDataAvailable,
-    // but publish optimistically now so HA doesn't wait for that callback (~42ms delay)
+    // Already in the requested state — re-publish to keep HA in sync.
+    g_mqttView.publishState(treadmill.getLastData());
+    return;
+  }
+
+  bool actionTaken = treadmill.toggleConnection();
+  g_mqttView.publishAutoReconnectSetting(treadmill.getAutoReconnect());
+  if (isConnected && actionTaken)
+  {
+    // Disconnect initiated — publish optimistically now so HA doesn't wait for the callback.
     TreadMillData disconnected = treadmill.getLastData();
     disconnected.status = TreadMillData::DISCONNECTED;
     g_mqttView.publishState(disconnected);
   }
-  else if (wasConnected && !actionTaken)
+  else if (isConnected && !actionTaken)
   {
-    // Blocked by safety check (belt is active) —
-    // re-publish current state so HA snaps the switch back to ON
+    // Blocked by safety check (belt is active) — snap switch back to ON.
     log_w("Connect switch OFF blocked — re-publishing current state to correct HA");
     g_mqttView.publishState(treadmill.getLastData());
   }
-  // If !wasConnected: connect requested, BLE callback will publish ON when established
+  // If !isConnected: connect requested, BLE callback will publish ON when established.
 }
 
-void handleStepLengthCommand(byte *payload, unsigned int length)
+void handleIdleDisconnectCommand(byte *payload, unsigned int length)
 {
-  float stepM = atof((char *)payload);
-  if (stepM >= 0.10f && stepM <= 0.80f)
-  {
-    log_i("Setting step length to %.2f m", stepM);
-    treadmill.setStepLength(stepM);
-    g_mqttView.publishStepLengthSetting(stepM);
-  }
-  else
-  {
-    log_w("Step length %.2f out of range [0.10, 0.80] - ignoring", stepM);
-  }
+  String command = String((char *)payload).substring(0, length);
+  command.trim();
+  uint16_t mins = (uint16_t)command.toInt();
+  log_i("Idle disconnect setting received: %u min", mins);
+  treadmill.setIdleDisconnectMins(mins);
+  g_mqttView.publishIdleDisconnectSetting(mins);
+}
+
+void handlePauseTimeoutCommand(byte *payload, unsigned int length)
+{
+  String command = String((char *)payload).substring(0, length);
+  command.trim();
+  uint16_t mins = (uint16_t)command.toInt();
+  log_i("Pause timeout setting received: %u min", mins);
+  treadmill.setPauseTimeoutMins(mins);
+  g_mqttView.publishPauseTimeoutSetting(mins);
 }
 
 void handleCalibrate20StepsCommand(byte *payload, unsigned int length)
@@ -243,6 +259,36 @@ void handleRestoreTotalsCommand(byte *payload, unsigned int length)
   }
 }
 
+void handleRestoreCalibrationCommand(byte *payload, unsigned int length)
+{
+  String payloadStr = String((char *)payload).substring(0, length);
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, payloadStr);
+  if (err)
+  {
+    log_e("restore-calibration: JSON parse failed (%s) — payload: %s",
+          err.c_str(), payloadStr.c_str());
+    return;
+  }
+  JsonArray arr = doc.as<JsonArray>();
+  if (arr.isNull() || arr.size() == 0 || arr.size() > 10)
+  {
+    log_e("restore-calibration: expected JSON array of 1–10 points, got: %s", payloadStr.c_str());
+    return;
+  }
+  CalibrationPoint pts[10];
+  uint8_t n = 0;
+  for (JsonObject obj : arr)
+  {
+    pts[n].speedMph = obj["mph"];
+    pts[n].spm      = obj["spm"];
+    n++;
+  }
+  treadmill.restoreCalibrationPoints(pts, n);
+  g_mqttView.publishCalibrationPoints(treadmill.getCalibrationPoints(), treadmill.getCalibrationPointCount());
+  log_i("Calibration restored: %u points written to NVS.", n);
+}
+
 void handleHAStatus(byte *payload, unsigned int length)
 {
   if (strncmp((char *)payload, "online", length) == 0)
@@ -251,7 +297,8 @@ void handleHAStatus(byte *payload, unsigned int length)
     delay(200); // give mqtt broker some time to process all config messages
     g_mqttView.publishState(treadmill.getLastData());
     g_mqttView.publishAutoReconnectSetting(treadmill.getAutoReconnect());
-    g_mqttView.publishStepLengthSetting(treadmill.getStepLength());
+    g_mqttView.publishIdleDisconnectSetting(treadmill.getIdleDisconnectMins());
+    g_mqttView.publishPauseTimeoutSetting(treadmill.getPauseTimeoutMins());
     g_mqttView.publishCalibrationPoints(treadmill.getCalibrationPoints(), treadmill.getCalibrationPointCount());
   }
 }
@@ -277,12 +324,16 @@ void callback(char *topic, byte *payload, unsigned int length)
     handleAutoReconnectCommand(payload, length);
   } else if (strcmp(topic, g_mqttView.getConnectSwitch().getCommandTopic()) == 0) {
     handleConnectSwitchCommand(payload, length);
-  } else if (strcmp(topic, g_mqttView.getStepLengthNumber().getCommandTopic()) == 0) {
-    handleStepLengthCommand(payload, length);
   } else if (strcmp(topic, g_mqttView.getCalibrate20StepsButton().getCommandTopic()) == 0) {
     handleCalibrate20StepsCommand(payload, length);
+  } else if (strcmp(topic, g_mqttView.getIdleDisconnectNumber().getCommandTopic()) == 0) {
+    handleIdleDisconnectCommand(payload, length);
+  } else if (strcmp(topic, g_mqttView.getPauseTimeoutNumber().getCommandTopic()) == 0) {
+    handlePauseTimeoutCommand(payload, length);
   } else if (strcmp(topic, g_restoreTotalsTopic) == 0) {
     handleRestoreTotalsCommand(payload, length);
+  } else if (strcmp(topic, g_restoreCalibTopic) == 0) {
+    handleRestoreCalibrationCommand(payload, length);
   } else if (strcmp(topic, HOMEASSISTANT_STATUS_TOPIC) == 0 ||
              strcmp(topic, HOMEASSISTANT_STATUS_TOPIC_ALT) == 0) {
     handleHAStatus(payload, length);
@@ -307,19 +358,8 @@ void setup()
 
   Serial.begin(115200);
 
-  // Initialize LittleFS for packet logging
-  if (LittleFS.begin(true)) {  // format on first use
-    log_i("LittleFS mounted successfully");
-    // Create CSV header for packet log
-    File logFile = LittleFS.open("/packets.csv", "w");
-    if (logFile) {
-      logFile.println("millis,length,type,b7,b8,b9,b10,b14,b23,b24,b25,b26,b27,b28");
-      logFile.close();
-      log_i("Packet log initialized");
-    }
-  } else {
-    log_e("LittleFS mount failed");
-  }
+  pinMode(LED_BLE_PIN, OUTPUT);
+  digitalWrite(LED_BLE_PIN, LOW); // active-high: off until BLE connects
 
   WiFi.setHostname(composeClientID().c_str());
   WiFi.mode(WIFI_STA);
@@ -331,7 +371,7 @@ void setup()
   WiFi.begin(DEFAULT_STA_WIFI_SSID, DEFAULT_STA_WIFI_PASS);
 
   log_i("Connecting to wifi...");
-  while (!connectToWifi())
+  while (WiFi.status() != WL_CONNECTED)
   {
     log_d(".");
     delay(500);
@@ -402,12 +442,9 @@ void loop()
   // reset watchdog, important to be called once each loop.
   esp_task_wdt_reset();
 
-  bool wifiConnected = connectToWifi();
+  bool wifiConnected = WiFi.status() == WL_CONNECTED;
   if (!wifiConnected)
   {
-    if (g_wifiConnected)
-    {
-    }
     if (millis() - g_lastWifiConnect > WIFI_DISCONNECT_FORCED_RESTART_S * 1000)
     {
       log_w("Wifi could not connect in time, will force a restart");
@@ -426,10 +463,6 @@ void loop()
   bool mqttConnected = connectToMqtt();
   if (!mqttConnected)
   {
-    if (g_mqttConnected)
-    {
-      // we switched to disconnected
-    }
     g_mqttConnected = false;
     delay(1000);
     return;
@@ -438,39 +471,11 @@ void loop()
   {
     // now we are successfully reconnected and publish our counters
     g_bssid = WiFi.BSSIDstr();
-    // g_mqttView.publishDiagnostics(g_settings, g_bssid.c_str());
   }
   g_mqttConnected = true;
 
   client.loop();
   treadmill.handle();
-
-  // Handle serial commands for packet log
-  if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
-    if (cmd == "dump") {
-      File logFile = LittleFS.open("/packets.csv", "r");
-      if (logFile) {
-        Serial.println("=== Packet Log ===");
-        while (logFile.available()) {
-          Serial.write(logFile.read());
-        }
-        logFile.close();
-        Serial.println("=== End Log ===");
-      } else {
-        Serial.println("No log file found");
-      }
-    }
-    else if (cmd == "clear") {
-      File logFile = LittleFS.open("/packets.csv", "w");
-      if (logFile) {
-        logFile.println("millis,length,type,b7,b8,b9,b10,b14,b23,b24,b25,b26,b27,b28");
-        logFile.close();
-        Serial.println("Log cleared");
-      }
-    }
-  }
 
   // Notifications are handled in the callback
   delay(100);

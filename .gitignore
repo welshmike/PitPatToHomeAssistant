@@ -12,6 +12,7 @@ src/config.h
 *.bin
 *.elf
 *.map
+Archive.zip
 
 # Logs
 treadmill_log.txt
@@ -21,3 +22,4 @@ treadmill_log.txt
 .vscode/
 .idea/
 *.DS_Store
+.superpowers/
