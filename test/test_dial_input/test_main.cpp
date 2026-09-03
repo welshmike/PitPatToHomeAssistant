@@ -197,6 +197,57 @@ static void test_backlight_dimAt120s_offAt600s_activityResets(void)
     TEST_ASSERT_TRUE(DialInput::Backlight::FULL == input.backlight());
 }
 
+static void test_wake_encoderWhileDim_rebasesBaselineForNextDetent(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, false, 0, 0, false, t0); // baseline, establishes activity
+
+    // Advance to the dim threshold with no activity.
+    input.tick(0, false, 0, 0, false, t0 + 120000);
+    TEST_ASSERT_TRUE(DialInput::Backlight::DIM == input.backlight());
+
+    // Encoder moves while dim: wakes, swallows the pulses, and rebases the
+    // baseline to the count seen on this tick (8), not the old one (0).
+    DialEvents eWake = input.tick(8, false, 0, 0, false, t0 + 120001);
+    TEST_ASSERT_TRUE(eWake.wake);
+    TEST_ASSERT_EQUAL_INT(0, eWake.detents);
+    TEST_ASSERT_TRUE(DialInput::Backlight::FULL == input.backlight());
+
+    // Next tick: delta is from the rebased baseline of 8, i.e. 12-8=4 -> 1
+    // detent. If the baseline had stayed at 0, this would wrongly read 3.
+    DialEvents eNext = input.tick(12, false, 0, 0, false, t0 + 120010);
+    TEST_ASSERT_EQUAL_INT(1, eNext.detents);
+    TEST_ASSERT_FALSE(eNext.wake);
+}
+
+// ---------------------------------------------------------------------------
+// Tap boundary
+// ---------------------------------------------------------------------------
+
+static void test_tap_releaseAtExactlyTapMaxMs_notATap(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, true, 50, 50, false, t0); // touch down
+
+    DialEvents e = input.tick(0, false, 0, 0, false, t0 + DialInput::TAP_MAX_MS);
+    TEST_ASSERT_FALSE(e.tap);
+}
+
+static void test_tap_releaseJustUnderTapMaxMs_isATap(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, true, 50, 50, false, t0); // touch down
+
+    DialEvents e = input.tick(0, false, 0, 0, false, t0 + DialInput::TAP_MAX_MS - 1);
+    TEST_ASSERT_TRUE(e.tap);
+}
+
 // ---------------------------------------------------------------------------
 // Wraparound-safe time maths
 // ---------------------------------------------------------------------------
@@ -231,6 +282,9 @@ int main(int argc, char **argv)
     RUN_TEST(test_longPress_firesOnceAt1000ms_progressHalfAt500ms);
     RUN_TEST(test_wake_inputWhileDim_yieldsWakeOnly);
     RUN_TEST(test_wake_touchWhileDim_swallowsGestureUntilRelease);
+    RUN_TEST(test_wake_encoderWhileDim_rebasesBaselineForNextDetent);
+    RUN_TEST(test_tap_releaseAtExactlyTapMaxMs_notATap);
+    RUN_TEST(test_tap_releaseJustUnderTapMaxMs_isATap);
     RUN_TEST(test_backlight_dimAt120s_offAt600s_activityResets);
     RUN_TEST(test_time_wraparoundSafe);
 
