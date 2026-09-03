@@ -7,17 +7,18 @@
 #include "TreadmillState.h"
 #include "SessionTracker.h"
 #include "SnapshotStore.h"
+#include "TreadmillController.h"
 
-class TreadmillHandler : public NimBLEClientCallbacks, public ISessionEvents
+class TreadmillHandler : public NimBLEClientCallbacks, public ISessionEvents, public ITreadmillLink
 {
 public:
     TreadmillHandler();
     ~TreadmillHandler();
     void begin(NimBLEAddress address);
     void setSpeed(uint16_t speed);
-    void start();
-    void pause();
-    void stop();
+    void start() override;
+    void pause() override;
+    void stop() override;
 
     void handle();
 
@@ -119,43 +120,75 @@ public:
         });
     }
 
-    bool isConnected() const
+    bool isConnected() const override
     {
         return m_pClient && m_pClient->isConnected();
     }
 
-    // Returns true if the action was taken, false if blocked by safety check.
-    bool toggleConnection()
+    // --- ITreadmillLink -----------------------------------------------------
+    // Thin adapters over the existing API so TreadmillController can drive the
+    // link without knowing anything about NimBLE.
+
+    void setSpeedRaw(uint16_t raw) override { setSpeed(raw); }
+
+    TreadMillData snapshot() const override { return m_snapshot.read(); }
+
+    // Writes the caller's optimistic view into the snapshot and flags it so
+    // handle() publishes it on the next cycle — same two lines the MQTT command
+    // handlers used to do inline.
+    void publishOptimistic(const TreadMillData& d) override
+    {
+        m_snapshot.write(d);
+        m_newDataAvailable = true;
+    }
+
+    // Returns true if the disconnect was initiated, false if blocked by the
+    // safety check (belt still active).
+    bool requestDisconnect() override
+    {
+        if (!isConnected())
+        {
+            return false;
+        }
+        // Safety check — don't disconnect while belt is active
+        TreadMillData snap = m_snapshot.read();
+        if (snap.status == TreadMillData::RUNNING ||
+            snap.status == TreadMillData::PAUSED ||
+            snap.status == TreadMillData::COUNTDOWN)
+        {
+            log_w("Disconnect blocked — belt is active (status=%d)", (int)snap.status);
+            return false;
+        }
+        log_i("Manual disconnect requested");
+        m_autoReconnect = false;        // prevent onDisconnect() from immediately reconnecting
+        m_userRequestedConnect = false; // user explicitly turned off — don't auto-reconnect
+        m_reconnectNotBefore = 0;
+        m_pClient->disconnect();
+        // Don't deleteClient here — onDisconnect() fires shortly after and handles
+        // cleanup. Deleting here and again in onDisconnect() is a double-free.
+        return true;
+    }
+
+    // Returns true if a connect was initiated, false if already connected.
+    bool requestConnect() override
     {
         if (isConnected())
         {
-            // Safety check — don't disconnect while belt is active
-            TreadMillData snap = m_snapshot.read();
-            if (snap.status == TreadMillData::RUNNING ||
-                snap.status == TreadMillData::PAUSED ||
-                snap.status == TreadMillData::COUNTDOWN)
-            {
-                log_w("Disconnect blocked — belt is active (status=%d)", (int)snap.status);
-                return false;
-            }
-            log_i("Manual disconnect requested from HA");
-            m_autoReconnect = false;       // prevent onDisconnect() from immediately reconnecting
-            m_userRequestedConnect = false; // user explicitly turned off — don't auto-reconnect
-            m_reconnectNotBefore = 0;
-            m_pClient->disconnect();
-            // Don't deleteClient here — onDisconnect() fires shortly after and handles
-            // cleanup. Deleting here and again in onDisconnect() is a double-free.
-            return true;
+            return false;
         }
-        else
-        {
-            log_i("Manual connect requested from HA");
-            m_autoReconnect = true;
-            m_userRequestedConnect = true;  // user explicitly turned on — keep retrying after idle kicks
-            m_reconnectNotBefore = 0;       // allow immediate first attempt
-            m_doConnect = true;
-            return true;
-        }
+        log_i("Manual connect requested");
+        m_autoReconnect = true;
+        m_userRequestedConnect = true; // user explicitly turned on — keep retrying after idle kicks
+        m_reconnectNotBefore = 0;      // allow immediate first attempt
+        m_doConnect = true;
+        return true;
+    }
+
+    // Returns true if the action was taken, false if blocked by safety check.
+    // Kept for main.cpp's connect switch handler until it moves to the controller.
+    bool toggleConnection()
+    {
+        return isConnected() ? requestDisconnect() : requestConnect();
     }
 
     TreadMillData getLastData() const
