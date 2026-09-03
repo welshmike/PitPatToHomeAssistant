@@ -121,9 +121,9 @@ configuration screen for this and similar settings is planned.
 
 ### What the screen shows
 
-* **Disconnected**: last session's summary (time, distance, steps). The on-screen hint still
-  reads "tap to start", but tap now opens the Start Speed selector rather than starting
-  immediately — hold still starts right away, at the configured default speed
+* **Disconnected**: last session's summary (time, distance, steps) with the hint
+  "tap: speed   hold: start" — tap opens the Start Speed selector, hold starts right away at
+  the configured default speed
 * **Selector** ("START SPEED"): the candidate speed shown large, with an `mph` caption and an
   amber speed ring at that value, and hints "tap to start" / "hold: default". Opens (from
   Disconnected) at the configured default speed; closes back to Disconnected on tap (starts the

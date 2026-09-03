@@ -588,7 +588,7 @@ void DialUi::drawDisconnected(LovyanGFX& gfx)
     gfx.drawString("steps", kRowRightX, kDiscCaptionY, &fonts::Font2);
 
     gfx.setTextColor(kColDim, kColBg);
-    gfx.drawString("tap to start", kCentreX, kDiscHintY, &fonts::Font2);
+    gfx.drawString("tap: speed   hold: start", kCentreX, kDiscHintY, &fonts::Font2);
 }
 
 void DialUi::drawConnecting(LovyanGFX& gfx)
