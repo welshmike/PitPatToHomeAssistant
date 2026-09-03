@@ -91,6 +91,10 @@ public:
 
     float targetSpeedMph() const { return m_targetMph; }
 
+    // The belt reports STOPPED while paused, so this is the only way to tell
+    // "paused" apart from "stopped" — delegates to the link's own pause flag.
+    bool isPaused() const { return m_link.isPaused(); }
+
 private:
     void notifySnapshot(const TreadMillData& d);
     void notifyTarget(float mph, bool pending);

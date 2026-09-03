@@ -4,6 +4,9 @@
 #include <Arduino.h>
 #include <esp_log.h>
 
+#include "DialFormat.h"
+#include "TreadmillData.h"
+
 namespace {
 
 // Three 8px status dots along the top: BLE, WiFi, MQTT, left to right.
@@ -13,11 +16,49 @@ constexpr int32_t kBleDotX   = 96;
 constexpr int32_t kWifiDotX  = 120;
 constexpr int32_t kMqttDotX  = 144;
 
-constexpr uint16_t kColBg     = TFT_BLACK;
-constexpr uint16_t kColText   = TFT_WHITE;
-constexpr uint16_t kColDim    = TFT_DARKGREY;
-constexpr uint16_t kColBleOn  = TFT_BLUE;
-constexpr uint16_t kColNetOn  = TFT_GREEN;
+constexpr uint16_t kColBg        = TFT_BLACK;
+constexpr uint16_t kColText      = TFT_WHITE;
+constexpr uint16_t kColDim       = TFT_DARKGREY;
+constexpr uint16_t kColBleOn     = TFT_BLUE;
+constexpr uint16_t kColNetOn     = TFT_GREEN;
+constexpr uint16_t kColSpeedVal  = TFT_CYAN;  // ring/centre while not pending
+constexpr uint16_t kColPending   = TFT_ORANGE; // ring/centre while a nudge is settling or overlaid
+constexpr uint16_t kColHold      = TFT_RED;    // long-press-to-stop progress arc
+
+// Speed ring geometry, centred on the 240x240 canvas.
+constexpr int32_t kRingCx    = 120;
+constexpr int32_t kRingCy    = 120;
+constexpr int32_t kRingOuter = 118;
+constexpr int32_t kRingInner = 108;
+constexpr float    kRingStartDeg = 120.0f; // 3 o'clock = 0 deg, clockwise; gap sits at the bottom (6 o'clock)
+constexpr float    kRingSweepDeg = 300.0f;
+
+// Long-press-to-stop progress: a thin arc just outside the speed ring.
+constexpr int32_t kHoldOuter = 120;
+constexpr int32_t kHoldInner = 116;
+
+// Running/paused screen layout (all text uses middle_center datum).
+constexpr int32_t kCentreX         = 120;
+constexpr int32_t kCentreY         = 100; // big Font7: elapsed time, or the overlaid target speed
+constexpr int32_t kOverlayCaptionY = 136; // "mph" caption under the overlaid speed
+constexpr int32_t kPausedY         = 62;  // pulsing "PAUSED" label
+constexpr int32_t kRowY            = 158; // distance (left) / steps (right)
+constexpr int32_t kRowCaptionY     = 174;
+constexpr int32_t kRowLeftX        = 72;
+constexpr int32_t kRowRightX       = 168;
+constexpr int32_t kSpeedReadoutY   = 196;
+constexpr int32_t kHintY           = 222; // "tap resume - hold stop"
+
+// Halves each RGB565 channel — the ~50% dim used for the whole paused
+// layout. Cheap bit-twiddling, no float, safe to call once per element per
+// frame.
+uint16_t dimColor565(uint16_t c)
+{
+    const uint16_t r = (c >> 11) & 0x1F;
+    const uint16_t g = (c >> 5) & 0x3F;
+    const uint16_t b = c & 0x1F;
+    return ((r >> 1) << 11) | ((g >> 1) << 5) | (b >> 1);
+}
 
 } // namespace
 
@@ -67,7 +108,7 @@ void DialUi::tick(uint32_t nowMs)
         return;
     }
     m_lastRenderMs = nowMs;
-    render();
+    render(nowMs);
 }
 
 void DialUi::handleInput(uint32_t nowMs)
@@ -127,7 +168,12 @@ void DialUi::handleInput(uint32_t nowMs)
 
     if (ev.detents != 0)
     {
+        // nudgeSpeed() synchronously fires onTargetSpeed(mph, pending=true)
+        // via the controller's observer callback, so m_targetPending/
+        // m_targetSpeedMph are already current by the time this returns —
+        // arm the overlay deadline from the nowMs this call actually has.
         m_controller.nudgeSpeed(ev.detents, nowMs);
+        m_speedOverlayUntilMs = nowMs + DIAL_SPEED_OVERLAY_MS;
     }
 
     // ev.wake needs no handling beyond the brightness change already applied
@@ -190,16 +236,58 @@ const char* DialUi::statusName(TreadMillData::Status s)
     }
 }
 
-void DialUi::render()
+bool DialUi::isPausedState() const
 {
+    // The belt reports STOPPED while paused, so the link's own pause flag
+    // (surfaced via the controller) is the only way to tell "paused" apart
+    // from "stopped"; PAUSED itself is included for the optimistic snapshot
+    // window right after a pause command, before the link flag catches up.
+    return m_controller.isPaused() || m_snapshot.status == TreadMillData::PAUSED;
+}
+
+DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
+{
+    FrameKey key;
+    key.status        = static_cast<uint8_t>(m_snapshot.status);
+    key.paused        = isPausedState();
+    key.durationSec   = m_snapshot.durationSec;
+    key.speedTenths   = static_cast<int32_t>(m_snapshot.speedFeedback * 10.0f);
+    key.distanceCenti = static_cast<int32_t>(m_snapshot.distanceKm * 100.0f);
+    key.steps          = m_snapshot.steps;
+    key.targetTenths   = static_cast<int32_t>(m_targetSpeedMph * 10.0f);
+    key.pending        = m_targetPending;
+    key.overlayActive  = (int32_t)(m_speedOverlayUntilMs - nowMs) > 0;
+    key.netStatus       = static_cast<uint8_t>(m_netStatus);
+    key.holdUnits       = static_cast<int32_t>(m_holdProgress * 20.0f);
+    key.pulsePhase       = static_cast<uint8_t>((nowMs / 500) % 2);
+    return key;
+}
+
+void DialUi::render(uint32_t nowMs)
+{
+    // Redraw-skip: only actually paint+push when something visible changed,
+    // or kFrameElapsedMs has passed (so the 1 Hz PAUSED pulse still
+    // animates, and any float jitter smaller than the FrameKey's coarsening
+    // eventually still gets picked up).
+    const FrameKey key     = buildFrameKey(nowMs);
+    const bool     changed = !m_haveLastFrame || !(key == m_lastFrame);
+    const bool     elapsed = (nowMs - m_lastFrameDrawMs) >= kFrameElapsedMs;
+    if (!changed && !elapsed)
+    {
+        return;
+    }
+    m_lastFrame      = key;
+    m_haveLastFrame  = true;
+    m_lastFrameDrawMs = nowMs;
+
     if (m_useCanvas)
     {
-        draw(m_canvas);
+        draw(m_canvas, nowMs);
         m_canvas.pushSprite(0, 0);
     }
     else
     {
-        draw(M5Dial.Display);
+        draw(M5Dial.Display, nowMs);
     }
 }
 
@@ -214,13 +302,28 @@ void DialUi::drawStatusDots(LovyanGFX& gfx)
     gfx.fillCircle(kMqttDotX, kDotY, kDotRadius, mqttUp ? kColNetOn : kColDim);
 }
 
-void DialUi::draw(LovyanGFX& gfx)
+void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
 {
     gfx.fillScreen(kColBg);
     gfx.setTextDatum(middle_center);
 
     drawStatusDots(gfx);
 
+    const bool paused = isPausedState();
+    if (m_snapshot.status == TreadMillData::RUNNING || paused)
+    {
+        drawRunning(gfx, paused, nowMs);
+    }
+    else
+    {
+        drawIdle(gfx);
+    }
+}
+
+// Smoke-test content for every status this task doesn't own (COUNTDOWN,
+// STOPPED, DISCONNECTED) — replaced by a later task.
+void DialUi::drawIdle(LovyanGFX& gfx)
+{
     gfx.setTextColor(kColText, kColBg);
     gfx.drawString(statusName(m_snapshot.status), 120, 60, &fonts::Font4);
 
@@ -230,6 +333,94 @@ void DialUi::draw(LovyanGFX& gfx)
 
     snprintf(line, sizeof(line), "%.2f km", m_snapshot.distanceKm);
     gfx.drawString(line, 120, 160, &fonts::Font2);
+}
+
+void DialUi::drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs)
+{
+    const uint16_t colTrack = paused ? dimColor565(kColDim)      : kColDim;
+    const uint16_t colText  = paused ? dimColor565(kColText)     : kColText;
+    const uint16_t colDim   = paused ? dimColor565(kColDim)      : kColDim;
+    const uint16_t colCyan  = paused ? dimColor565(kColSpeedVal) : kColSpeedVal;
+    const uint16_t colAmber = paused ? dimColor565(kColPending)  : kColPending;
+
+    // Speed ring: dark 300 deg track (120 deg gap centred at the bottom),
+    // then the value arc from the same start angle. fillArc's fmodf()
+    // handles the >360 deg wrap on its own, so one call each is enough.
+    gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
+                kRingStartDeg + kRingSweepDeg, colTrack);
+
+    const bool  ringPending = m_targetPending;
+    const float ringSpeedMph = ringPending ? m_targetSpeedMph : m_snapshot.speedFeedback;
+    const float ringSweep    = DialFormat::speedToAngle(ringSpeedMph);
+    if (ringSweep > 0.0f)
+    {
+        gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
+                    kRingStartDeg + ringSweep, ringPending ? colAmber : colCyan);
+    }
+
+    // Centre: elapsed time, or the target speed for DIAL_SPEED_OVERLAY_MS
+    // after the last nudge (armed in handleInput()).
+    const bool overlayActive = (int32_t)(m_speedOverlayUntilMs - nowMs) > 0;
+    char centreBuf[16];
+    if (overlayActive)
+    {
+        DialFormat::formatSpeedMph(m_targetSpeedMph, centreBuf, sizeof(centreBuf));
+    }
+    else
+    {
+        DialFormat::formatDuration(m_snapshot.durationSec, centreBuf, sizeof(centreBuf));
+    }
+    gfx.setTextColor(overlayActive ? colAmber : colText, kColBg);
+    gfx.drawString(centreBuf, kCentreX, kCentreY, &fonts::Font7);
+
+    if (overlayActive)
+    {
+        gfx.setTextColor(colAmber, kColBg);
+        gfx.drawString("mph", kCentreX, kOverlayCaptionY, &fonts::Font2);
+    }
+
+    // Row: distance (left) / steps (right), each with a caption beneath.
+    char distBuf[8];
+    DialFormat::formatDistanceKm(m_snapshot.distanceKm, distBuf, sizeof(distBuf));
+    gfx.setTextColor(colText, kColBg);
+    gfx.drawString(distBuf, kRowLeftX, kRowY, &fonts::Font4);
+    gfx.setTextColor(colDim, kColBg);
+    gfx.drawString("km", kRowLeftX, kRowCaptionY, &fonts::Font2);
+
+    char stepsBuf[12];
+    DialFormat::formatSteps(m_snapshot.steps, stepsBuf, sizeof(stepsBuf));
+    gfx.setTextColor(colText, kColBg);
+    gfx.drawString(stepsBuf, kRowRightX, kRowY, &fonts::Font4);
+    gfx.setTextColor(colDim, kColBg);
+    gfx.drawString("steps", kRowRightX, kRowCaptionY, &fonts::Font2);
+
+    // Speed readout, fixed position (not on the ring) for stability.
+    char speedBuf[8];
+    DialFormat::formatSpeedMph(m_snapshot.speedFeedback, speedBuf, sizeof(speedBuf));
+    char speedLine[16];
+    snprintf(speedLine, sizeof(speedLine), "%s mph", speedBuf);
+    gfx.setTextColor(colText, kColBg);
+    gfx.drawString(speedLine, kCentreX, kSpeedReadoutY, &fonts::Font4);
+
+    if (paused)
+    {
+        // Blink 1 Hz: on for the first 500 ms of each 1000 ms window.
+        const uint8_t pulsePhase = static_cast<uint8_t>((nowMs / 500) % 2);
+        if (pulsePhase == 0)
+        {
+            gfx.setTextColor(colText, kColBg);
+            gfx.drawString("PAUSED", kCentreX, kPausedY, &fonts::Font4);
+        }
+        gfx.setTextColor(colDim, kColBg);
+        gfx.drawString("tap resume - hold stop", kCentreX, kHintY, &fonts::Font2);
+    }
+
+    // Long-press-to-stop progress: thin red arc just outside the ring.
+    if (m_holdProgress > 0.0f)
+    {
+        gfx.fillArc(kRingCx, kRingCy, kHoldOuter, kHoldInner, kRingStartDeg,
+                    kRingStartDeg + kRingSweepDeg * m_holdProgress, kColHold);
+    }
 }
 
 #endif // HAS_DIAL_UI
