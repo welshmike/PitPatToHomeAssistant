@@ -15,6 +15,10 @@
 #include "NetManager.h"
 #include "NetTask.h"
 #include "mqttview.h"
+#include "board.h"
+#if HAS_DIAL_UI
+#include "DialUi.h"
+#endif
 
 const uint WATCHDOG_TIMEOUT_S = 300;
 
@@ -36,6 +40,10 @@ TreadmillController controller(treadmill);
 
 NetTask netTask(net, g_mqttView, treadmill);
 PublishQueueObserver g_publishObserver(netTask, treadmill);
+
+#if HAS_DIAL_UI
+DialUi dialUi;
+#endif
 
 // Last network state pushed to the views; the display will read this too.
 NetStatus g_lastNetStatus = NetStatus::WIFI_DOWN;
@@ -143,6 +151,11 @@ static void drainCommands()
 
 void setup()
 {
+#if HAS_DIAL_UI
+  // Must run first: M5Unified owns display/I2C/Serial init on the Dial.
+  dialUi.begin();
+#endif
+
   // initialize watchdog
   // ESP-IDF 5.x (Arduino-ESP32 3.x) changed the WDT API to use a config struct
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
@@ -158,7 +171,10 @@ void setup()
   esp_task_wdt_add(NULL); // watch the loop task only — the net task is allowed
                           // to block on a socket for as long as it takes
 
+#if !HAS_DIAL_UI
+  // On the Dial, M5Unified opens Serial itself inside dialUi.begin() above.
   Serial.begin(115200);
+#endif
 
 #if HAS_STATUS_LED
   pinMode(LED_BLE_PIN, OUTPUT);
@@ -173,6 +189,9 @@ void setup()
   NimBLEDevice::init("PaceKeeper");
 
   controller.addObserver(g_publishObserver);
+#if HAS_DIAL_UI
+  controller.addObserver(dialUi);
+#endif
 
   // Starts the net task, which brings up WiFi/MQTT/OTA on its own.
   netTask.begin(composeClientID().c_str());
@@ -193,6 +212,9 @@ void loop()
 
   drainCommands();
   controller.tick(now);
+#if HAS_DIAL_UI
+  dialUi.tick(now);
+#endif
 
   const NetStatus netStatus = netTask.status();
   if (netStatus != g_lastNetStatus)
