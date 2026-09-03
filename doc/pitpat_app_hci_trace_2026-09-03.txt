@@ -1,0 +1,134 @@
+# PitPat Android app HCI trace vs DeerRun Q1 (2026-09-03)
+# Source: adb bugreport btsnooz_hci.log (payloads truncated to 3 bytes by btsnooz). Handle 0x2c = notify (ff02), 0x2a = write (ff01), 0x2d = CCCD.
+# Belt address 48:ca:43:f5:f5:c6. Times in seconds from log start. Other handles (0x42, 0xb7+) are unrelated peripherals.
+  261.959 EVT LE_CONN_COMPLETE status=0 handle=0x42 peer=43:f5:f5:c6:00:00 int=3840
+  262.490 RX NOTIFY    h=0x002c len= 3 4d 14 00
+  262.491 RX NOTIFY    h=0x002c len= 3 4d 14 01
+  262.492 RX NOTIFY    h=0x002c len= 3 4d 14 02
+  262.492 RX NOTIFY    h=0x002c len= 3 4d 14 03
+  262.493 RX NOTIFY    h=0x002c len= 3 4d 04 04
+  262.951 TX MTU_REQ
+  263.019 RX MTU_RSP
+  263.034 TX WRITE_REQ h=0x002d len= 2 01 00
+  263.094 RX WRITE_RSP h=  -    len= 0 
+  263.448 RX NOTIFY    h=0x002c len= 3 4d 04 05
+  263.473 TX WRITE_REQ h=0x002a len= 3 4d 00 00
+  263.536 RX WRITE_RSP h=  -    len= 0 
+  264.470 RX NOTIFY    h=0x002c len= 3 4d 04 06
+  264.529 TX WRITE_REQ h=0x002a len= 3 4d 00 01
+  264.586 RX WRITE_RSP h=  -    len= 0 
+  264.640 TX WRITE_REQ h=0x002a len= 3 20 00 02
+  264.693 RX WRITE_RSP h=  -    len= 0 
+  264.694 EVT DISCONNECT handle=0x42 reason=0x13
+  283.951 EVT LE_CONN_COMPLETE status=0 handle=0x42 peer=43:f5:f5:c6:00:00 int=3840
+  284.445 RX NOTIFY    h=0x002c len= 3 4d 04 00
+  284.747 TX MTU_REQ
+  284.801 RX MTU_RSP
+  284.809 TX WRITE_REQ h=0x002d len= 2 01 00
+  284.845 RX WRITE_RSP h=  -    len= 0 
+  285.461 RX NOTIFY    h=0x002c len= 3 4d 04 01
+  285.469 TX WRITE_REQ h=0x002a len= 3 4d 00 00
+  285.529 RX WRITE_RSP h=  -    len= 0 
+  286.447 RX NOTIFY    h=0x002c len= 3 4d 04 02
+  286.497 TX WRITE_REQ h=0x002a len= 3 4d 00 01
+  286.533 RX WRITE_RSP h=  -    len= 0 
+  287.449 RX NOTIFY    h=0x002c len= 3 4d 04 03
+  287.457 TX WRITE_REQ h=0x002a len= 3 4d 00 02
+  287.492 RX WRITE_RSP h=  -    len= 0 
+  288.439 RX NOTIFY    h=0x002c len= 3 4d 04 04
+  288.450 TX WRITE_REQ h=0x002a len= 3 4d 00 03
+  288.482 RX WRITE_RSP h=  -    len= 0 
+  289.448 RX NOTIFY    h=0x002c len= 3 4d 04 05
+  289.454 TX WRITE_REQ h=0x002a len= 3 4d 00 04
+  289.518 RX WRITE_RSP h=  -    len= 0 
+  290.450 RX NOTIFY    h=0x002c len= 3 4d 04 06
+  290.461 TX WRITE_REQ h=0x002a len= 3 4d 00 05
+  290.492 RX WRITE_RSP h=  -    len= 0 
+  291.453 RX NOTIFY    h=0x002c len= 3 4d 04 07
+  291.456 TX WRITE_REQ h=0x002a len= 3 4d 00 06
+  291.497 RX WRITE_RSP h=  -    len= 0 
+  292.442 RX NOTIFY    h=0x002c len= 3 4d 04 08
+  292.445 TX WRITE_REQ h=0x002a len= 3 4d 00 07
+  292.490 RX WRITE_RSP h=  -    len= 0 
+  293.450 RX NOTIFY    h=0x002c len= 3 4d 04 09
+  293.459 TX WRITE_REQ h=0x002a len= 3 4d 00 08
+  293.538 RX WRITE_RSP h=  -    len= 0 
+  294.444 RX NOTIFY    h=0x002c len= 3 4d 04 0a
+  294.451 TX WRITE_REQ h=0x002a len= 3 4d 00 09
+  294.483 RX WRITE_RSP h=  -    len= 0 
+  295.452 RX NOTIFY    h=0x002c len= 3 4d 04 0b
+  295.460 TX WRITE_REQ h=0x002a len= 3 4d 00 0a
+  295.487 RX WRITE_RSP h=  -    len= 0 
+  296.478 RX NOTIFY    h=0x002c len= 3 4d 04 0c
+  296.484 TX WRITE_REQ h=0x002a len= 3 4d 00 0b
+  296.528 RX WRITE_RSP h=  -    len= 0 
+  297.442 RX NOTIFY    h=0x002c len= 3 4d 04 0d
+  297.460 TX WRITE_REQ h=0x002a len= 3 4d 00 0c
+  297.514 RX WRITE_RSP h=  -    len= 0 
+  298.448 RX NOTIFY    h=0x002c len= 3 4d 04 0e
+  298.463 TX WRITE_REQ h=0x002a len= 3 4d 00 0d
+  298.487 RX WRITE_RSP h=  -    len= 0 
+  299.450 RX NOTIFY    h=0x002c len= 3 4d 04 0f
+  299.456 TX WRITE_REQ h=0x002a len= 3 4d 00 0e
+  299.494 RX WRITE_RSP h=  -    len= 0 
+  300.437 RX NOTIFY    h=0x002c len= 3 4d 04 10
+  300.439 TX WRITE_REQ h=0x002a len= 3 4d 00 0f
+  300.512 RX WRITE_RSP h=  -    len= 0 
+  301.450 RX NOTIFY    h=0x002c len= 3 4d 04 11
+  301.462 TX WRITE_REQ h=0x002a len= 3 4d 00 10
+  301.506 RX WRITE_RSP h=  -    len= 0 
+  302.449 RX NOTIFY    h=0x002c len= 3 4d 04 12
+  302.455 TX WRITE_REQ h=0x002a len= 3 4d 00 11
+  302.507 RX WRITE_RSP h=  -    len= 0 
+  303.439 RX NOTIFY    h=0x002c len= 3 4d 04 13
+  303.442 TX WRITE_REQ h=0x002a len= 3 4d 00 12
+  303.482 RX WRITE_RSP h=  -    len= 0 
+  304.469 RX NOTIFY    h=0x002c len= 3 4d 04 14
+  304.476 TX WRITE_REQ h=0x002a len= 3 4d 00 13
+  304.502 RX WRITE_RSP h=  -    len= 0 
+  305.448 RX NOTIFY    h=0x002c len= 3 4d 04 15
+  305.459 TX WRITE_REQ h=0x002a len= 3 4d 00 14
+  305.523 RX WRITE_RSP h=  -    len= 0 
+  306.444 RX NOTIFY    h=0x002c len= 3 4d 04 16
+  306.460 TX WRITE_REQ h=0x002a len= 3 4d 00 15
+  306.513 RX WRITE_RSP h=  -    len= 0 
+  307.445 RX NOTIFY    h=0x002c len= 3 4d 04 17
+  307.460 TX WRITE_REQ h=0x002a len= 3 4d 00 16
+  307.490 RX WRITE_RSP h=  -    len= 0 
+  308.465 RX NOTIFY    h=0x002c len= 3 4d 04 18
+  308.483 TX WRITE_REQ h=0x002a len= 3 4d 00 17
+  308.511 RX WRITE_RSP h=  -    len= 0 
+  309.440 RX NOTIFY    h=0x002c len= 3 4d 04 19
+  309.459 TX WRITE_REQ h=0x002a len= 3 4d 00 18
+  309.513 RX WRITE_RSP h=  -    len= 0 
+  310.458 RX NOTIFY    h=0x002c len= 3 4d 04 1a
+  310.481 TX WRITE_REQ h=0x002a len= 3 4d 00 19
+  310.519 RX WRITE_RSP h=  -    len= 0 
+  311.450 RX NOTIFY    h=0x002c len= 3 4d 04 1b
+  311.458 TX WRITE_REQ h=0x002a len= 3 4d 00 1a
+  311.504 RX WRITE_RSP h=  -    len= 0 
+  312.456 RX NOTIFY    h=0x002c len= 3 4d 04 1c
+  312.471 TX WRITE_REQ h=0x002a len= 3 4d 00 1b
+  312.514 RX WRITE_RSP h=  -    len= 0 
+  313.444 RX NOTIFY    h=0x002c len= 3 4d 04 1d
+  313.457 TX WRITE_REQ h=0x002a len= 3 4d 00 1c
+  313.523 RX WRITE_RSP h=  -    len= 0 
+  314.450 RX NOTIFY    h=0x002c len= 3 4d 04 1e
+  314.467 TX WRITE_REQ h=0x002a len= 3 4d 00 1d
+  314.493 RX WRITE_RSP h=  -    len= 0 
+  315.461 RX NOTIFY    h=0x002c len= 3 4d 04 1f
+  315.487 TX WRITE_REQ h=0x002a len= 3 4d 00 1e
+  315.558 RX WRITE_RSP h=  -    len= 0 
+  316.458 RX NOTIFY    h=0x002c len= 3 4d 04 20
+  316.462 TX WRITE_REQ h=0x002a len= 3 4d 00 1f
+  316.502 RX WRITE_RSP h=  -    len= 0 
+  317.462 RX NOTIFY    h=0x002c len= 3 4d 04 21
+  317.470 TX WRITE_REQ h=0x002a len= 3 4d 00 20
+  317.510 RX WRITE_RSP h=  -    len= 0 
+  318.439 RX NOTIFY    h=0x002c len= 3 4d 04 22
+  318.447 TX WRITE_REQ h=0x002a len= 3 4d 00 21
+  318.527 RX WRITE_RSP h=  -    len= 0 
+  319.443 RX NOTIFY    h=0x002c len= 3 4d 04 23
+  319.447 TX WRITE_REQ h=0x002a len= 3 4d 00 22
+  319.519 RX WRITE_RSP h=  -    len= 0 
+# ... heartbeat/notify pattern continues 1:1 at ~1 Hz until 481.486 EVT DISCONNECT reason=0x13 (app closed)

@@ -1,11 +1,33 @@
 # Q1 Classic Pro BLE Notes
 
+> **Revision 2026-09-03 — read this first.** An HCI snoop of the official PitPat Android app
+> (`doc/pitpat_app_hci_trace_2026-09-03.txt`) overturned the "kicking phase" model below:
+>
+> - The belt notifies about once per second. The app replies with **exactly one heartbeat
+>   (`4D 00 <seq> 05 6A 05 FD F8 43`, write-with-response) per notification**, ~10 ms later,
+>   and sends nothing else: no unlock write, no init frame, no early keepalive.
+> - PaceKeeper used to send heartbeats every 200 ms on a timer. That unsolicited 5x rate is
+>   what made the belt drop us (HCI 0x13) about 11 s into every connection. Since commit
+>   `af6959d` the firmware answers each notification with one heartbeat (fallback after 3 s of
+>   silence) and the connection is stable from the first attempt. No beeps, no cycles.
+> - `0x34` and `0x2F` are **frame lengths** (52 and 47 bytes), not packet types. The 52-byte
+>   frame carries the belt serial number as ASCII (bytes 32..48); the app received 52-byte
+>   frames for its whole session. The transition to 47-byte frames is not a "settling" event.
+> - The app's own first connection was kicked 2.7 s in, right after it wrote a frame that did
+>   not start with `4D` — so the belt does police what it receives.
+>
+> Sections marked **[SUPERSEDED]** below describe behaviour that was a symptom of the 200 ms
+> heartbeat. They are kept for history; do not build on them. Everything about reconnect
+> handling, supervision-timeout drops, zombie detection, GATT cache reuse, threading and
+> session accounting still applies.
+
+
 Accumulated knowledge about the Q1 Classic Pro (BA05 BLE protocol) and how pacekeeper handles it.
 Updated as discoveries are made.
 
 ---
 
-## BA05 Protocol Packet Types
+## BA05 Protocol Packet Types [SUPERSEDED — see revision note at top]
 
 The Q1 sends two distinct packet types over the notify characteristic:
 
@@ -17,7 +39,7 @@ The Q1 sends two distinct packet types over the notify characteristic:
 
 The packet type is `pData[0]` (first byte of the notification payload).
 
-### 0x34 "Kicking Phase"
+### 0x34 "Kicking Phase" [SUPERSEDED — see revision note at top]
 
 After a fresh BLE connection, the Q1 sends `0x34` packets for several cycles before settling into `0x2F`.
 During this phase:
@@ -26,7 +48,7 @@ During this phase:
 - This repeats for **~8 cycles** before settling — total kicking phase duration ~80–120 seconds.
 - This is **hardware behaviour**: it cannot be eliminated, only minimised.
 
-### 0x2F Stable Mode
+### 0x2F Stable Mode [SUPERSEDED — see revision note at top]
 
 Once the device settles to `0x2F`, it no longer kicks the connection unprompted.
 Arrival of the first `0x2F` packet signals the idle-disconnect timer should be armed (if configured).
@@ -54,7 +76,7 @@ stop keepalives → Q1's supervision timer (6s) fires → reason=520 → lighter
 
 ---
 
-## Kick Phase Mechanics
+## Kick Phase Mechanics [SUPERSEDED — see revision note at top]
 
 ```
 Connect → 0x34 packets → kicked (reason=531, ~10s) → reconnect → 0x34 again → ...
@@ -68,7 +90,7 @@ Total to settle: **~2 minutes** with 5s backoff, **~4 minutes** with 20s backoff
 
 ---
 
-## Backoff Strategy
+## Backoff Strategy [SUPERSEDED — see revision note at top]
 
 The reconnect backoff in `onDisconnect()` controls how long we wait between each kick cycle.
 Shorter backoff = more beeps but faster settle. Longer = fewer beeps but slower.
@@ -251,8 +273,9 @@ m_pClient->setConnectionParams(12, 24, 0, 600);
 //  minInterval=12 (~15ms), maxInterval=24 (~30ms), latency=0, timeout=600 (6s)
 ```
 
-The 6s supervision timeout means keepalives must arrive within 6 seconds.
-`KEEPALIVE_INTERVAL = 200ms` provides a large margin.
+The 6s supervision timeout means some traffic must flow within 6 seconds. The heartbeat is
+now one reply per belt notification (~1 Hz) with a 3 s fallback (`KEEPALIVE_FALLBACK_MS`), which
+keeps well inside the window without flooding the belt.
 
 `setDataLen(64)` was **removed** — caused `Set data length error: 514` on every connect because
 64 bytes is below the minimum negotiable PDU size. MTU is auto-negotiated (255 bytes in practice).

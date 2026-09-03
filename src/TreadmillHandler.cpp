@@ -606,7 +606,7 @@ bool TreadmillHandler::connectToDevice()
     // kicked. Sending here resets the belt's kick timer before we retrieve the
     // notify characteristic.
     sendKeepalive();
-    log_i("Early keepalive sent to reset belt kick timer");
+    log_i("Early keepalive sent");
 
     m_pNotifyCharacteristic = pService->getCharacteristic(CHARACTERISTIC_NOTIFY_STATE_UUID);
     if (!m_pNotifyCharacteristic)
