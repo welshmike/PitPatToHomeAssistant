@@ -53,6 +53,9 @@ Get an app like **nRF Connect** – this app allows you to view Bluetooth connec
   #define MQTT_PASS             "your-mqtt-password"
   #define TARGET_ADDRESS        "AA:BB:CC:11:22:33"  // from nRF Connect
   ```
+* On the Dial, `config.h` also has `TIMEZONE_TZ` for the Clock card — a POSIX TZ string, defaulting
+  to `Europe/London` (`GMT0BST,M3.5.0/1,M10.5.0`). Set it to your own timezone's POSIX TZ string if
+  you're not in the UK; it's not needed on the DevKit build.
 > **Note:** `src/config.h` is listed in `.gitignore` and will never be committed. Never commit your real credentials.
 * Connect the ESP32 with a USB cable (you might have to hold **RST** and **BOOT** while plugging it in)
 * Compile and flash the project via **PlatformIO → Upload and Monitor**, or from the CLI:
@@ -104,20 +107,22 @@ configuration screen for this and similar settings is planned.
   * Connecting: cancels the connect
 * **Side WAKE button**: on Running/Paused this is an emergency stop that always fires regardless
   of what's showing. On the Selector screen it cancels the picker instead, without sending any
-  belt command. On Connecting/Disconnected it's a harmless no-op refusal since there's no belt
-  link yet, and — outside the Selector — it does not cancel an in-progress connect; only tap/hold
-  on the Connecting screen do that
+  belt command. On Connecting it's a harmless no-op refusal since there's no belt link yet, and it
+  does not cancel an in-progress connect; only tap/hold on the Connecting screen do that.
+  Otherwise (Disconnected, Clock, or any other idle card) it homes: closes the selector if one was
+  open and returns to the Treadmill card — see Desk mode below
 * **Rotate** the dial (one detent = one physical "click" of the encoder):
   * Selector: ±0.2 mph per detent, clamped to 0.6–3.8 mph
   * Running: ±0.1 mph per detent, queued and sent as a single speed command about 400 ms after
     the last click, so spinning several clicks quickly only produces one BLE write
-  * Elsewhere (stopped, paused, connecting, disconnected outside the selector): ignored, reserved
-    for future screen navigation
+  * Paused, Connecting: ignored
+  * Treadmill/Disconnected, Clock, and any other idle card (Selector not open): scrolls the card
+    ring one card per detent — see Desk mode below
 * **Horizontal swipe** on the Selector screen: an alternate way to step the candidate, same
   0.2 mph per swipe as a detent — swiping right (clockwise) makes it faster, left makes it slower
 * The Selector closes itself back to Disconnected after 20 seconds with no input
-* If the screen is dimmed or off, the first tap, hold, turn, or swipe only wakes it — the input
-  itself is discarded, so a brush of the dial in the dark can't start the belt
+* If the screen is dimmed, the first tap, hold, turn, or swipe only wakes it — the input itself is
+  discarded, so a brush of the dial in the dark can't start the belt
 
 ### What the screen shows
 
@@ -150,8 +155,9 @@ configuration screen for this and similar settings is planned.
 
 ### Dimming
 
-After 2 minutes idle in Disconnected or Stopped, the backlight drops to 20% brightness. After
-10 minutes it turns off. Any input restores full brightness (see the wake-only rule above).
+After 2 minutes idle on any card (Treadmill/Disconnected, Clock, or a future card), the backlight
+drops to 20% brightness and stays there — it never turns off. Any input restores full brightness
+(see the wake-only rule above).
 
 ### Buzzer
 
@@ -174,6 +180,25 @@ blocked while the belt is still active).
   ```bash
   pio device monitor -e dial-usb
   ```
+
+### Desk mode
+
+Away from the belt, the Dial is a small desk gadget: cards sit in a ring — Treadmill, Clock, with
+more (Calendar, Flights, Lights, Music) coming in later sub-projects. While the belt is idle and no
+selector is open, the knob scrolls the ring one card per detent, in either direction, and the side
+button always jumps back to the Treadmill card (still an emergency stop when the belt is actually
+running). Connecting/Starting/Running/Paused screens override whichever card is showing, exactly as
+today, and the ring picks back up on the last card once the belt returns to idle.
+
+**The Dial boots into the Clock card**, not Disconnected — there is no idle return to a "home"
+card, so the Treadmill card is reached explicitly via the side button. The Clock is an analogue
+face on the round display: 12 tick marks, hour/minute/second hands, and a small date (`Mon 3 Sep`)
+at the 6 o'clock position, redrawn once a second. Time comes from NTP over WiFi, using the POSIX TZ
+string `TIMEZONE_TZ` from `config.h` (default `Europe/London`), and is also kept in the Dial's
+onboard BM8563 RTC — synced from NTP once it succeeds, and read back at boot — so the clock reads
+correctly immediately after a power cycle even with no WiFi available. Before either source has a
+time (a fresh device, no WiFi yet, an unset RTC), the face shows tick marks with no hands and
+`--:--` instead of a time.
 
 ### One device at a time
 
