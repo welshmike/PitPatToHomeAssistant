@@ -16,6 +16,7 @@
 #include "NetTask.h"
 #include "mqttview.h"
 #include "board.h"
+#include "TimeService.h"
 #if HAS_DIAL_UI
 #include "DialUi.h"
 #endif
@@ -40,6 +41,10 @@ TreadmillController controller(treadmill);
 
 NetTask netTask(net, g_mqttView, treadmill);
 PublishQueueObserver g_publishObserver(netTask, treadmill);
+
+// NTP/RTC wall clock for the Dial's clock card (compiles to a no-op RTC on
+// the DevKit — see TimeService.h).
+TimeService timeService;
 
 #if HAS_DIAL_UI
 DialUi dialUi(controller);
@@ -162,6 +167,10 @@ void setup()
   dialUi.begin();
 #endif
 
+  // Seeds the system clock from the Dial's RTC (no-op on the DevKit, which
+  // has none) so the clock card reads correctly before WiFi/NTP.
+  timeService.begin();
+
   // initialize watchdog
   // ESP-IDF 5.x (Arduino-ESP32 3.x) changed the WDT API to use a config struct
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
@@ -218,6 +227,7 @@ void loop()
 
   drainCommands();
   controller.tick(now);
+  timeService.tick(now);
 #if HAS_DIAL_UI
   dialUi.tick(now);
 #endif
@@ -225,6 +235,13 @@ void loop()
   const NetStatus netStatus = netTask.status();
   if (netStatus != g_lastNetStatus)
   {
+    // Fires once, on the transition into WIFI_UP or better (not on every
+    // later state change, e.g. WIFI_UP -> MQTT_CONNECTING) — onWifiUp()
+    // itself is idempotent too, so this is a belt-and-braces guard.
+    if (netStatus >= NetStatus::WIFI_UP && g_lastNetStatus < NetStatus::WIFI_UP)
+    {
+      timeService.onWifiUp();
+    }
     g_lastNetStatus = netStatus;
     controller.publishNetStatus(netStatus);
   }

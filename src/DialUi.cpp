@@ -97,7 +97,7 @@ void DialUi::begin()
     auto cfg = M5.config();
     cfg.serial_baudrate = 115200;
     cfg.internal_imu = false;
-    cfg.internal_rtc = false;
+    cfg.internal_rtc = true; // BM8563 RTC — TimeService reads it at boot, writes it after NTP sync
     M5Dial.begin(cfg, true, false);
 
     M5Dial.Display.setTextDatum(middle_center);
