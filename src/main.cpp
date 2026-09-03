@@ -4,7 +4,6 @@
 #include <NimBLEDevice.h>
 
 #include <WiFi.h>
-#include <mdns.h>
 // watch dog
 #include <esp_task_wdt.h>
 #include <ArduinoJson.h>
