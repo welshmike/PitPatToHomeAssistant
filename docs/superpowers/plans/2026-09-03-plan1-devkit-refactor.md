@@ -528,3 +528,14 @@ When all seven pass, tag `phase-a-verified` and start Plan 2 (Dial port + UI).
 
 ## Out of scope for this plan
 `DialUi`, screens, encoder/touch wiring, dimming, buzzer, `dial-ota` hostname, README hardware section for the Dial. These are Plan 2 and depend on the Task 2 spike results and the Phase A hardware checklist.
+
+## Backlog carried into Plan 2 (from the final review of Plan 1)
+- `TreadmillHandler::stop()` runs its side effects (session commit, `m_lastSpeed = 0`, autoReconnect flags) before `sendCommand()`; on a failed write the internal state and the belt diverge. Reorder or roll back on failure.
+- `TreadmillController::tick()` calls `onTargetSpeed(target, false)` even when the settle-time `setSpeedMph()` failed, and `PublishQueueObserver` enqueues a second snapshot on that event. Dedupe when DialUi lands.
+- `m_isPaused` stays true until the belt reports RUNNING, so a second tap right after resume re-sends the speed instead of pausing. Consider an optimistic "resuming" window.
+- `MQTT_CONNECTING` is never observable from `NetTask::status()` (entered and left inside one `tick()`); the Dial status dots want it.
+- Connection-timeout check copies the snapshot every loop pass; compare `millis() - m_lastPacketMs` first.
+- Backoff advance duplicated three times in `NetManager.cpp`; dead `nowMs` parameter in `attemptMqtt`.
+- Settings publishes wait up to 50 ms each on a full queue while the net task is blocked; bound to one wait per drain pass.
+- Split `ITreadmillLink` into its own header so `TreadmillHandler.h` stops including `TreadmillController.h`.
+- Hardware-only: confirm OTA/mDNS still resolve after a WiFi outage (`startOtaOnce()` never re-runs `ArduinoOTA.begin()`, same as the old firmware).
