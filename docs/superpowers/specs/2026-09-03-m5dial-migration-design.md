@@ -185,3 +185,9 @@ Hardware, by Mike, at the end of each phase (checklist in the plan):
 - **Accidental start.** Mitigated by: wake-only input when dimmed, the belt's own countdown shown on screen, tap cancels during countdown, and minimum speed 0.6 mph.
 
 **Amended 2026-09-03 after first hardware session:** rotate-to-start removed — the encoder only adjusts speed while the belt is RUNNING (not paused); on all other screens rotation is ignored and reserved for future screen navigation. Status dots are hidden on the Running screen. The speed overlay blanks the ring interior before drawing.
+
+## 4.7 Start speed and start selector (added 2026-09-03, approved)
+
+- Setting `startSpeedMph`: default 1.0, range [SPEED_MIN_MPH, SPEED_MAX_MPH], step 0.1. NVS namespace `pk_cfg`, key `start` (stored as tenths, uint16). HA number entity `start-speed` "Start Speed" (config category, min 0.6, max 3.8, step 0.1, unit mph). Every "start" path (HA Start button, Dial long press, queued start while disconnected) sends the configured speed instead of the fixed 994 raw.
+- Dial: tap on Disconnected opens the **Selector** screen showing the candidate speed large (`Font7`) with `mph` caption, the speed ring at that value (amber), hints `tap to start` / `hold: default`. Knob click or horizontal swipe (right = faster) changes the candidate by 0.2 mph, clamped. Opens at the default. Second tap starts at the candidate; long press starts at the default; side button cancels; 20 s without input cancels. Long press on Disconnected starts at the default without the selector. Paused/Running/Connecting behaviour unchanged.
+- Swipe: horizontal displacement ≥ 40 px within one touch with |dx| > |dy|; a swipe suppresses tap and long press for that touch.
