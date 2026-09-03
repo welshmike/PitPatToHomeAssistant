@@ -47,7 +47,7 @@ PublishQueueObserver g_publishObserver(netTask, treadmill);
 TimeService timeService;
 
 #if HAS_DIAL_UI
-DialUi dialUi(controller);
+DialUi dialUi(controller, timeService);
 #endif
 
 // Last network state pushed to the views; the display will read this too.

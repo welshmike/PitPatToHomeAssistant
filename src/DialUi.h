@@ -10,6 +10,7 @@
 #include "DialInput.h"
 #include "SpeedSelector.h"
 #include "CardRing.h"
+#include "TimeService.h"
 
 // Loop-task ISnapshotObserver that renders treadmill/net state to the Dial's
 // round 240x240 display and drives the controller from the encoder, touch
@@ -19,7 +20,10 @@
 class DialUi : public ISnapshotObserver
 {
 public:
-    explicit DialUi(TreadmillController& controller);
+    // timeService backs the clock card (spec 4.8) — kept as a reference, not
+    // a copy, so the clock always reads the live wall clock TimeService.tick()
+    // is updating in main.cpp's loop().
+    DialUi(TreadmillController& controller, const TimeService& timeService);
 
     // Must run FIRST in setup() on the Dial — M5Unified owns display/I2C/
     // Serial init via M5Dial.begin(). Creates the render canvas (16bpp,
@@ -122,6 +126,11 @@ private:
         bool     selectorOpen   = false;
         int32_t  selectorTenths = 0;
         uint8_t  cardId         = 0; // CardId of m_cards.current() (spec 4.8)
+        // Seconds-of-day from the clock card's local time (hh*3600+mm*60+ss),
+        // or -1 when TimeService isn't valid yet — makes drawClock() redraw
+        // once a second while the second hand is moving, and once when
+        // validity itself flips (--:-- <-> a real face).
+        int32_t  clockSec       = -1;
 
         bool operator==(const FrameKey& o) const
         {
@@ -136,7 +145,7 @@ private:
                    sessionDistanceCenti == o.sessionDistanceCenti &&
                    sessionSteps == o.sessionSteps &&
                    selectorOpen == o.selectorOpen && selectorTenths == o.selectorTenths &&
-                   cardId == o.cardId;
+                   cardId == o.cardId && clockSec == o.clockSec;
         }
     };
     FrameKey buildFrameKey(uint32_t nowMs) const;
@@ -152,6 +161,7 @@ private:
     uint32_t m_lastFrameDrawMs = 0;
 
     TreadmillController& m_controller;
+    const TimeService& m_time;
     DialInput m_input;
     SpeedSelector m_selector;
     // Which desk-mode card is showing while the belt is idle (spec 4.8);
