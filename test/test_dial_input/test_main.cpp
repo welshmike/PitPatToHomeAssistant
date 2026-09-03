@@ -170,7 +170,7 @@ static void test_wake_touchWhileDim_swallowsGestureUntilRelease(void)
 // Backlight dimming
 // ---------------------------------------------------------------------------
 
-static void test_backlight_dimAt120s_offAt600s_activityResets(void)
+static void test_backlight_dimAt120s_staysDimAt600s_activityResets(void)
 {
     DialInput input;
     uint32_t t0 = 1000;
@@ -187,8 +187,10 @@ static void test_backlight_dimAt120s_offAt600s_activityResets(void)
     input.tick(0, false, 0, 0, false, t0 + 599999);
     TEST_ASSERT_TRUE(DialInput::Backlight::DIM == input.backlight());
 
+    // No OFF stage (spec 4.8): still DIM at 600s and beyond, with no further
+    // activity — the backlight never turns off on its own.
     input.tick(0, false, 0, 0, false, t0 + 600000);
-    TEST_ASSERT_TRUE(DialInput::Backlight::OFF == input.backlight());
+    TEST_ASSERT_TRUE(DialInput::Backlight::DIM == input.backlight());
 
     input.noteActivity(t0 + 600000);
     TEST_ASSERT_TRUE(DialInput::Backlight::FULL == input.backlight());
@@ -414,9 +416,11 @@ static void test_time_wraparoundSafe(void)
     input.tick(0, false, 0, 0, false, t1);
     TEST_ASSERT_TRUE(DialInput::Backlight::DIM == input.backlight());
 
+    // No OFF stage (spec 4.8): still DIM well past the old OFF threshold,
+    // even across a further millis() wrap.
     uint32_t t2 = t0 + (uint32_t)600000; // also wraps
     input.tick(0, false, 0, 0, false, t2);
-    TEST_ASSERT_TRUE(DialInput::Backlight::OFF == input.backlight());
+    TEST_ASSERT_TRUE(DialInput::Backlight::DIM == input.backlight());
 }
 
 int main(int argc, char **argv)
@@ -443,7 +447,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_swipe_thenHoldPast1000ms_noLongPress);
     RUN_TEST(test_swipe_whileDim_wakeOnly_noSwipe);
     RUN_TEST(test_swipe_39px_notASwipe_isADrag);
-    RUN_TEST(test_backlight_dimAt120s_offAt600s_activityResets);
+    RUN_TEST(test_backlight_dimAt120s_staysDimAt600s_activityResets);
     RUN_TEST(test_time_wraparoundSafe);
 
     return UNITY_END();

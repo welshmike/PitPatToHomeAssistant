@@ -3,9 +3,11 @@
 
 // Pure input logic for the M5Dial encoder/touch/button UI: turns raw per-tick
 // readings into intents (detents, tap, long press with hold progress, wake,
-// button stop) and owns the backlight FULL/DIM/OFF state machine. Knows
-// nothing about Arduino, M5Unified or the display — a later task feeds it
-// from M5Dial and maps its events onto the treadmill controller.
+// button stop) and owns the backlight FULL/DIM state machine. The backlight
+// dims after DIM_AFTER_MS of inactivity but never turns off (spec 4.8) —
+// there is no OFF stage. Knows nothing about Arduino, M5Unified or the
+// display — a later task feeds it from M5Dial and maps its events onto the
+// treadmill controller.
 struct DialEvents
 {
     int detents = 0;
@@ -26,9 +28,8 @@ public:
     static constexpr uint32_t HOLD_MS = 1000;
     static constexpr int SWIPE_MIN_PX = 40;
     static constexpr uint32_t DIM_AFTER_MS = 120000;
-    static constexpr uint32_t OFF_AFTER_MS = 600000;
 
-    enum class Backlight { FULL, DIM, OFF };
+    enum class Backlight { FULL, DIM };
 
     // Feed one tick's raw readings; returns the intents derived from them.
     DialEvents tick(long encoderCount, bool touchDown, int touchX, int touchY,

@@ -9,6 +9,7 @@
 #include "NetStatus.h"
 #include "DialInput.h"
 #include "SpeedSelector.h"
+#include "CardRing.h"
 
 // Loop-task ISnapshotObserver that renders treadmill/net state to the Dial's
 // round 240x240 display and drives the controller from the encoder, touch
@@ -39,15 +40,16 @@ private:
     static constexpr uint32_t kRenderIntervalMs = 50;
 
     // Display brightness levels, applied via M5Dial.Display.setBrightness()
-    // only when DialInput's backlight state changes.
+    // only when DialInput's backlight state changes. No OFF level — the
+    // backlight dims but never turns off (spec 4.8).
     static constexpr uint8_t kBrightFull = 255;
     static constexpr uint8_t kBrightDim  = 50;
-    static constexpr uint8_t kBrightOff  = 0;
 
     void render(uint32_t nowMs);
     void draw(LovyanGFX& gfx, uint32_t nowMs);
     void drawStatusDots(LovyanGFX& gfx);
     void drawDisconnected(LovyanGFX& gfx);
+    void drawClock(LovyanGFX& gfx);
     void drawConnecting(LovyanGFX& gfx);
     void drawStarting(LovyanGFX& gfx, uint32_t nowMs);
     void drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs);
@@ -62,19 +64,22 @@ private:
     // screen is showing, on top of it, whenever a hold is in progress (I4).
     void drawHoldArc(LovyanGFX& gfx);
 
-    // Which of the five top-level screens is showing right now. Selection
+    // Which of the six top-level screens is showing right now. Selection
     // order: controller.isConnecting() -> Connecting (checked BEFORE the
     // COUNTDOWN test below — a start() queued while disconnected makes the
     // controller publish an optimistic COUNTDOWN even though nothing is
     // actually counting down yet, so Connecting must win that race or the
     // Starting screen shows with no way to cancel it); COUNTDOWN -> Starting;
     // (RUNNING or paused) -> Running/Paused; m_selector.isOpen() -> Selector;
-    // else Disconnected. Connecting/Starting/Running all win over an open
-    // selector — handleInput() closes it as soon as any of those becomes
-    // true, so a stale selector can't resurface once they clear. `paused` is
-    // passed in rather than recomputed so callers that already have it (draw(),
-    // handleInput()) don't pay for isPausedState() twice in the same tick.
-    enum class Screen : uint8_t { DISCONNECTED, CONNECTING, STARTING, RUNNING, SELECTOR };
+    // else the current card (m_cards.current(), spec 4.8): TREADMILL ->
+    // Disconnected (the Treadmill card), CLOCK -> Clock. Connecting/Starting/
+    // Running all win over an open selector — handleInput() closes it as soon
+    // as any of those becomes true, so a stale selector can't resurface once
+    // they clear; they also win over the card ring, which simply resumes on
+    // its last card once the belt screens clear. `paused` is passed in rather
+    // than recomputed so callers that already have it (draw(), handleInput())
+    // don't pay for isPausedState() twice in the same tick.
+    enum class Screen : uint8_t { DISCONNECTED, CLOCK, CONNECTING, STARTING, RUNNING, SELECTOR };
     Screen currentScreen(bool paused) const;
 
     void handleInput(uint32_t nowMs);
@@ -116,6 +121,7 @@ private:
         uint32_t sessionSteps        = 0;
         bool     selectorOpen   = false;
         int32_t  selectorTenths = 0;
+        uint8_t  cardId         = 0; // CardId of m_cards.current() (spec 4.8)
 
         bool operator==(const FrameKey& o) const
         {
@@ -129,7 +135,8 @@ private:
                    sessionDurationSec == o.sessionDurationSec &&
                    sessionDistanceCenti == o.sessionDistanceCenti &&
                    sessionSteps == o.sessionSteps &&
-                   selectorOpen == o.selectorOpen && selectorTenths == o.selectorTenths;
+                   selectorOpen == o.selectorOpen && selectorTenths == o.selectorTenths &&
+                   cardId == o.cardId;
         }
     };
     FrameKey buildFrameKey(uint32_t nowMs) const;
@@ -147,6 +154,9 @@ private:
     TreadmillController& m_controller;
     DialInput m_input;
     SpeedSelector m_selector;
+    // Which desk-mode card is showing while the belt is idle (spec 4.8);
+    // boots on CLOCK and is driven by knob detents in handleInput().
+    CardRing m_cards;
     DialInput::Backlight m_lastBacklight = DialInput::Backlight::FULL;
     float m_holdProgress = 0.0f; // last tick's hold-in-progress fraction [0,1]; drives the long-press ring
 

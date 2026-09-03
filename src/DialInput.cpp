@@ -16,13 +16,12 @@ void DialInput::updateBacklight(uint32_t nowMs)
         return;
     }
     uint32_t elapsed = nowMs - m_lastActivityMs; // uint32_t subtraction wraps correctly
-    if (elapsed >= OFF_AFTER_MS) {
-        m_backlight = Backlight::OFF;
-    } else if (elapsed >= DIM_AFTER_MS) {
+    if (elapsed >= DIM_AFTER_MS) {
         m_backlight = Backlight::DIM;
     }
     // else: leave as-is. A reset to FULL happens explicitly wherever activity
-    // is noted (wake(), noteActivity(), or the hasInput branch below).
+    // is noted (wake(), noteActivity(), or the hasInput branch below). There
+    // is no further stage past DIM — the backlight never turns off (4.8).
 }
 
 void DialInput::noteActivity(uint32_t nowMs)

@@ -199,6 +199,11 @@ void DialUi::handleInput(uint32_t nowMs)
             m_selector.open(m_controller.startSpeedMph(), nowMs);
             playAcceptBeep(true);
         }
+        else if (screen == Screen::CLOCK)
+        {
+            // The Clock card owns no value and starts nothing — tap is a
+            // no-op, no beep (spec 4.8).
+        }
         else
         {
             // The controller notifies observers (including this one, via
@@ -238,6 +243,11 @@ void DialUi::handleInput(uint32_t nowMs)
             const bool accepted = (m_snapshot.status != statusBefore);
             playAcceptBeep(accepted);
         }
+        else if (screen == Screen::CLOCK)
+        {
+            // The Clock card owns no value and starts nothing — hold is a
+            // no-op, no beep (spec 4.8).
+        }
         else
         {
             const bool stopped = m_controller.stop();
@@ -247,22 +257,28 @@ void DialUi::handleInput(uint32_t nowMs)
 
     if (ev.btnStop)
     {
-        if (screen == Screen::SELECTOR)
+        if (screen == Screen::RUNNING || screen == Screen::STARTING || screen == Screen::CONNECTING)
         {
-            // Cancel: closes the picker without sending any belt command —
-            // nothing is running yet, so there's nothing to stop.
-            m_selector.close();
-            playAcceptBeep(true);
+            // Emergency stop: the side button sends stop() while the belt is
+            // running/paused/counting down, and unchanged on Connecting —
+            // it does NOT cancel the connect there (only tap/hold do); the
+            // write is simply refused because the link is down, and that
+            // plays the refused tone via the same feedback path (I1).
+            const bool stopped = m_controller.stop();
+            playStopBeep(nowMs, stopped);
         }
         else
         {
-            // Emergency stop: the side button always sends stop(), on every
-            // other screen — including Connecting, where it does NOT cancel
-            // the connect (only tap/hold do that there); the write is simply
-            // refused because the link is down, and that plays the refused
-            // tone via the same feedback path (I1).
-            const bool stopped = m_controller.stop();
-            playStopBeep(nowMs, stopped);
+            // Home: side button always returns to the Treadmill card (spec
+            // 4.8), closing the selector first if it was open. Nothing is
+            // running yet on any of these screens (Disconnected/Clock/
+            // Selector), so there's no belt command to send.
+            if (m_selector.isOpen())
+            {
+                m_selector.close();
+            }
+            m_cards.set(CardId::TREADMILL);
+            playAcceptBeep(true);
         }
     }
 
@@ -276,10 +292,11 @@ void DialUi::handleInput(uint32_t nowMs)
         }
         else
         {
-            // Rotation only adjusts speed while the belt is actually
-            // running. Rotate-to-start was removed (2026-09-03): while
-            // stopped, paused, connecting or disconnected the knob is
-            // reserved for future screen navigation and is ignored for now.
+            // Rotation adjusts speed while the belt is actually running
+            // (unchanged). Otherwise, while parked on a card screen with no
+            // selector open, it spins the card ring — one detent, one card
+            // (spec 4.8). Connecting/Starting get neither: the knob is
+            // ignored there.
             const bool beltRunning =
                 (m_snapshot.status == TreadMillData::RUNNING) && !isPausedState();
             if (beltRunning)
@@ -290,6 +307,23 @@ void DialUi::handleInput(uint32_t nowMs)
                 // arm the overlay deadline from the nowMs this call actually has.
                 m_controller.nudgeSpeed(ev.detents, nowMs);
                 m_speedOverlayUntilMs = nowMs + DIAL_SPEED_OVERLAY_MS;
+            }
+            else if (screen == Screen::DISCONNECTED || screen == Screen::CLOCK)
+            {
+                if (ev.detents > 0)
+                {
+                    for (int i = 0; i < ev.detents; ++i)
+                    {
+                        m_cards.next();
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < -ev.detents; ++i)
+                    {
+                        m_cards.prev();
+                    }
+                }
             }
         }
     }
@@ -365,7 +399,6 @@ void DialUi::applyBrightness()
     {
     case DialInput::Backlight::FULL: level = kBrightFull; break;
     case DialInput::Backlight::DIM:  level = kBrightDim;  break;
-    case DialInput::Backlight::OFF:  level = kBrightOff;  break;
     }
     M5Dial.Display.setBrightness(level);
 }
@@ -423,7 +456,17 @@ DialUi::Screen DialUi::currentScreen(bool paused) const
     {
         return Screen::SELECTOR;
     }
-    return Screen::DISCONNECTED;
+    // Belt idle and no selector open: show whichever card the ring is
+    // parked on (spec 4.8). TREADMILL is the existing Disconnected screen;
+    // CLOCK is the new clock card.
+    switch (m_cards.current())
+    {
+    case CardId::TREADMILL:
+        return Screen::DISCONNECTED;
+    case CardId::CLOCK:
+    default:
+        return Screen::CLOCK;
+    }
 }
 
 DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
@@ -449,6 +492,7 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
     key.sessionSteps         = m_snapshot.sessionSteps;
     key.selectorOpen   = m_selector.isOpen();
     key.selectorTenths = static_cast<int32_t>(m_selector.value() * 10.0f);
+    key.cardId          = static_cast<uint8_t>(m_cards.current());
     return key;
 }
 
@@ -522,6 +566,9 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     case Screen::SELECTOR:
         drawSelector(gfx);
         break;
+    case Screen::CLOCK:
+        drawClock(gfx);
+        break;
     case Screen::DISCONNECTED:
     default:
         drawDisconnected(gfx);
@@ -589,6 +636,15 @@ void DialUi::drawDisconnected(LovyanGFX& gfx)
 
     gfx.setTextColor(kColDim, kColBg);
     gfx.drawString("tap: speed   hold: start", kCentreX, kDiscHintY, &fonts::Font2);
+}
+
+// Clock card (spec 4.8) — placeholder. Task 3 replaces this with the
+// analogue face (ticks, hands, date, NTP/RTC time); for now it's just the
+// card label so the ring has somewhere to land.
+void DialUi::drawClock(LovyanGFX& gfx)
+{
+    gfx.setTextColor(kColText, kColBg);
+    gfx.drawString("CLOCK", kCentreX, kCentreY, &fonts::Font4);
 }
 
 void DialUi::drawConnecting(LovyanGFX& gfx)
