@@ -1,5 +1,6 @@
 #include "NetManager.h"
 
+#include "board.h"
 #include <ArduinoOTA.h>
 #include <esp_task_wdt.h>
 
@@ -187,6 +188,9 @@ void NetManager::startOtaOnce()
     } else if (error == OTA_END_ERROR) {
       log_e("End Failed");
     } });
+#ifdef OTA_HOSTNAME
+    ArduinoOTA.setHostname(OTA_HOSTNAME);
+#endif
     // Also starts mDNS.
     ArduinoOTA.begin();
     log_i("OTA ready");
