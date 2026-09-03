@@ -49,6 +49,23 @@ constexpr int32_t kRowRightX       = 168;
 constexpr int32_t kSpeedReadoutY   = 196;
 constexpr int32_t kHintY           = 222; // "tap resume - hold stop"
 
+// Disconnected screen ("LAST SESSION" summary) — row reuses kRowLeftX/kRowRightX.
+constexpr int32_t kDiscTitleY   = 60;
+constexpr int32_t kDiscTimeY    = 96;
+constexpr int32_t kDiscRowY     = 140;
+constexpr int32_t kDiscCaptionY = 156;
+constexpr int32_t kDiscHintY    = 210;
+
+// Connecting screen.
+constexpr int32_t kConnLabelY   = 96;
+constexpr int32_t kConnAttemptY = 128;
+constexpr int32_t kConnBeepY    = 160;
+constexpr int32_t kConnHintY    = 210;
+
+// Starting (COUNTDOWN) screen.
+constexpr int32_t kStartLabelY = 96;
+constexpr int32_t kStartHintY  = 210;
+
 // Halves each RGB565 channel — the ~50% dim used for the whole paused
 // layout. Cheap bit-twiddling, no float, safe to call once per element per
 // frame.
@@ -156,7 +173,16 @@ void DialUi::handleInput(uint32_t nowMs)
 
     if (ev.longPress || ev.btnStop)
     {
-        m_controller.stop();
+        // The Connecting screen's hold gesture cancels the in-flight connect
+        // rather than stopping a belt that isn't running yet.
+        if (currentScreen(isPausedState()) == Screen::CONNECTING)
+        {
+            m_controller.requestDisconnect();
+        }
+        else
+        {
+            m_controller.stop();
+        }
 #if DIAL_SOUND
         // Two short beeps 80 ms apart, non-blocking: play the first now and
         // let the scheduler below fire the second once its deadline passes.
@@ -223,19 +249,6 @@ void DialUi::onNetStatus(NetStatus s)
     m_netStatus = s;
 }
 
-const char* DialUi::statusName(TreadMillData::Status s)
-{
-    switch (s)
-    {
-    case TreadMillData::COUNTDOWN:    return "COUNTDOWN";
-    case TreadMillData::RUNNING:      return "RUNNING";
-    case TreadMillData::PAUSED:       return "PAUSED";
-    case TreadMillData::STOPPED:      return "STOPPED";
-    case TreadMillData::DISCONNECTED: return "DISCONNECTED";
-    default:                          return "UNKNOWN";
-    }
-}
-
 bool DialUi::isPausedState() const
 {
     // The belt reports STOPPED while paused, so the link's own pause flag
@@ -245,11 +258,30 @@ bool DialUi::isPausedState() const
     return m_controller.isPaused() || m_snapshot.status == TreadMillData::PAUSED;
 }
 
+DialUi::Screen DialUi::currentScreen(bool paused) const
+{
+    if (m_snapshot.status == TreadMillData::COUNTDOWN)
+    {
+        return Screen::STARTING;
+    }
+    if (m_snapshot.status == TreadMillData::RUNNING || paused)
+    {
+        return Screen::RUNNING;
+    }
+    if (m_controller.isConnecting())
+    {
+        return Screen::CONNECTING;
+    }
+    return Screen::DISCONNECTED;
+}
+
 DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
 {
+    const bool paused = isPausedState();
     FrameKey key;
     key.status        = static_cast<uint8_t>(m_snapshot.status);
-    key.paused        = isPausedState();
+    key.screen         = static_cast<uint8_t>(currentScreen(paused));
+    key.paused        = paused;
     key.durationSec   = m_snapshot.durationSec;
     key.speedTenths   = static_cast<int32_t>(m_snapshot.speedFeedback * 10.0f);
     key.distanceCenti = static_cast<int32_t>(m_snapshot.distanceKm * 100.0f);
@@ -260,6 +292,10 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
     key.netStatus       = static_cast<uint8_t>(m_netStatus);
     key.holdUnits       = static_cast<int32_t>(m_holdProgress * 20.0f);
     key.pulsePhase       = static_cast<uint8_t>((nowMs / 500) % 2);
+    key.connectAttempts  = m_controller.connectAttempts();
+    key.sessionDurationSec   = m_snapshot.sessionDurationSec;
+    key.sessionDistanceCenti = static_cast<int32_t>(m_snapshot.sessionDistanceKm * 100.0f);
+    key.sessionSteps         = m_snapshot.sessionSteps;
     return key;
 }
 
@@ -310,29 +346,92 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     drawStatusDots(gfx);
 
     const bool paused = isPausedState();
-    if (m_snapshot.status == TreadMillData::RUNNING || paused)
+    switch (currentScreen(paused))
     {
+    case Screen::RUNNING:
         drawRunning(gfx, paused, nowMs);
-    }
-    else
-    {
-        drawIdle(gfx);
+        break;
+    case Screen::STARTING:
+        drawStarting(gfx, nowMs);
+        break;
+    case Screen::CONNECTING:
+        drawConnecting(gfx);
+        break;
+    case Screen::DISCONNECTED:
+    default:
+        drawDisconnected(gfx);
+        break;
     }
 }
 
-// Smoke-test content for every status this task doesn't own (COUNTDOWN,
-// STOPPED, DISCONNECTED) — replaced by a later task.
-void DialUi::drawIdle(LovyanGFX& gfx)
+// Default screen: not connecting, not running/paused, not counting down
+// (covers DISCONNECTED and a settled STOPPED with no belt activity) — shows
+// the previous session's summary and a hint to start a new one.
+void DialUi::drawDisconnected(LovyanGFX& gfx)
 {
     gfx.setTextColor(kColText, kColBg);
-    gfx.drawString(statusName(m_snapshot.status), 120, 60, &fonts::Font4);
+    gfx.drawString("LAST SESSION", kCentreX, kDiscTitleY, &fonts::Font2);
 
-    char line[32];
-    snprintf(line, sizeof(line), "%.1f mph", m_snapshot.speedFeedback);
-    gfx.drawString(line, 120, 130, &fonts::Font2);
+    // formatDuration(0) reads "00:00", which looks like a real (very short)
+    // session rather than "no session yet" — show "--:--" instead.
+    char timeBuf[16];
+    if (m_snapshot.sessionDurationSec == 0)
+    {
+        snprintf(timeBuf, sizeof(timeBuf), "--:--");
+    }
+    else
+    {
+        DialFormat::formatDuration(m_snapshot.sessionDurationSec, timeBuf, sizeof(timeBuf));
+    }
+    gfx.drawString(timeBuf, kCentreX, kDiscTimeY, &fonts::Font4);
 
-    snprintf(line, sizeof(line), "%.2f km", m_snapshot.distanceKm);
-    gfx.drawString(line, 120, 160, &fonts::Font2);
+    // Distance/steps formatters already render zero sensibly ("0.00" / "0"),
+    // so no zero-session branch is needed for these two.
+    char distBuf[8];
+    DialFormat::formatDistanceKm(m_snapshot.sessionDistanceKm, distBuf, sizeof(distBuf));
+    gfx.setTextColor(kColText, kColBg);
+    gfx.drawString(distBuf, kRowLeftX, kDiscRowY, &fonts::Font4);
+    gfx.setTextColor(kColDim, kColBg);
+    gfx.drawString("km", kRowLeftX, kDiscCaptionY, &fonts::Font2);
+
+    char stepsBuf[12];
+    DialFormat::formatSteps(m_snapshot.sessionSteps, stepsBuf, sizeof(stepsBuf));
+    gfx.setTextColor(kColText, kColBg);
+    gfx.drawString(stepsBuf, kRowRightX, kDiscRowY, &fonts::Font4);
+    gfx.setTextColor(kColDim, kColBg);
+    gfx.drawString("steps", kRowRightX, kDiscCaptionY, &fonts::Font2);
+
+    gfx.setTextColor(kColDim, kColBg);
+    gfx.drawString("tap or turn to start", kCentreX, kDiscHintY, &fonts::Font2);
+}
+
+void DialUi::drawConnecting(LovyanGFX& gfx)
+{
+    gfx.setTextColor(kColText, kColBg);
+    gfx.drawString("Connecting...", kCentreX, kConnLabelY, &fonts::Font4);
+
+    char attemptBuf[24];
+    snprintf(attemptBuf, sizeof(attemptBuf), "attempt %u",
+             (unsigned)m_controller.connectAttempts());
+    gfx.setTextColor(kColDim, kColBg);
+    gfx.drawString(attemptBuf, kCentreX, kConnAttemptY, &fonts::Font2);
+
+    gfx.drawString("belt beeps are normal", kCentreX, kConnBeepY, &fonts::Font2);
+    gfx.drawString("hold to cancel", kCentreX, kConnHintY, &fonts::Font2);
+}
+
+void DialUi::drawStarting(LovyanGFX& gfx, uint32_t nowMs)
+{
+    // Blink 1 Hz: on for the first 500 ms of each 1000 ms window — same
+    // pulse mechanism as the PAUSED label on the running screen.
+    const uint8_t pulsePhase = static_cast<uint8_t>((nowMs / 500) % 2);
+    if (pulsePhase == 0)
+    {
+        gfx.setTextColor(kColText, kColBg);
+        gfx.drawString("STARTING", kCentreX, kStartLabelY, &fonts::Font4);
+    }
+    gfx.setTextColor(kColDim, kColBg);
+    gfx.drawString("tap to cancel", kCentreX, kStartHintY, &fonts::Font2);
 }
 
 void DialUi::drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs)

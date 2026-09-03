@@ -30,6 +30,8 @@ public:
     bool          writeResult = true;      // what start/pause/stop/setSpeedRaw report back
     bool          paused = false;          // the link's own pause flag
     uint16_t      lastSpeedRaw = 0;        // last commanded raw speed the link remembers
+    bool          connecting = false;      // what isConnecting() reports
+    uint16_t      connectAttemptsVal = 0;  // what connectAttempts() reports
     TreadMillData data;                 // settable snapshot the controller reads
     TreadMillData lastOptimistic;       // last value passed to publishOptimistic()
 
@@ -44,6 +46,8 @@ public:
     TreadMillData snapshot() const override { return data; }
     bool isPaused() const override { return paused; }
     uint16_t lastCommandedSpeedRaw() const override { return lastSpeedRaw; }
+    bool isConnecting() const override { return connecting; }
+    uint16_t connectAttempts() const override { return connectAttemptsVal; }
     void publishOptimistic(const TreadMillData& d) override
     {
         lastOptimistic = d;

@@ -152,6 +152,7 @@ bool TreadmillHandler::requestConnect()
     m_userRequestedConnect = true; // user explicitly turned on — keep retrying after idle kicks
     m_reconnectNotBefore = 0;      // allow immediate first attempt
     m_doConnect = true;
+    m_connectAttempts = 0;
     return true;
 }
 
@@ -363,10 +364,12 @@ bool TreadmillHandler::handle()
         (m_reconnectNotBefore == 0 || millis() >= m_reconnectNotBefore))
     {
         m_lastConnectAttempt = millis();
+        ++m_connectAttempts;
         if (this->connectToDevice())
         {
             log_i("Connection successful.");
             m_doConnect = false;
+            m_connectAttempts = 0;
             m_lastKeepalive = millis(); // Reset keepalive timer on connect
             // m_lastConnectTime is now set inside connectToDevice() before subscription
             // so that notification timing is accurate during the setup window.

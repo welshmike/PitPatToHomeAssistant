@@ -3,37 +3,12 @@
 
 #include "TreadmillData.h"
 #include "NetStatus.h"
+#include "ITreadmillLink.h"
 
 // Intent layer between command sources (MQTT/HA today, the M5Dial touch+encoder
 // next) and the BLE link. Command sources call this; nothing calls the link
 // directly. Deliberately Arduino-free so it builds and is tested on the host —
 // all timing arrives as `nowMs` from the caller.
-
-// What the controller needs from the BLE link. TreadmillHandler implements it.
-class ITreadmillLink
-{
-public:
-    virtual bool isConnected() const = 0;
-    // The four command calls return true when the command was written to the
-    // belt, or queued because the link is disconnected; false when the write
-    // itself failed (GATT write error, link down, or post-connect cooldown).
-    // On false the caller must not write optimistic state; it should republish
-    // whatever the link's snapshot holds (a failed GATT write has already set
-    // DISCONNECTED there; a cooldown block leaves it unchanged).
-    virtual bool start() = 0;                   // start at START_SPEED_RAW (queues if disconnected)
-    virtual bool pause() = 0;
-    virtual bool stop() = 0;
-    virtual bool setSpeedRaw(uint16_t raw) = 0; // queues if disconnected
-    virtual bool requestConnect() = 0;
-    virtual bool requestDisconnect() = 0;       // refuses while the belt is active
-    virtual TreadMillData snapshot() const = 0;
-    virtual void publishOptimistic(const TreadMillData&) = 0; // write the snapshot only
-    // The belt reports STOPPED while paused, so the link's own pause flag is the
-    // only truth about a pause; lastCommandedSpeedRaw() is what resume() restores.
-    virtual bool isPaused() const = 0;
-    virtual uint16_t lastCommandedSpeedRaw() const = 0;
-    virtual ~ITreadmillLink() = default;
-};
 
 // What views (MQTT publisher, Dial UI) implement to be told about state changes.
 class ISnapshotObserver
@@ -94,6 +69,10 @@ public:
     // The belt reports STOPPED while paused, so this is the only way to tell
     // "paused" apart from "stopped" — delegates to the link's own pause flag.
     bool isPaused() const { return m_link.isPaused(); }
+
+    // Pass-throughs for the Dial UI's Connecting screen.
+    bool isConnecting() const { return m_link.isConnecting(); }
+    uint16_t connectAttempts() const { return m_link.connectAttempts(); }
 
 private:
     void notifySnapshot(const TreadMillData& d);

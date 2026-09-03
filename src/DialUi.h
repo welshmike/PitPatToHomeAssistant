@@ -46,9 +46,18 @@ private:
     void render(uint32_t nowMs);
     void draw(LovyanGFX& gfx, uint32_t nowMs);
     void drawStatusDots(LovyanGFX& gfx);
-    void drawIdle(LovyanGFX& gfx);
+    void drawDisconnected(LovyanGFX& gfx);
+    void drawConnecting(LovyanGFX& gfx);
+    void drawStarting(LovyanGFX& gfx, uint32_t nowMs);
     void drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs);
-    static const char* statusName(TreadMillData::Status s);
+
+    // Which of the four top-level screens is showing right now. Selection
+    // order: COUNTDOWN -> Starting; (RUNNING or paused) -> Running/Paused;
+    // controller.isConnecting() -> Connecting; else Disconnected. `paused` is
+    // passed in rather than recomputed so callers that already have it (draw(),
+    // handleInput()) don't pay for isPausedState() twice in the same tick.
+    enum class Screen : uint8_t { DISCONNECTED, CONNECTING, STARTING, RUNNING };
+    Screen currentScreen(bool paused) const;
 
     void handleInput(uint32_t nowMs);
     void applyBrightness();
@@ -62,6 +71,7 @@ private:
     struct FrameKey
     {
         uint8_t  status        = 0;
+        uint8_t  screen        = 0;
         bool     paused        = false;
         uint32_t durationSec   = 0;
         int32_t  speedTenths   = 0;
@@ -73,14 +83,23 @@ private:
         uint8_t  netStatus     = 0;
         int32_t  holdUnits     = 0;
         uint8_t  pulsePhase    = 0;
+        uint16_t connectAttempts   = 0;
+        uint32_t sessionDurationSec = 0;
+        int32_t  sessionDistanceCenti = 0;
+        uint32_t sessionSteps        = 0;
 
         bool operator==(const FrameKey& o) const
         {
-            return status == o.status && paused == o.paused && durationSec == o.durationSec &&
-                   speedTenths == o.speedTenths && distanceCenti == o.distanceCenti &&
-                   steps == o.steps && targetTenths == o.targetTenths && pending == o.pending &&
+            return status == o.status && screen == o.screen && paused == o.paused &&
+                   durationSec == o.durationSec && speedTenths == o.speedTenths &&
+                   distanceCenti == o.distanceCenti && steps == o.steps &&
+                   targetTenths == o.targetTenths && pending == o.pending &&
                    overlayActive == o.overlayActive && netStatus == o.netStatus &&
-                   holdUnits == o.holdUnits && pulsePhase == o.pulsePhase;
+                   holdUnits == o.holdUnits && pulsePhase == o.pulsePhase &&
+                   connectAttempts == o.connectAttempts &&
+                   sessionDurationSec == o.sessionDurationSec &&
+                   sessionDistanceCenti == o.sessionDistanceCenti &&
+                   sessionSteps == o.sessionSteps;
         }
     };
     FrameKey buildFrameKey(uint32_t nowMs) const;

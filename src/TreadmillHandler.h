@@ -7,7 +7,7 @@
 #include "TreadmillState.h"
 #include "SessionTracker.h"
 #include "SnapshotStore.h"
-#include "TreadmillController.h"
+#include "ITreadmillLink.h"
 
 class TreadmillHandler : public NimBLEClientCallbacks, public ISessionEvents, public ITreadmillLink
 {
@@ -90,6 +90,13 @@ public:
     bool isPaused() const override { return m_tracker.isPaused(); }
     uint16_t lastCommandedSpeedRaw() const override { return m_lastSpeed; }
 
+    // True while handle() is actively retrying connectToDevice() — a connect
+    // is queued, auto-reconnect is on, and we're not up yet.
+    bool isConnecting() const override { return !isConnected() && m_doConnect && m_autoReconnect; }
+    // Number of connectToDevice() attempts since the last requestConnect()
+    // call or successful connection.
+    uint16_t connectAttempts() const override { return m_connectAttempts; }
+
     TreadMillData snapshot() const override { return m_snapshot.read(); }
 
     // Writes the optimistic state into the shared snapshot. Deliberately does NOT
@@ -145,6 +152,9 @@ private:
     bool m_autoReconnect = true;
 
     unsigned long m_lastConnectAttempt = 0;
+    // Count of connectToDevice() attempts since requestConnect() or the last
+    // successful connection — drives the Dial's "attempt N" Connecting screen.
+    uint16_t m_connectAttempts = 0;
 
     unsigned long m_lastPacketMs = 0;
     SnapshotStore m_snapshot;
