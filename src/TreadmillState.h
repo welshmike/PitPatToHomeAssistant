@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <Preferences.h>
 #include "platform.h" // For STEP_LENGTH_M
+#include "TreadmillData.h" // For ITotalsStore, SessionDelta
 
 struct CalibrationPoint {
     float speedMph;
@@ -44,8 +45,9 @@ public:
 private:
     void saveTotalsToNVS();
 
-    // Raised by addSession(); cleared by flush() once the totals reach NVS.
-    bool m_dirty = false;
+    // Raised by addSession() (NimBLE task); cleared by flush() (main loop) once the
+    // totals reach NVS.
+    volatile bool m_dirty = false;
 
     float m_totalDistanceKm = 0.0f;
     uint32_t m_totalSteps = 0;

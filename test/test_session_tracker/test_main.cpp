@@ -353,6 +353,10 @@ static void test_settledIdleNotFiredWhenSessionActive(void)
     // Type change to 0x2F while a session is live must not arm the idle timer.
     d = g_tracker->onPacket(mkFull(0x2F, TreadMillData::STOPPED, 0.0f, 500), d, 300);
     TEST_ASSERT_EQUAL_INT(0, g_events->settledIdle);
+
+    // Side effect of that last packet: RUNNING -> STOPPED with dist>0 and an active,
+    // unpaused session is a clean stop, which commits exactly one session.
+    TEST_ASSERT_EQUAL_size_t(1, g_totals->calls.size());
 }
 
 // ---------------------------------------------------------------------------

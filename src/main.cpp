@@ -449,10 +449,14 @@ void loop()
     if (millis() - g_lastWifiConnect > WIFI_DISCONNECT_FORCED_RESTART_S * 1000)
     {
       log_w("Wifi could not connect in time, will force a restart");
+      // persist any session committed on the BLE task while networking is down
+      treadmill.flushTotals();
       ESP.restart();
     }
     g_wifiConnected = false;
     g_mqttConnected = false;
+    // persist any session committed on the BLE task while networking is down
+    treadmill.flushTotals();
     delay(1000);
     return;
   }
@@ -465,6 +469,8 @@ void loop()
   if (!mqttConnected)
   {
     g_mqttConnected = false;
+    // persist any session committed on the BLE task while networking is down
+    treadmill.flushTotals();
     delay(1000);
     return;
   }

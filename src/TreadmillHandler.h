@@ -98,6 +98,12 @@ public:
     uint32_t getTotalCalories()    const { return m_state.getTotalCalories(); }
     uint32_t getTotalDurationSec() const { return m_state.getTotalDurationSec(); }
 
+    // Persists any dirty totals to NVS immediately. handle() already calls this every
+    // cycle, but main.cpp's loop() has early-return paths (WiFi/MQTT down, pre-restart)
+    // that skip handle() entirely — call this there so a session committed on the BLE
+    // task isn't lost on those paths.
+    void flushTotals() { m_state.flush(); }
+
     // Restore cumulative totals — call when NVS was wiped (accidental "Erase Flash").
     // Values are written immediately to NVS so they survive the next reboot.
     // Payload source: read the last good values from HA's sensor history for
