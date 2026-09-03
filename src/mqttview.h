@@ -64,7 +64,7 @@ public:
         return m_calibrate20StepsBtn;
     }
 
-    void publishCalibrationPoints(const CalibrationPoint* points, uint8_t count);
+    void publishCalibrationPoints(uint8_t count);
     void publishAllConfigs();
     void publishAutoReconnectSetting(bool enabled);
     void publishIdleDisconnectSetting(uint16_t mins);

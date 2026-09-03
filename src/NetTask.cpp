@@ -196,7 +196,7 @@ void NetTask::drainPublishQueue()
             m_view.publishPauseTimeoutSetting(item.u16);
             break;
         case PubType::CALIB_COUNT:
-            m_view.publishCalibrationPoints(m_treadmill.getCalibrationPoints(), item.u8);
+            m_view.publishCalibrationPoints(item.u8);
             break;
         case PubType::FULL_RESYNC:
             fullResync();
@@ -242,8 +242,7 @@ void NetTask::fullResync()
     m_view.publishAutoReconnectSetting(m_treadmill.getAutoReconnect());
     m_view.publishIdleDisconnectSetting(m_treadmill.getIdleDisconnectMins());
     m_view.publishPauseTimeoutSetting(m_treadmill.getPauseTimeoutMins());
-    m_view.publishCalibrationPoints(m_treadmill.getCalibrationPoints(),
-                                    m_treadmill.getCalibrationPointCount());
+    m_view.publishCalibrationPoints(m_treadmill.getCalibrationPointCount());
 
     if (!m_stackLogged)
     {
@@ -398,19 +397,22 @@ void NetTask::onMqttMessage(char *topic, uint8_t *payload, unsigned int length)
         DeserializationError err = deserializeJson(doc, payload, length);
         if (err)
         {
-            log_e("restore-totals: JSON parse failed (%s)", err.c_str());
+            log_e("restore-totals: JSON parse failed (%s) — payload: %.*s", err.c_str(),
+                  (int)length, (const char*)payload);
             return;
         }
         cmd.type = CmdType::RESTORE_TOTALS;
-        // Absent fields keep their current NVS value — the loop task fills those in.
-        cmd.totals.has[0] = !doc["dist_km"].isNull();
-        cmd.totals.has[1] = !doc["steps"].isNull();
-        cmd.totals.has[2] = !doc["calories"].isNull();
-        cmd.totals.has[3] = !doc["duration_sec"].isNull();
-        cmd.totals.distKm      = doc["dist_km"]      | 0.0f;
-        cmd.totals.steps       = doc["steps"]        | (uint32_t)0;
-        cmd.totals.calories    = doc["calories"]     | (uint32_t)0;
-        cmd.totals.durationSec = doc["duration_sec"] | (uint32_t)0;
+        // Absent or unconvertible fields keep their current NVS value — the loop
+        // task fills those in. A present-but-wrong-typed field (e.g. "steps":{})
+        // must not be treated as "has" with a value of 0.
+        cmd.totals.has[0] = doc["dist_km"].is<float>();
+        cmd.totals.has[1] = doc["steps"].is<uint32_t>();
+        cmd.totals.has[2] = doc["calories"].is<uint32_t>();
+        cmd.totals.has[3] = doc["duration_sec"].is<uint32_t>();
+        cmd.totals.distKm      = cmd.totals.has[0] ? doc["dist_km"].as<float>()      : 0.0f;
+        cmd.totals.steps       = cmd.totals.has[1] ? doc["steps"].as<uint32_t>()     : 0;
+        cmd.totals.calories    = cmd.totals.has[2] ? doc["calories"].as<uint32_t>()  : 0;
+        cmd.totals.durationSec = cmd.totals.has[3] ? doc["duration_sec"].as<uint32_t>() : 0;
         log_i("Restore-totals payload accepted");
         enqueueCommand(cmd);
         return;
@@ -422,7 +424,8 @@ void NetTask::onMqttMessage(char *topic, uint8_t *payload, unsigned int length)
         DeserializationError err = deserializeJson(doc, payload, length);
         if (err)
         {
-            log_e("restore-calibration: JSON parse failed (%s)", err.c_str());
+            log_e("restore-calibration: JSON parse failed (%s) — payload: %.*s", err.c_str(),
+                  (int)length, (const char*)payload);
             return;
         }
         JsonArray arr = doc.as<JsonArray>();

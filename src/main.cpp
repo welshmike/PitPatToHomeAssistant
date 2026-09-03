@@ -61,6 +61,9 @@ static void drainCommands()
   {
     switch (cmd.type)
     {
+    case CmdType::NONE:
+      break;
+
     case CmdType::START:
       controller.start();
       break;

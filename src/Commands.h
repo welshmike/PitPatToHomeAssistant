@@ -15,6 +15,7 @@
 
 enum class CmdType : uint8_t
 {
+    NONE,
     START,
     PAUSE,
     STOP,
@@ -32,7 +33,7 @@ enum class CmdType : uint8_t
 
 struct Command
 {
-    CmdType  type = CmdType::HA_ONLINE;
+    CmdType  type = CmdType::NONE;
     float    f    = 0;     // SET_SPEED_MPH
     bool     b    = false; // SET_AUTO_RECONNECT
     uint16_t u16  = 0;     // SET_IDLE_MINS / SET_PAUSE_MINS

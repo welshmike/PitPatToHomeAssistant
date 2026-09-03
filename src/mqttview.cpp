@@ -169,7 +169,7 @@ MqttView::MqttView(PubSubClient *client)
     m_calibrate20StepsBtn.setIcon("mdi:shoe-print");
 }
 
-void MqttView::publishCalibrationPoints(const CalibrationPoint* points, uint8_t count)
+void MqttView::publishCalibrationPoints(uint8_t count)
 {
     // HA state values are limited to 255 characters — the full JSON array for
     // 10 points exceeds this. Publish just the count as the state value instead.
