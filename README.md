@@ -67,10 +67,10 @@ Get an app like **nRF Connect** – this app allows you to view Bluetooth connec
 
 ## M5Stack Dial
 
-The M5Stack Dial v1.1 is the current target for local, HA-free control: tap to start/pause/
-resume, turn the dial to change speed, and read live stats on the round display. The ESP32
-DevKit build described above still works and is now the legacy target — kept building so it
-stays available as a fallback.
+The M5Stack Dial v1.1 is the current target for local, HA-free control: tap to pick a start speed
+and go, tap/hold to pause/resume/stop, turn the dial to change speed, and read live stats on the
+round display. The ESP32 DevKit build described above still works and is now the legacy target —
+kept building so it stays available as a fallback.
 
 ### Hardware needed
 
@@ -79,26 +79,56 @@ stays available as a fallback.
   (display, touch, encoder, buzzer) is built into the unit
 * The same DeerRun Q1 / PitPat-T01 treadmill as above
 
+### Start speed setting
+
+Every "start" path — the Dial (tap-selector or hold), and the Home Assistant Start button — sends
+the same configured start speed rather than a fixed value. It's the HA number entity
+**Start Speed** (`start-speed`, 0.6–3.8 mph, step 0.1, default **1.0 mph**), settable from Home
+Assistant like any other config entity; there is no on-Dial way to change the default yet — a Dial
+configuration screen for this and similar settings is planned.
+
 ### Controls
 
-* **Tap** the screen: start (when disconnected or stopped), pause (when running), resume at the
-  previous speed (when paused), or — while a connect is in progress (the Connecting screen) —
-  cancel the connect
-* **Hold** the screen for about 1 second: stop. While a connect is in progress, the same hold
-  cancels the connect instead
-* **Side WAKE button**: always stops, on every screen — an emergency stop that does not depend
-  on what's showing. It does not cancel an in-progress connect (only tap/hold on the Connecting
-  screen do that); pressing it there is a harmless no-op refusal since there's no belt link yet
-* **Rotate** the dial: ±0.1 mph per detent (click). The change is queued and sent as a single
-  speed command about 400 ms after the last click, so spinning several clicks quickly only
-  produces one BLE write. The knob only changes speed while the belt is running; while stopped,
-  paused, connecting or disconnected it is ignored (reserved for future screen navigation)
-* If the screen is dimmed or off, the first tap, hold, or turn only wakes it — the input itself
-  is discarded, so a brush of the dial in the dark can't start the belt
+* **Tap** the screen:
+  * Disconnected: opens the **Start Speed selector** — the candidate speed starts at the
+    configured default and shows large on the speed ring
+  * Selector: confirms the candidate and starts the belt at that speed
+  * Running: pause
+  * Paused: resume at the previous speed
+  * Connecting: cancel the connect
+* **Hold** the screen for about 1 second:
+  * Disconnected: starts the belt immediately at the configured default speed, skipping the
+    selector
+  * Selector: starts the belt at the default speed, skipping the candidate
+  * Running or Paused: stop
+  * Connecting: cancels the connect
+* **Side WAKE button**: on Running/Paused this is an emergency stop that always fires regardless
+  of what's showing. On the Selector screen it cancels the picker instead, without sending any
+  belt command. On Connecting/Disconnected it's a harmless no-op refusal since there's no belt
+  link yet, and — outside the Selector — it does not cancel an in-progress connect; only tap/hold
+  on the Connecting screen do that
+* **Rotate** the dial (one detent = one physical "click" of the encoder):
+  * Selector: ±0.2 mph per detent, clamped to 0.6–3.8 mph
+  * Running: ±0.1 mph per detent, queued and sent as a single speed command about 400 ms after
+    the last click, so spinning several clicks quickly only produces one BLE write
+  * Elsewhere (stopped, paused, connecting, disconnected outside the selector): ignored, reserved
+    for future screen navigation
+* **Horizontal swipe** on the Selector screen: an alternate way to step the candidate, same
+  0.2 mph per swipe as a detent — swiping right (clockwise) makes it faster, left makes it slower
+* The Selector closes itself back to Disconnected after 20 seconds with no input
+* If the screen is dimmed or off, the first tap, hold, turn, or swipe only wakes it — the input
+  itself is discarded, so a brush of the dial in the dark can't start the belt
 
 ### What the screen shows
 
-* **Disconnected**: last session's summary (time, distance, steps) with a hint to tap to start
+* **Disconnected**: last session's summary (time, distance, steps). The on-screen hint still
+  reads "tap to start", but tap now opens the Start Speed selector rather than starting
+  immediately — hold still starts right away, at the configured default speed
+* **Selector** ("START SPEED"): the candidate speed shown large, with an `mph` caption and an
+  amber speed ring at that value, and hints "tap to start" / "hold: default". Opens (from
+  Disconnected) at the configured default speed; closes back to Disconnected on tap (starts the
+  belt), hold (starts at default), the side button (cancels, no belt command), or 20 seconds of
+  inactivity
 * **Connecting**: shown whenever a connect is in progress — including right after tapping start
   while the belt is unreachable, before the belt itself is counting down. "Connecting… attempt
   N" (attempt count only shown once there's been one) with a note that belt beeps are normal,
