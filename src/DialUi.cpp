@@ -210,12 +210,21 @@ void DialUi::handleInput(uint32_t nowMs)
 
     if (ev.detents != 0)
     {
-        // nudgeSpeed() synchronously fires onTargetSpeed(mph, pending=true)
-        // via the controller's observer callback, so m_targetPending/
-        // m_targetSpeedMph are already current by the time this returns —
-        // arm the overlay deadline from the nowMs this call actually has.
-        m_controller.nudgeSpeed(ev.detents, nowMs);
-        m_speedOverlayUntilMs = nowMs + DIAL_SPEED_OVERLAY_MS;
+        // Rotation only adjusts speed while the belt is actually running.
+        // Rotate-to-start was removed (2026-09-03): while stopped, paused,
+        // connecting or disconnected the knob is reserved for future screen
+        // navigation and is ignored for now.
+        const bool beltRunning =
+            (m_snapshot.status == TreadMillData::RUNNING) && !isPausedState();
+        if (beltRunning)
+        {
+            // nudgeSpeed() synchronously fires onTargetSpeed(mph, pending=true)
+            // via the controller's observer callback, so m_targetPending/
+            // m_targetSpeedMph are already current by the time this returns —
+            // arm the overlay deadline from the nowMs this call actually has.
+            m_controller.nudgeSpeed(ev.detents, nowMs);
+            m_speedOverlayUntilMs = nowMs + DIAL_SPEED_OVERLAY_MS;
+        }
     }
 
     // ev.wake needs no handling beyond the brightness change already applied
@@ -389,10 +398,16 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     gfx.fillScreen(kColBg);
     gfx.setTextDatum(middle_center);
 
-    drawStatusDots(gfx);
-
     const bool paused = isPausedState();
-    switch (currentScreen(paused))
+    const Screen screen = currentScreen(paused);
+    // Status dots are hidden while the belt is running (clean screen for
+    // walking); they show on every other screen, including Paused.
+    const bool showDots = !(screen == Screen::RUNNING && !paused);
+    if (showDots)
+    {
+        drawStatusDots(gfx);
+    }
+    switch (screen)
     {
     case Screen::RUNNING:
         drawRunning(gfx, paused, nowMs);
@@ -465,7 +480,7 @@ void DialUi::drawDisconnected(LovyanGFX& gfx)
     gfx.drawString("steps", kRowRightX, kDiscCaptionY, &fonts::Font2);
 
     gfx.setTextColor(kColDim, kColBg);
-    gfx.drawString("tap or turn to start", kCentreX, kDiscHintY, &fonts::Font2);
+    gfx.drawString("tap to start", kCentreX, kDiscHintY, &fonts::Font2);
 }
 
 void DialUi::drawConnecting(LovyanGFX& gfx)
@@ -597,7 +612,10 @@ void DialUi::drawSpeedOverlay(LovyanGFX& gfx, bool paused)
     // (time, row, PAUSED label, hints) does not show through the overlay,
     // then put the status dots back since they sit inside that circle.
     gfx.fillCircle(kRingCx, kRingCy, kRingInner - 2, kColBg);
-    drawStatusDots(gfx);
+    if (!(m_snapshot.status == TreadMillData::RUNNING && !paused))
+    {
+        drawStatusDots(gfx);
+    }
 
     char centreBuf[16];
     DialFormat::formatSpeedMph(m_targetSpeedMph, centreBuf, sizeof(centreBuf));

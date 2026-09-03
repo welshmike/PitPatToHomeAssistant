@@ -91,15 +91,14 @@ stays available as a fallback.
   screen do that); pressing it there is a harmless no-op refusal since there's no belt link yet
 * **Rotate** the dial: ±0.1 mph per detent (click). The change is queued and sent as a single
   speed command about 400 ms after the last click, so spinning several clicks quickly only
-  produces one BLE write. Rotating while stopped or disconnected starts the belt at the dialed
-  speed
+  produces one BLE write. The knob only changes speed while the belt is running; while stopped,
+  paused, connecting or disconnected it is ignored (reserved for future screen navigation)
 * If the screen is dimmed or off, the first tap, hold, or turn only wakes it — the input itself
   is discarded, so a brush of the dial in the dark can't start the belt
 
 ### What the screen shows
 
-* **Disconnected**: last session's summary (time, distance, steps) with a hint to tap or turn to
-  start
+* **Disconnected**: last session's summary (time, distance, steps) with a hint to tap to start
 * **Connecting**: shown whenever a connect is in progress — including right after tapping start
   while the belt is unreachable, before the belt itself is counting down. "Connecting… attempt
   N" (attempt count only shown once there's been one) with a note that belt beeps are normal,
@@ -110,9 +109,10 @@ stays available as a fallback.
   numeric speed readout, distance and step count below
 * **Paused**: the same layout as Running, dimmed, with a pulsing "PAUSED" label and a hint to tap
   to resume or hold to stop
-* **Speed overlay**: after a rotate, the target speed and an amber target ring replace the
-  current screen's centre content for 1.5 seconds on whichever screen is showing (not just
-  Running/Paused), then revert automatically
+* **Speed overlay**: after a rotate while running, the target speed and an amber target ring
+  replace the centre content for 1.5 seconds, then revert automatically
+* **Status dots** (BLE blue, WiFi green, MQTT green) show on every screen except Running, so the
+  walking screen stays clean
 * **Hold-to-stop/cancel progress**: while holding, a red arc outside the speed ring fills in on
   whichever screen is showing, not just Running/Paused
 * Every screen has three small status dots along the top edge: BLE, WiFi, MQTT — lit when each is

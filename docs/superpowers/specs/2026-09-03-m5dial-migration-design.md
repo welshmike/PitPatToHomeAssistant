@@ -183,3 +183,5 @@ Hardware, by Mike, at the end of each phase (checklist in the plan):
 - **Shared internal I2C.** Touch, RTC and RFID share G11/G12. Touch polling from the main loop is fine; nothing else touches that bus in this design.
 - **Toolchain jump.** Arduino-ESP32 2.0.17 → possibly 3.x changes the watchdog API (already handled behind `ESP_ARDUINO_VERSION_MAJOR`), `mdns.h`, and ArduinoOTA behaviour. The spike surfaces these before the app code depends on them.
 - **Accidental start.** Mitigated by: wake-only input when dimmed, the belt's own countdown shown on screen, tap cancels during countdown, and minimum speed 0.6 mph.
+
+**Amended 2026-09-03 after first hardware session:** rotate-to-start removed — the encoder only adjusts speed while the belt is RUNNING (not paused); on all other screens rotation is ignored and reserved for future screen navigation. Status dots are hidden on the Running screen. The speed overlay blanks the ring interior before drawing.
