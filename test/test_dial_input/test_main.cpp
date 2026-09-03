@@ -286,6 +286,119 @@ static void test_tap_releaseJustUnderTapMaxMs_isATap(void)
 }
 
 // ---------------------------------------------------------------------------
+// Horizontal swipe
+// ---------------------------------------------------------------------------
+
+static void test_swipe_right_firesOnceThenZero(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, true, 50, 50, false, t0); // touch down
+
+    DialEvents e1 = input.tick(0, true, 90, 50, false, t0 + 100); // +40px right
+    TEST_ASSERT_EQUAL_INT(1, e1.swipe);
+
+    DialEvents e2 = input.tick(0, true, 90, 50, false, t0 + 150); // still held, no further move
+    TEST_ASSERT_EQUAL_INT(0, e2.swipe);
+
+    DialEvents e3 = input.tick(0, false, 0, 0, false, t0 + 200); // release
+    TEST_ASSERT_EQUAL_INT(0, e3.swipe);
+}
+
+static void test_swipe_left_firesOnce(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, true, 50, 50, false, t0); // touch down
+
+    DialEvents e1 = input.tick(0, true, 10, 50, false, t0 + 100); // -40px left
+    TEST_ASSERT_EQUAL_INT(-1, e1.swipe);
+}
+
+static void test_swipe_diagonal_dyExceedsDx_notASwipe_isADrag(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, true, 50, 50, false, t0); // touch down
+
+    // dx=40, dy=45: |dx| >= 40 but not > |dy| -> no swipe. Still a drag by
+    // distance, so release must not be a tap.
+    DialEvents eMid = input.tick(0, true, 90, 95, false, t0 + 100);
+    TEST_ASSERT_EQUAL_INT(0, eMid.swipe);
+
+    DialEvents eRelease = input.tick(0, false, 0, 0, false, t0 + 150);
+    TEST_ASSERT_FALSE(eRelease.tap);
+}
+
+static void test_swipe_thenRelease_notTapNotLongPress(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, true, 50, 50, false, t0); // touch down
+
+    DialEvents eSwipe = input.tick(0, true, 90, 50, false, t0 + 100);
+    TEST_ASSERT_EQUAL_INT(1, eSwipe.swipe);
+
+    DialEvents eRelease = input.tick(0, false, 0, 0, false, t0 + 200);
+    TEST_ASSERT_FALSE(eRelease.tap);
+    TEST_ASSERT_FALSE(eRelease.longPress);
+}
+
+static void test_swipe_thenHoldPast1000ms_noLongPress(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, true, 50, 50, false, t0); // touch down
+    input.tick(0, true, 90, 50, false, t0 + 100); // swipe fires
+
+    DialEvents eHeld = input.tick(0, true, 90, 50, false, t0 + 1100); // past 1000ms hold
+    TEST_ASSERT_FALSE(eHeld.longPress);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, eHeld.holdProgress);
+}
+
+static void test_swipe_whileDim_wakeOnly_noSwipe(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, false, 0, 0, false, t0); // baseline
+    input.tick(0, false, 0, 0, false, t0 + 120000); // now DIM
+    TEST_ASSERT_TRUE(DialInput::Backlight::DIM == input.backlight());
+
+    // Touch-down arrives while dim: wakes, swallows the gesture.
+    DialEvents eDown = input.tick(0, true, 50, 50, false, t0 + 120001);
+    TEST_ASSERT_TRUE(eDown.wake);
+    TEST_ASSERT_EQUAL_INT(0, eDown.swipe);
+    TEST_ASSERT_TRUE(DialInput::Backlight::FULL == input.backlight());
+
+    // A 40px move within the swallowed gesture must not emit a swipe.
+    DialEvents eMove = input.tick(0, true, 90, 50, false, t0 + 120050);
+    TEST_ASSERT_EQUAL_INT(0, eMove.swipe);
+    TEST_ASSERT_TRUE(DialInput::Backlight::FULL == input.backlight());
+}
+
+static void test_swipe_39px_notASwipe_isADrag(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, true, 50, 50, false, t0); // touch down
+
+    // 39px < SWIPE_MIN_PX (40): no swipe, but still exceeds TAP_MAX_MOVE_PX
+    // (20) so it's a drag.
+    DialEvents eMid = input.tick(0, true, 89, 50, false, t0 + 100);
+    TEST_ASSERT_EQUAL_INT(0, eMid.swipe);
+
+    DialEvents eRelease = input.tick(0, false, 0, 0, false, t0 + 200);
+    TEST_ASSERT_FALSE(eRelease.tap);
+}
+
+// ---------------------------------------------------------------------------
 // Wraparound-safe time maths
 // ---------------------------------------------------------------------------
 
@@ -323,6 +436,13 @@ int main(int argc, char **argv)
     RUN_TEST(test_wake_encoderWhileDim_rebasesBaselineForNextDetent);
     RUN_TEST(test_tap_releaseAtExactlyTapMaxMs_notATap);
     RUN_TEST(test_tap_releaseJustUnderTapMaxMs_isATap);
+    RUN_TEST(test_swipe_right_firesOnceThenZero);
+    RUN_TEST(test_swipe_left_firesOnce);
+    RUN_TEST(test_swipe_diagonal_dyExceedsDx_notASwipe_isADrag);
+    RUN_TEST(test_swipe_thenRelease_notTapNotLongPress);
+    RUN_TEST(test_swipe_thenHoldPast1000ms_noLongPress);
+    RUN_TEST(test_swipe_whileDim_wakeOnly_noSwipe);
+    RUN_TEST(test_swipe_39px_notASwipe_isADrag);
     RUN_TEST(test_backlight_dimAt120s_offAt600s_activityResets);
     RUN_TEST(test_time_wraparoundSafe);
 

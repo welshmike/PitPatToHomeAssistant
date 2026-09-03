@@ -14,6 +14,7 @@ struct DialEvents
     float holdProgress = 0;
     bool wake = false;
     bool btnStop = false;
+    int swipe = 0; // -1 left, +1 right, 0 none
 };
 
 class DialInput
@@ -23,6 +24,7 @@ public:
     static constexpr uint32_t TAP_MAX_MS = 600;
     static constexpr int TAP_MAX_MOVE_PX = 20;
     static constexpr uint32_t HOLD_MS = 1000;
+    static constexpr int SWIPE_MIN_PX = 40;
     static constexpr uint32_t DIM_AFTER_MS = 120000;
     static constexpr uint32_t OFF_AFTER_MS = 600000;
 
@@ -53,6 +55,7 @@ private:
     int m_touchStartY = 0;
     bool m_touchIsDrag = false;
     bool m_longPressFired = false;
+    bool m_swipeFired = false;
 
     Backlight m_backlight = Backlight::FULL;
     uint32_t m_lastActivityMs = 0;

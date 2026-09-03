@@ -54,6 +54,7 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
             m_touchStartY = touchY;
             m_touchIsDrag = false;
             m_longPressFired = false;
+            m_swipeFired = false;
         }
 
         // Discard the encoder pulses that arrived in this tick.
@@ -101,11 +102,21 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
             m_touchStartY = touchY;
             m_touchIsDrag = false;
             m_longPressFired = false;
+            m_swipeFired = false;
         } else if (!m_touchSwallowed) {
             int dx = touchX - m_touchStartX;
             int dy = touchY - m_touchStartY;
             if (dx * dx + dy * dy > TAP_MAX_MOVE_PX * TAP_MAX_MOVE_PX) {
                 m_touchIsDrag = true;
+            }
+
+            if (!m_swipeFired) {
+                int adx = dx < 0 ? -dx : dx;
+                int ady = dy < 0 ? -dy : dy;
+                if (adx >= SWIPE_MIN_PX && adx > ady) {
+                    ev.swipe = (dx > 0) ? 1 : -1;
+                    m_swipeFired = true;
+                }
             }
 
             uint32_t heldMs = nowMs - m_touchStartMs;
@@ -136,6 +147,7 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
         m_touchSwallowed = false;
         m_touchIsDrag = false;
         m_longPressFired = false;
+        m_swipeFired = false;
         ev.holdProgress = 0.0f;
     }
 
