@@ -88,19 +88,14 @@ public:
         m_net.enqueuePublish(item);
     }
 
-    // Nothing to publish while the encoder is still settling — HA only ever sees
-    // the target once it has actually been sent to the belt.
+    // Nothing to do here at all: setSpeedMph() inside the controller's settle
+    // already calls onSnapshot() synchronously once the target lands, which
+    // enqueues the SNAPSHOT publish above. Publishing again here on
+    // pending==false was a duplicate.
     void onTargetSpeed(float mph, bool pending) override
     {
         (void)mph;
-        if (pending)
-        {
-            return;
-        }
-        PublishItem item;
-        item.type = PubType::SNAPSHOT;
-        item.snap = m_link.snapshot();
-        m_net.enqueuePublish(item);
+        (void)pending;
     }
 
 private:

@@ -42,7 +42,7 @@ NetTask netTask(net, g_mqttView, treadmill);
 PublishQueueObserver g_publishObserver(netTask, treadmill);
 
 #if HAS_DIAL_UI
-DialUi dialUi;
+DialUi dialUi(controller);
 #endif
 
 // Last network state pushed to the views; the display will read this too.

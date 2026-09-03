@@ -12,6 +12,9 @@ static constexpr uint16_t SPEED_RAW_MAX     = 6080;   // 3.8 mph
 static constexpr float    SPEED_STOP_BELOW_MPH = 0.55f;
 static constexpr uint16_t START_SPEED_RAW   = 994;    // ~1.0 km/h
 static constexpr uint32_t SPEED_SETTLE_MS   = 400;
+// How long the Dial's speed-change overlay stays on screen after a nudge.
+// Used by the render task added in a later task.
+static constexpr uint32_t DIAL_SPEED_OVERLAY_MS = 1500;
 
 class TreadMillData
 {
