@@ -25,7 +25,7 @@ Companion audit: `doc/AUDIT_2026-09-03.md`. BLE behaviour reference: `doc/Q1_BLE
 | MCU | StampS3A, ESP32-S3FN8, dual core 240 MHz, 8 MB flash, no PSRAM |
 | Display | 1.28" round 240x240, GC9A01 SPI (RS G4, MOSI G5, SCK G6, CS G7, RST G8, BL G9) |
 | Touch | FT3267, I2C SDA G11 / SCL G12 / INT G14 |
-| Encoder | A G41, B G40. 16 detents and 64 pulses per revolution, so 4 pulses per detent. No push switch |
+| Encoder | A G41, B G40. 16 detents and 64 pulses per revolution, so 4 pulses per detent. **Confirmed on hardware 2026-09-03: `Encoder.read()` changes by 4 per click, clockwise is positive.** No push switch |
 | Button | WAKE = BtnA on GPIO42 (side of body). RST also on body |
 | Buzzer | G3 (M5Unified `Speaker`) |
 | Power | USB-C 5 V or rear screw terminal 6 to 36 V. HOLD pin GPIO46 |
@@ -111,7 +111,7 @@ Render, 20 Hz max, into a full-screen M5GFX sprite then pushed, to avoid flicker
 |---|---|---|
 | Disconnected | status DISCONNECTED, no connect in progress | Last session summary (time, distance, steps). Hint "tap or turn to start". |
 | Connecting | connect requested, kick phase | "Connecting… attempt N". Note "belt beeps are normal". Cancel on long press. |
-| Countdown | status COUNTDOWN | Big countdown, "tap to cancel". |
+| Countdown | status COUNTDOWN | The BA05 packet does not carry the countdown number, so show a pulsing "STARTING" with "tap to cancel". |
 | Running | status RUNNING | Time big (mm:ss, h:mm:ss over an hour) in the centre. Speed ring 0 to 3.8 mph around the edge with small numeric speed at the ring end. Row under time: distance km and steps. |
 | Paused | status PAUSED, or STOPPED while tracker says paused | Same as Running, dimmed, "PAUSED" pulsing, "tap to resume, hold to stop". |
 | Speed overlay | after `onTargetSpeed` | Target speed replaces the time for 1500 ms after the last click, ring shows target. Reverts automatically. |
