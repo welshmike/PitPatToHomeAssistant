@@ -8,6 +8,7 @@ static constexpr float    SPEED_STEP_MPH    = 0.1f;
 static constexpr uint16_t SPEED_RAW_PER_MPH = 1600;
 static constexpr uint16_t SPEED_RAW_MAX     = 6080;   // 3.8 mph
 static constexpr uint16_t SPEED_RAW_STOP_BELOW = 100; // < ~0.1 km/h => stop
+static constexpr float    SPEED_STOP_BELOW_MPH = 0.55f;  // HA slider below this => stop (mph form of SPEED_RAW_STOP_BELOW)
 static constexpr uint16_t START_SPEED_RAW   = 994;    // ~1.0 km/h
 static constexpr uint32_t SPEED_SETTLE_MS   = 400;
 

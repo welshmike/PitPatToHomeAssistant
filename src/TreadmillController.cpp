@@ -46,7 +46,16 @@ float TreadmillController::clampMph(float mph)
 
 float TreadmillController::roundToStep(float mph)
 {
-    return roundf(mph * 10.0f) / 10.0f;
+    return roundf(mph / SPEED_STEP_MPH) * SPEED_STEP_MPH;
+}
+
+// Shared mph -> raw conversion used by resume() and setSpeedMph(): scale to
+// the belt's raw units and cap at SPEED_RAW_MAX.
+static uint16_t rawFromMph(float mph)
+{
+    uint16_t raw = (uint16_t)lroundf(mph * SPEED_RAW_PER_MPH);
+    if (raw > SPEED_RAW_MAX) raw = SPEED_RAW_MAX;
+    return raw;
 }
 
 void TreadmillController::start()
@@ -80,9 +89,8 @@ void TreadmillController::resume()
     // testable on the host without a live BLE link.
     TreadMillData d = m_link.snapshot();
     uint16_t raw = (d.speedCmd >= SPEED_MIN_MPH)
-                       ? (uint16_t)lroundf(d.speedCmd * SPEED_RAW_PER_MPH)
+                       ? rawFromMph(d.speedCmd)
                        : START_SPEED_RAW;
-    if (raw > SPEED_RAW_MAX) raw = SPEED_RAW_MAX;
     m_link.setSpeedRaw(raw);
 
     // Deliberately no optimistic RUNNING here: the belt runs its own countdown
@@ -114,15 +122,14 @@ void TreadmillController::toggleStartPause()
 void TreadmillController::setSpeedMph(float mph)
 {
     // An HA slider dragged to 0 has to mean "stop", not "creep at the minimum".
-    if (mph < 0.55f)
+    if (mph < SPEED_STOP_BELOW_MPH)
     {
         stop();
         return;
     }
 
     const float clamped = clampMph(mph);
-    uint16_t raw = (uint16_t)lroundf(clamped * SPEED_RAW_PER_MPH);
-    if (raw > SPEED_RAW_MAX) raw = SPEED_RAW_MAX;
+    uint16_t raw = rawFromMph(clamped);
 
     TreadMillData d = m_link.snapshot();
     const bool wasIdle = (d.status == TreadMillData::STOPPED ||

@@ -133,9 +133,10 @@ public:
 
     TreadMillData snapshot() const override { return m_snapshot.read(); }
 
-    // Writes the caller's optimistic view into the snapshot and flags it so
-    // handle() publishes it on the next cycle — same two lines the MQTT command
-    // handlers used to do inline.
+    // Writes the optimistic state into the shared snapshot and flags new data.
+    // Note: this is a read-modify-write from the loop task that can interleave
+    // with the BLE task's own RMW in notifyCallback; the window is microseconds
+    // and the next packet re-derives from the belt, so the effect is bounded.
     void publishOptimistic(const TreadMillData& d) override
     {
         m_snapshot.write(d);
