@@ -20,7 +20,10 @@ public:
     void pause() override;
     void stop() override;
 
-    void handle();
+    // Returns true when observers should be pushed a fresh snapshot: a new BLE
+    // packet arrived, a pause-timeout summary was committed, or the connection
+    // timed out. main.cpp turns that into controller.publish().
+    bool handle();
 
     void setAutoReconnect(const bool enable)
     {
@@ -100,12 +103,6 @@ public:
     uint32_t getTotalCalories()    const { return m_state.getTotalCalories(); }
     uint32_t getTotalDurationSec() const { return m_state.getTotalDurationSec(); }
 
-    // Persists any dirty totals to NVS immediately. handle() already calls this every
-    // cycle, but main.cpp's loop() has early-return paths (WiFi/MQTT down, pre-restart)
-    // that skip handle() entirely — call this there so a session committed on the BLE
-    // task isn't lost on those paths.
-    void flushTotals() { m_state.flush(); }
-
     // Restore cumulative totals — call when NVS was wiped (accidental "Erase Flash").
     // Values are written immediately to NVS so they survive the next reboot.
     // Payload source: read the last good values from HA's sensor history for
@@ -133,14 +130,15 @@ public:
 
     TreadMillData snapshot() const override { return m_snapshot.read(); }
 
-    // Writes the optimistic state into the shared snapshot and flags new data.
+    // Writes the optimistic state into the shared snapshot. Deliberately does NOT
+    // raise m_newDataAvailable: the controller already notifies its observers once
+    // for the command that produced `d`, and flagging here would publish it twice.
     // Note: this is a read-modify-write from the loop task that can interleave
     // with the BLE task's own RMW in notifyCallback; the window is microseconds
     // and the next packet re-derives from the belt, so the effect is bounded.
     void publishOptimistic(const TreadMillData& d) override
     {
         m_snapshot.write(d);
-        m_newDataAvailable = true;
     }
 
     // Returns true if the disconnect was initiated, false if blocked by the
@@ -185,23 +183,10 @@ public:
         return true;
     }
 
-    // Returns true if the action was taken, false if blocked by safety check.
-    // Kept for main.cpp's connect switch handler until it moves to the controller.
-    bool toggleConnection()
-    {
-        return isConnected() ? requestDisconnect() : requestConnect();
-    }
-
     TreadMillData getLastData() const
     {
         return m_snapshot.read();
     }
-
-    void setCallback(std::function<void(const TreadMillData&)> callback)
-    {
-        m_onDataUpdate = callback;
-    }
-    
 
 private:
     bool sendCommand(const uint8_t *data, size_t length);
@@ -293,9 +278,9 @@ private:
     bool m_stopKeepalives  = false;
 
     // Set by notifyCallback() (Core 0) when a fresh BLE packet is ready.
-    // Cleared by handle() (Core 1) after publishing. This keeps ALL m_onDataUpdate
-    // calls on Core 1 — PubSubClient is not thread-safe, so calling publish() from
-    // both cores concurrently corrupts its state and causes ECONNRESET from the broker.
+    // Cleared by handle() (Core 1), which reports it to the caller. This keeps ALL
+    // observer notifications on the loop task — MQTT publishing happens on the net
+    // task via a queue, and nothing else may touch PubSubClient.
     volatile bool m_newDataAvailable = false;
 
     TreadmillState m_state;
@@ -488,8 +473,6 @@ private:
             m_doConnect = true; // Trigger reconnect in handle() loop
         }
     }
-
-    std::function<void(const TreadMillData&)> m_onDataUpdate = nullptr;
 
     const uint8_t CONNECTION_TIMEOUT = 30;
 };

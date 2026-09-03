@@ -231,15 +231,15 @@ internally.
 ESP32-C3 is a single-core RISC-V — but NimBLE still uses RTOS tasks which interleave.
 
 - `notifyCallback()` runs on the **NimBLE task** (conceptually "Core 0").
-- `handle()` and `m_onDataUpdate()` run on the **main loop** (conceptually "Core 1").
+- `handle()` and the controller's observer notifications run on the **main loop** (conceptually "Core 1").
 - `PubSubClient::publish()` is **not thread-safe** — calling it from both contexts concurrently
   corrupts internal state → `ECONNRESET` from the broker.
 
 Fix: `notifyCallback()` sets `volatile bool m_newDataAvailable = true`. `handle()` reads and
-clears the flag, then calls `m_onDataUpdate()`. All MQTT publishes happen on the main loop only.
-
-Same issue exists in `MqttView::publishAllConfigs()` — guarded by `m_publishingConfigs` flag
-to block concurrent `publishState()` calls during HA config broadcast.
+clears the flag and returns `true`, and the main loop turns that into one
+`TreadmillController::publish()`. Since Task 9 the publish itself is a queue push: `MqttView`
+and `PubSubClient` are touched only by the dedicated net task (`NetTask`), so nothing else can
+race them.
 
 ---
 

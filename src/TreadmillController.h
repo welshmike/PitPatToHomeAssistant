@@ -21,7 +21,7 @@ public:
     virtual bool requestConnect() = 0;
     virtual bool requestDisconnect() = 0;       // refuses while the belt is active
     virtual TreadMillData snapshot() const = 0;
-    virtual void publishOptimistic(const TreadMillData&) = 0; // write snapshot + flag new data
+    virtual void publishOptimistic(const TreadMillData&) = 0; // write the snapshot only
     virtual ~ITreadmillLink() = default;
 };
 
@@ -64,12 +64,20 @@ public:
     void nudgeSpeed(int clicks, uint32_t nowMs);
     void tick(uint32_t nowMs);
 
-    void requestConnect();
-    void requestDisconnect();
+    // Both return the link's own answer: false means the link refused (already
+    // in that state, or a disconnect blocked because the belt is active). On a
+    // refusal the observers are re-notified with the current snapshot so a view
+    // that showed the request optimistically — HA's Connect switch — snaps back.
+    bool requestConnect();
+    bool requestDisconnect();
 
     // Push the link's current snapshot to observers — called by the main loop
     // when the link flags new BLE data.
     void publish();
+
+    // Fan the network state out to the views. The loop task calls this when
+    // NetTask::status() changes.
+    void publishNetStatus(NetStatus s);
 
     float targetSpeedMph() const { return m_targetMph; }
 

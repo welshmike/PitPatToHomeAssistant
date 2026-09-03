@@ -47,8 +47,9 @@ MqttView::MqttView(PubSubClient *client)
     m_speed.setMin(0.0f);  // Must be 0.0 — HA ignores state updates where value < min,
                            // so min=0.6 caused the slider to be permanently unavailable
                            // when the belt stopped (speed_cmd publishes as 0.0).
-                           // The command handler already treats speed<=100 raw as stop.
-    m_speed.setMax(3.8f);
+                           // TreadmillController already treats a slider below
+                           // SPEED_STOP_BELOW_MPH as stop.
+    m_speed.setMax(SPEED_MAX_MPH);
     m_speed.setStep(0.1f);
     m_speed.setMode(NumberMode::BOX);
     m_speed.setValueTemplate("{{ value_json.speed_cmd }}");
@@ -179,12 +180,6 @@ void MqttView::publishCalibrationPoints(const CalibrationPoint* points, uint8_t 
 
 void MqttView::publishAllConfigs()
 {
-    // Block publishState() for the duration of this call.
-    // NimBLE callbacks run in a separate RTOS task and call publishState()
-    // concurrently. PubSubClient is not thread-safe — interleaving publish()
-    // calls from two tasks corrupts its internal state and causes ECONNRESET.
-    m_publishingConfigs = true;
-
     // Controls
     publishConfig(m_startBtn);
     publishConfig(m_pauseBtn);
@@ -223,8 +218,6 @@ void MqttView::publishAllConfigs()
     publishConfig(m_maxSpeed);
     publishConfig(m_firmware);
     publishConfig(m_calibrationPoints);
-
-    m_publishingConfigs = false;
 }
 
 void MqttView::publishAutoReconnectSetting(bool enabled)
@@ -255,7 +248,6 @@ void MqttView::publishPauseTimeoutSetting(uint16_t mins)
 
 void MqttView::publishState(TreadMillData data)
 {
-    if (m_publishingConfigs) return; // avoid concurrent publish with publishAllConfigs()
     JsonDocument state;
     state["speed_cmd"]      = roundf(data.speedCmd      * 10) / 10.0f;
     state["speed_feedback"] = roundf(data.speedFeedback * 10) / 10.0f;

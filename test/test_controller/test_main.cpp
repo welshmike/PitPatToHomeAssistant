@@ -25,6 +25,8 @@ public:
     int      callCount = 0;
 
     bool          connected = false;
+    bool          connectResult = true;    // what requestConnect() reports back
+    bool          disconnectResult = true; // what requestDisconnect() reports back
     TreadMillData data;                 // settable snapshot the controller reads
     TreadMillData lastOptimistic;       // last value passed to publishOptimistic()
 
@@ -34,8 +36,8 @@ public:
     void pause() override { record(CallType::PAUSE, 0); }
     void stop()  override { record(CallType::STOP, 0); }
     void setSpeedRaw(uint16_t raw) override { record(CallType::SET_SPEED, raw); }
-    bool requestConnect() override { record(CallType::CONNECT, 0); return true; }
-    bool requestDisconnect() override { record(CallType::DISCONNECT, 0); return true; }
+    bool requestConnect() override { record(CallType::CONNECT, 0); return connectResult; }
+    bool requestDisconnect() override { record(CallType::DISCONNECT, 0); return disconnectResult; }
     TreadMillData snapshot() const override { return data; }
     void publishOptimistic(const TreadMillData& d) override
     {
@@ -76,6 +78,8 @@ public:
     int           targetCount = 0;
     float         lastTargetMph = 0.0f;
     bool          lastTargetPending = false;
+    int           netStatusCount = 0;
+    NetStatus     lastNetStatus = NetStatus::WIFI_DOWN;
 
     void onSnapshot(const TreadMillData& d) override
     {
@@ -87,6 +91,11 @@ public:
         targetCount++;
         lastTargetMph = mph;
         lastTargetPending = pending;
+    }
+    void onNetStatus(NetStatus s) override
+    {
+        netStatusCount++;
+        lastNetStatus = s;
     }
 };
 
@@ -510,6 +519,69 @@ static void test_requestConnectAndDisconnect_forwardToLink(void)
     TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::DISCONNECT));
 }
 
+static void test_requestDisconnect_whenAccepted_publishesDisconnected(void)
+{
+    FakeLink link;
+    link.connected = true;
+    link.data.status = TreadMillData::STOPPED;
+    TreadmillController c(link);
+    RecordingObserver obs;
+    c.addObserver(obs);
+
+    TEST_ASSERT_TRUE(c.requestDisconnect());
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::DISCONNECT));
+    TEST_ASSERT_EQUAL_INT(1, obs.snapshotCount);
+    TEST_ASSERT_EQUAL_INT(TreadMillData::DISCONNECTED, (int)obs.lastSnapshot.status);
+}
+
+static void test_requestDisconnect_whenBlocked_republishesRealSnapshot(void)
+{
+    FakeLink link;
+    link.connected = true;
+    link.disconnectResult = false; // belt is active — the link refuses
+    link.data.status = TreadMillData::RUNNING;
+    TreadmillController c(link);
+    RecordingObserver obs;
+    c.addObserver(obs);
+
+    TEST_ASSERT_FALSE(c.requestDisconnect());
+    // Observers are told the truth so HA's switch snaps back to ON.
+    TEST_ASSERT_EQUAL_INT(1, obs.snapshotCount);
+    TEST_ASSERT_EQUAL_INT(TreadMillData::RUNNING, (int)obs.lastSnapshot.status);
+    TEST_ASSERT_EQUAL_INT(0, link.countOf(FakeLink::CallType::PUBLISH));
+}
+
+static void test_requestConnect_whenAlreadyConnected_republishesSnapshot(void)
+{
+    FakeLink link;
+    link.connected = true;
+    link.connectResult = false; // already connected
+    link.data.status = TreadMillData::STOPPED;
+    TreadmillController c(link);
+    RecordingObserver obs;
+    c.addObserver(obs);
+
+    TEST_ASSERT_FALSE(c.requestConnect());
+    TEST_ASSERT_EQUAL_INT(1, obs.snapshotCount);
+    TEST_ASSERT_EQUAL_INT(TreadMillData::STOPPED, (int)obs.lastSnapshot.status);
+}
+
+static void test_publishNetStatus_reachesEveryObserver(void)
+{
+    FakeLink link;
+    TreadmillController c(link);
+    RecordingObserver a, b;
+    c.addObserver(a);
+    c.addObserver(b);
+
+    c.publishNetStatus(NetStatus::MQTT_UP);
+
+    TEST_ASSERT_EQUAL_INT(1, a.netStatusCount);
+    TEST_ASSERT_EQUAL_INT(1, b.netStatusCount);
+    TEST_ASSERT_EQUAL_INT((int)NetStatus::MQTT_UP, (int)a.lastNetStatus);
+    TEST_ASSERT_EQUAL_INT(0, link.callCount); // no command was sent
+}
+
 int main(int argc, char **argv)
 {
     UNITY_BEGIN();
@@ -546,6 +618,10 @@ int main(int argc, char **argv)
     RUN_TEST(test_publish_pushesLinkSnapshotToObservers);
 
     RUN_TEST(test_requestConnectAndDisconnect_forwardToLink);
+    RUN_TEST(test_requestDisconnect_whenAccepted_publishesDisconnected);
+    RUN_TEST(test_requestDisconnect_whenBlocked_republishesRealSnapshot);
+    RUN_TEST(test_requestConnect_whenAlreadyConnected_republishesSnapshot);
+    RUN_TEST(test_publishNetStatus_reachesEveryObserver);
 
     return UNITY_END();
 }

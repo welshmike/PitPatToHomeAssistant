@@ -256,8 +256,12 @@ bool TreadmillHandler::sendCommand(const uint8_t *data, size_t length)
     return true;
 }
 
-void TreadmillHandler::handle()
+bool TreadmillHandler::handle()
 {
+    // Raised by any path that used to invoke the data-update callback. The caller
+    // turns it into a single controller.publish() once per cycle.
+    bool newData = false;
+
     // handles reconnection
     // m_reconnectNotBefore is set after an idle kick (user-requested connect) to add
     // a 60s backoff between reconnect attempts — avoids rapid beeping while idle.
@@ -309,7 +313,7 @@ void TreadmillHandler::handle()
         // stop() below can't double-commit) and returns the summary to publish.
         TreadMillData committed = m_tracker.onPauseTimeout(m_snapshot.read());
         m_snapshot.write(committed);
-        if (m_onDataUpdate) m_onDataUpdate(committed);
+        newData = true;
 
         m_autoReconnect        = false;
         m_userRequestedConnect = false;
@@ -357,12 +361,12 @@ void TreadmillHandler::handle()
 
     // Publish new BLE packet data from Core 1 (main loop).
     // notifyCallback() (Core 0) sets this flag when it has written fresh data to m_snapshot.
-    // We clear it before calling m_onDataUpdate so that another notifyCallback packet
-    // arriving during the publish will re-set the flag and get published next cycle.
-    if (m_newDataAvailable && m_onDataUpdate)
+    // We clear it here so that another notifyCallback packet arriving during the
+    // caller's publish re-sets the flag and gets published next cycle.
+    if (m_newDataAvailable)
     {
         m_newDataAvailable = false;
-        m_onDataUpdate(m_snapshot.read());
+        newData = true;
     }
 
     // Check for connection timeout — catches radio loss / silent disconnects where
@@ -377,16 +381,14 @@ void TreadmillHandler::handle()
               elapsedSec, CONNECTION_TIMEOUT);
         m_snapshot.modify([&](TreadMillData& d) { d.status = TreadMillData::DISCONNECTED; });
         m_lastPacketMs = millis(); // reset so the check doesn't re-fire immediately
-        if (m_onDataUpdate)
-        {
-            connCheck.status = TreadMillData::DISCONNECTED;
-            m_onDataUpdate(connCheck);
-        }
+        newData = true;
     }
 
     // Deferred NVS write. addSession() only touches memory (it runs on the NimBLE
     // task), so the flash write happens here on the main loop instead.
     m_state.flush();
+
+    return newData;
 }
 
 bool TreadmillHandler::connectToDevice()
@@ -560,8 +562,8 @@ void TreadmillHandler::notifyCallback(
     m_snapshot.write(data);
     m_lastPacketMs = millis();
     // Signal handle() (Core 1) that new data is ready to publish.
-    // Do NOT call m_onDataUpdate() here — notifyCallback runs on Core 0 (NimBLE task)
-    // and PubSubClient::publish() is not thread-safe. Calling it concurrently from
+    // Do NOT notify observers here — notifyCallback runs on Core 0 (NimBLE task)
+    // and PubSubClient::publish() is not thread-safe. Publishing concurrently from
     // Core 0 and Core 1 (dead reckoning) caused ECONNRESET / double-publish bugs.
     m_newDataAvailable = true;
 }

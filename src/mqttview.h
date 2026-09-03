@@ -73,7 +73,6 @@ public:
 
 private:
     PubSubClient *m_client;
-    volatile bool m_publishingConfigs = false; // guard against concurrent NimBLE task publishes
 
     MqttDevice m_device;
 

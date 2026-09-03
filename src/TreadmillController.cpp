@@ -175,17 +175,48 @@ void TreadmillController::tick(uint32_t nowMs)
     }
 }
 
-void TreadmillController::requestConnect()
+bool TreadmillController::requestConnect()
 {
-    m_link.requestConnect();
+    const bool started = m_link.requestConnect();
+    if (!started)
+    {
+        // Already connected — re-notify so a view that flipped its switch
+        // optimistically is corrected.
+        notifySnapshot(m_link.snapshot());
+    }
+    return started;
 }
 
-void TreadmillController::requestDisconnect()
+bool TreadmillController::requestDisconnect()
 {
-    m_link.requestDisconnect();
+    const bool wasConnected = m_link.isConnected();
+    const bool started      = m_link.requestDisconnect();
+    if (!started)
+    {
+        // Not connected, or the link refused because the belt is still active.
+        // Either way the view's optimistic OFF is wrong — push the truth back.
+        notifySnapshot(m_link.snapshot());
+        return false;
+    }
+    if (wasConnected)
+    {
+        // Disconnect is in flight; don't make views wait for the BLE callback.
+        TreadMillData d = m_link.snapshot();
+        d.status = TreadMillData::DISCONNECTED;
+        publishOptimistic(d);
+    }
+    return true;
 }
 
 void TreadmillController::publish()
 {
     notifySnapshot(m_link.snapshot());
+}
+
+void TreadmillController::publishNetStatus(NetStatus s)
+{
+    for (uint8_t i = 0; i < m_observerCount; ++i)
+    {
+        m_observers[i]->onNetStatus(s);
+    }
 }
