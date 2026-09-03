@@ -37,6 +37,19 @@ static void test_secondAngle_fifteen(void)
     TEST_ASSERT_EQUAL_FLOAT(90.0f, ClockFace::secondAngle(15));
 }
 
+static void test_angles_at_elevenFiftyNineFiftyNine(void)
+{
+    // 11:59:59 — hands are just about to wrap to 12:00:00/0/0. hourAngle
+    // only takes (h, m), so at m=59 it's 330 + 29.5 = 359.5deg: short of a
+    // full hour tick but still visibly "almost at 12".
+    const float hourDeg = ClockFace::hourAngle(11, 59);
+    TEST_ASSERT_TRUE(hourDeg < 360.0f);
+    TEST_ASSERT_TRUE(hourDeg > 359.0f);
+
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 359.9f, ClockFace::minuteAngle(59, 59));
+    TEST_ASSERT_EQUAL_FLOAT(354.0f, ClockFace::secondAngle(59));
+}
+
 // ---------------------------------------------------------------------------
 // hand() endpoints
 // ---------------------------------------------------------------------------
@@ -109,6 +122,7 @@ int main(int argc, char** argv)
     RUN_TEST(test_hourAngle_sixThirty);
     RUN_TEST(test_minuteAngle_thirtyThirty);
     RUN_TEST(test_secondAngle_fifteen);
+    RUN_TEST(test_angles_at_elevenFiftyNineFiftyNine);
     RUN_TEST(test_hands_at_midnight_point_straight_up);
     RUN_TEST(test_hourHand_at_three_points_right);
     RUN_TEST(test_secondHand_at_fifteen_points_right);

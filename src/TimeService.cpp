@@ -2,41 +2,25 @@
 
 #include <Arduino.h>
 #include <esp_log.h>
+#include <stdlib.h>
 #include <sys/time.h>
+
+#include "TimeMath.h"
 
 #if HAS_DIAL_UI
 #include <M5Unified.h>
 #endif
 
-namespace {
-
-#if HAS_DIAL_UI
-// Converts a UTC broken-down time to a UTC epoch (seconds since 1970-01-01).
-// Arduino-ESP32's newlib doesn't provide timegm(), and mktime() applies the
-// process TZ (wrong here — the RTC is stored in UTC, see TimeService.h), so
-// this is Howard Hinnant's days_from_civil algorithm instead: no library
-// dependency, no TZ state to save/restore, exact for the whole range the RTC
-// can hold.
-time_t utcTmToEpoch(const struct tm &utc)
-{
-    int64_t y = utc.tm_year + 1900;
-    const int m = utc.tm_mon + 1;
-    const int d = utc.tm_mday;
-    y -= (m <= 2) ? 1 : 0;
-    const int64_t era = (y >= 0 ? y : y - 399) / 400;
-    const uint32_t yoe = static_cast<uint32_t>(y - era * 400);           // [0, 399]
-    const uint32_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1; // [0, 365]
-    const uint32_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;          // [0, 146096]
-    const int64_t days = era * 146097 + static_cast<int64_t>(doe) - 719468; // since 1970-01-01
-
-    return static_cast<time_t>(days * 86400 + utc.tm_hour * 3600 + utc.tm_min * 60 + utc.tm_sec);
-}
-#endif // HAS_DIAL_UI
-
-} // namespace
-
 void TimeService::begin()
 {
+    // Apply the TZ rule unconditionally, before anything reads local time.
+    // Without this, localtime_r() returns UTC (the C library's default)
+    // until onWifiUp()'s configTzTime() runs — which can be minutes into
+    // boot, or never, if WiFi never comes up. Safe to call on both boards:
+    // it only affects how time_t is rendered, not the underlying clock.
+    setenv("TZ", TIMEZONE_TZ, 1);
+    tzset();
+
 #if HAS_DIAL_UI
     if (!M5.Rtc.isEnabled())
     {
@@ -52,7 +36,9 @@ void TimeService::begin()
     }
 
     const struct tm utcTm = dt.get_tm(); // RTC is always stored/read as UTC
-    const time_t    epoch = utcTmToEpoch(utcTm);
+    const time_t    epoch = static_cast<time_t>(TimeMath::utcToEpoch(
+        utcTm.tm_year + 1900, utcTm.tm_mon + 1, utcTm.tm_mday,
+        utcTm.tm_hour, utcTm.tm_min, utcTm.tm_sec));
     struct timeval  tv    = {};
     tv.tv_sec  = epoch;
     tv.tv_usec = 0;
@@ -89,14 +75,16 @@ void TimeService::tick(uint32_t nowMs)
     }
     m_lastPollMs = nowMs;
 
-    struct tm tmNow;
-    if (!getLocalTime(&tmNow, 0))
-    {
-        return; // SNTP hasn't completed yet
-    }
+    // Non-blocking: getLocalTime() delay(10)s internally on failure, which
+    // would stall the loop() every poll until SNTP completes. time()/
+    // localtime_r() never block, so read the system clock directly and use
+    // the same plausibility check to detect "SNTP hasn't completed yet".
+    const time_t nowSec = time(nullptr);
+    struct tm    tmNow;
+    localtime_r(&nowSec, &tmNow);
     if (tmNow.tm_year + 1900 < 2024)
     {
-        return; // system clock not plausible yet
+        return; // system clock not plausible yet (SNTP hasn't completed)
     }
 
     m_source = Source::NTP;
@@ -127,7 +115,7 @@ bool TimeService::localTime(struct tm &out) const
 {
     const time_t now = time(nullptr);
     localtime_r(&now, &out);
-    return valid();
+    return (out.tm_year + 1900) >= 2024;
 }
 
 void TimeService::logSourceChange() const

@@ -28,7 +28,10 @@
 // Storing UTC means the RTC only ever needs the TZ rule applied at read time,
 // same as the system clock.
 //
-// begin() reads the RTC once at boot (Dial only) so the clock card has a
+// begin() applies TIMEZONE_TZ (via setenv("TZ", ...)/tzset()) unconditionally
+// on both boards before anything else runs, so localtime_r() renders correct
+// local time from boot — not just once configTzTime() has run in onWifiUp().
+// It also reads the RTC once at boot (Dial only) so the clock card has a
 // plausible time immediately, before WiFi/NTP. onWifiUp() arms NTP once WiFi
 // is up. tick() polls for the first successful NTP sync, then writes the RTC
 // once (UTC) and stops polling — NTP requeries are handled by the SNTP
@@ -43,10 +46,11 @@ public:
         NTP,  // confirmed via NTP; RTC has been rewritten to match
     };
 
-    // Dial only: if the BM8563 RTC is enabled and holds a plausible date
-    // (year >= 2024), seeds the system clock from it (UTC) and sets
-    // source() to RTC. No-op on boards without a Dial RTC (DevKit) or when
-    // the RTC is unset/uninitialised.
+    // Applies TIMEZONE_TZ unconditionally on both boards (so local time is
+    // correct from boot). Dial only: if the BM8563 RTC is enabled and holds
+    // a plausible date (year >= 2024), also seeds the system clock from it
+    // (UTC) and sets source() to RTC. The RTC seed is a no-op on boards
+    // without a Dial RTC (DevKit) or when the RTC is unset/uninitialised.
     void begin();
 
     // Call once, when NetStatus first reaches WIFI_UP. Starts Arduino-ESP32's
