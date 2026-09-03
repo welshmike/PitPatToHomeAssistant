@@ -93,8 +93,10 @@ Observers implement `onSnapshot(const TreadMillData&)`, `onTargetSpeed(float mph
 
 Speed encoding stays mph x 1600 raw, cap 6080 raw (3.8 mph), stop below 100 raw, exactly as today.
 
-### 4.5 `NetManager` (new)
-State machine ticked from `loop()`: `WIFI_DOWN → WIFI_CONNECTING → WIFI_UP → MQTT_CONNECTING → MQTT_UP`. Backoff 1 s, 2 s, 5 s, 10 s, capped at 30 s. No forced reboot on WiFi loss. `WiFi.begin()` is called once after BLE init and never blocks. OTA and mDNS start on `WIFI_UP`. MQTT subscriptions, discovery configs and retained states are (re)published on each `MQTT_UP` and on HA birth message, as today. Exposes `status()` for the display.
+### 4.5 `NetManager` (new) and the network task
+**Amended 2026-09-03 after Task 7 review:** `NetManager`, `MqttView`, `PubSubClient` and OTA run on a dedicated FreeRTOS task (`NetTask`), not on the loop task. `PubSubClient::connect()` can block 3 s (TCP) + 5 s (CONNACK) and `WiFiClient::write()` up to 10 s once the send buffer saturates after AP loss, both longer than the 6 s BLE supervision timeout. The loop task talks to the net task through two FreeRTOS queues: commands in (MQTT → controller) and publish items out (snapshots and settings → MQTT). See Plan 1 Task 9 for the exact structs.
+
+State machine ticked from the net task: `WIFI_DOWN → WIFI_CONNECTING → WIFI_UP → MQTT_CONNECTING → MQTT_UP`. Backoff 1 s, 2 s, 5 s, 10 s, capped at 30 s. No forced reboot on WiFi loss. `WiFi.begin()` is called once after BLE init and never blocks. OTA and mDNS start on `WIFI_UP`. MQTT subscriptions, discovery configs and retained states are (re)published on each `MQTT_UP` and on HA birth message, as today. Exposes `status()` for the display.
 
 ### 4.6 `DialUi` (new, Dial env only)
 Input:
@@ -125,7 +127,8 @@ Selected by build flag `-DBOARD_DEVKIT` or `-DBOARD_M5DIAL`. Provides `HAS_STATU
 
 ## 5. Threading and timing
 
-- Main loop has no `delay()`. Order per pass: watchdog reset, `handler.handle()`, `net.tick()`, `mqtt.loop()`, `controller.tick()` (speed settle timer), `dialUi.tick()` (Dial only).
+- Loop task has no long `delay()`. Order per pass: watchdog reset, `handler.handle()`, drain command queue into `controller`, `controller.tick()` (speed settle timer), `dialUi.tick()` (Dial only), `delay(1)`.
+- Net task: `net.tick()`, drain publish queue into `MqttView`, `vTaskDelay(10 ms)`. Only this task touches sockets.
 - NimBLE task: `notifyCallback` parses, calls `tracker.onPacket()`, writes the snapshot under the mutex, sets `m_newDataAvailable`. No MQTT, no NVS, no display from this task.
 - `onDisconnect` runs on the NimBLE task: records pending commit, sets flags. Same rules.
 - `MqttView::m_publishingConfigs` guard is removed; all publishes are already on one task.

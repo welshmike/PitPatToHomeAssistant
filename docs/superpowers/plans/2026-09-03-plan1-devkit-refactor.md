@@ -443,24 +443,63 @@ public:
 
 ---
 
-## Task 9: MQTT becomes an observer; `main.cpp` reduced to wiring
+## Task 9: MQTT on its own FreeRTOS task; MqttView as observer; `main.cpp` reduced to wiring
 
-**Files:** `src/main.cpp`, `src/mqttview.h/.cpp`.
+**Files:** new `src/NetTask.h`, `src/NetTask.cpp`, new `src/Commands.h`, edit `src/main.cpp`, `src/mqttview.h/.cpp`, `src/NetManager.h/.cpp`.
 
-- [ ] `MqttView : public ISnapshotObserver`. `onSnapshot` → `publishState`. `onTargetSpeed(mph, pending)` → nothing when pending; when not pending re-publish state (belt will confirm). `onNetStatus` → nothing (MQTT knows). Remove `m_publishingConfigs` and its comments.
-- [ ] `main.cpp`: MQTT callback handlers call `controller.*`. Delete the per-handler optimistic-state blocks (the controller does it). Speed handler: parse mph, call `controller.setSpeedMph(mph)`. Start/Pause/Stop buttons: `controller.start()/pause()/stop()`. Connect switch: `controller.requestConnect()/requestDisconnect()` then publish auto-reconnect setting and state as today. Idle/pause/auto-reconnect/calibration/restore handlers unchanged except they use a bounded payload copy.
-- [ ] Add helper in `main.cpp`:
+**Why revised:** the Task 7 review showed `PubSubClient::connect()` (3 s TCP + 5 s CONNACK spin) and `WiFiClient::write()` (10 x 1 s retry once the TCP send buffer saturates after AP loss) block the loop task for longer than the 6 s BLE supervision timeout. Rate limiting does not close the gap. The only robust fix is to run all networking on a separate task so the loop task (BLE, controller, later the display) is never blocked by a socket. Spec §4.5 and §5 are amended accordingly.
+
+### 9a. Threading model
+
+- **Loop task** (Arduino `loop()`): `treadmill.handle()`, drain the command queue into `controller`, `controller.tick()`, `delay(1)`. Never touches `PubSubClient`, `WiFi`, or `ArduinoOTA`.
+- **Net task** (`NetTask`, FreeRTOS task, 8 KB stack, priority 1, pinned to core 0 on dual-core targets, `tskNO_AFFINITY` otherwise): loops `net.tick(millis())`, drains the publish queue into `MqttView`, `vTaskDelay(pdMS_TO_TICKS(10))`. Owns `NetManager`, `MqttView`, `PubSubClient`, OTA. The MQTT receive callback runs on this task and may only parse and enqueue.
+- **Queues** (`src/Commands.h`):
 
 ```cpp
-static String payloadToString(const byte* payload, unsigned int length) {
-    char buf[128]; unsigned int n = length < sizeof(buf) - 1 ? length : sizeof(buf) - 1;
-    memcpy(buf, payload, n); buf[n] = '\0';
-    String s(buf); s.trim(); return s;
+enum class CmdType : uint8_t { START, PAUSE, STOP, SET_SPEED_MPH, CONNECT, DISCONNECT,
+    SET_AUTO_RECONNECT, SET_IDLE_MINS, SET_PAUSE_MINS, TOGGLE_CALIBRATION,
+    RESTORE_TOTALS, RESTORE_CALIBRATION, HA_ONLINE };
+struct Command {
+    CmdType type;
+    float    f = 0;            // SET_SPEED_MPH
+    bool     b = false;        // SET_AUTO_RECONNECT
+    uint16_t u16 = 0;          // SET_IDLE_MINS / SET_PAUSE_MINS
+    struct { float distKm; uint32_t steps, calories, durationSec; bool has[4]; } totals; // RESTORE_TOTALS
+    struct { CalibrationPoint pts[10]; uint8_t n; } calib;                                // RESTORE_CALIBRATION
+};
+enum class PubType : uint8_t { SNAPSHOT, AUTO_RECONNECT, IDLE_MINS, PAUSE_MINS, CALIB_COUNT, FULL_RESYNC };
+struct PublishItem { PubType type; TreadMillData snap; bool b; uint16_t u16; uint8_t u8; };
+```
+
+  Command queue: net → loop, depth 8, `xQueueSend` with zero wait; on full, log and drop. Publish queue: loop → net, depth 8; `SNAPSHOT` items are sent with zero wait and dropped when full (the next snapshot supersedes), settings items use a 50 ms wait so they are not lost. `FULL_RESYNC` is enqueued by the loop task in response to `HA_ONLINE` and on demand; the net task handles it by running the same list that today's `onMqttConnected` runs (configs, delay 200, state, settings, calibration count).
+
+- `TreadMillData` and `CalibrationPoint` are PODs, so queue copies are plain `memcpy`. `sizeof(Command)` is about 120 bytes and `sizeof(PublishItem)` about 100 bytes; both fine for 8-deep queues.
+
+### 9b. Wiring
+
+- `MqttView : public ISnapshotObserver` is NOT how it is wired now (it would run on the wrong task). Instead a tiny `PublishQueueObserver : public ISnapshotObserver` (in `main.cpp` or `NetTask.h`) implements `onSnapshot` by enqueueing a `SNAPSHOT` item and `onTargetSpeed` by doing nothing while pending and enqueueing a snapshot when the settle fires. `MqttView` keeps its `publishState` API and gains nothing; remove `m_publishingConfigs` and its comments.
+- `NetManager::onMqttConnected` callback: subscriptions (same nine plus two restore topics plus both HA status topics) and then a `FULL_RESYNC`. It runs on the net task, so it may call `MqttView` directly.
+- MQTT receive `callback(topic, payload, len)` runs on the net task: match topic exactly as today, parse into a `Command` using a bounded copy helper:
+
+```cpp
+static bool payloadToBuf(const byte* payload, unsigned int len, char* buf, size_t bufSize) {
+    if (len >= bufSize) return false;
+    memcpy(buf, payload, len); buf[len] = '\0'; return true;
 }
 ```
-  Use it everywhere `String((char*)payload).substring(0,length)` or `atof((char*)payload)` appears. Restore-JSON handlers may need a larger buffer (512) for the calibration array; use `deserializeJson(doc, payload, length)` directly instead, which takes a length.
-- [ ] Data flow: `treadmill.setCallback` is replaced by `handle()` returning `true` when new data is available; `loop()` then calls `controller.publish()`. (Or keep the callback and have it call `controller.publish()`; pick one and delete the other.)
-- [ ] Build all, tests pass. Commit: `Route MQTT commands through TreadmillController; MqttView is an observer; bounded payload parsing`.
+  Speed uses a 32-byte buffer and `strtof`; button payloads compare against `"press"`; switch payloads against the entity's on/off strings; numbers via `strtoul`; restore payloads via `deserializeJson(doc, payload, len)` (length-aware, no copy). Then `xQueueSend`.
+- Loop task `drainCommands()` executes each `Command` against `controller` / `treadmill` exactly as the old handlers did, then enqueues the corresponding `PublishItem` (settings) or lets the controller's observer notification carry the snapshot. `HA_ONLINE` → enqueue `FULL_RESYNC`.
+- `treadmill.setCallback(...)` is deleted; instead `handle()` returns `bool newData`, and `loop()` calls `controller.publish()` when true. (`controller.publish()` notifies observers with `link.snapshot()`.)
+- `NetTask::begin()` creates both queues and the task; `setup()` calls it after `NimBLEDevice::init`. `NetTask` exposes `NetStatus status()` (an atomic copy updated by the net task each tick) so the future display can read it from the loop task.
+- Speed constants: the last literals (`1600.0f`, `6080`, `3.8f` in `mqttview.cpp` `setMax`) come from `TreadmillData.h`.
+
+### 9c. Verification
+
+- [ ] `pio test -e native` (controller/tracker/protocol suites unchanged), `pio run -e devkit-usb`, `pio run -e dial-usb`.
+- [ ] Static check: `grep -n "client\.\|g_mqttView\.\|WiFi\.\|ArduinoOTA" src/main.cpp` returns only the `setup()` wiring lines, none in `loop()` or `drainCommands()`.
+- [ ] Commit: `Run MQTT/OTA on a dedicated task with command and publish queues; MqttView fed by observer`.
+
+**Hardware check for Mike (DevKit):** same as Task 7's plus: with a walk running, `docker stop` (or equivalently kill) the MQTT broker for 60 s, then restart it. Belt must keep running; HA entities recover within one backoff period. Then power off the AP for 30 s mid-walk; belt keeps running.
 
 ---
 
