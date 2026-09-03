@@ -429,11 +429,17 @@ bool TreadmillHandler::handle()
         m_lastKeepalive = millis();
     }
 
-    // Send keepalive every KEEPALIVE_INTERVAL ms (200ms) to maintain connection
-    if (isConnected() && (millis() - m_lastKeepalive >= KEEPALIVE_INTERVAL))
+    // Heartbeat: reply once to each belt notification (the PitPat app's pattern, ~1 Hz),
+    // with a fallback only if the belt goes quiet. See KEEPALIVE_FALLBACK_MS in the header.
+    if (isConnected())
     {
-        sendKeepalive();
-        m_lastKeepalive = millis();
+        bool reply = m_keepaliveReplyPending;
+        if (reply || (millis() - m_lastKeepalive >= KEEPALIVE_FALLBACK_MS))
+        {
+            m_keepaliveReplyPending = false;
+            sendKeepalive();
+            m_lastKeepalive = millis();
+        }
     }
 
     // Pause timeout: commit session and disconnect if belt has been paused too long.
@@ -673,6 +679,7 @@ void TreadmillHandler::notifyCallback(
     }
 
     BA05Protocol::ParsedData parsed = BA05Protocol::parsePacket(pData, length);
+    m_keepaliveReplyPending = true; // answer every belt frame with one heartbeat (loop task sends it)
     if (!parsed.valid)
     {
         log_w("Unexpected or invalid packet length: %d - ignoring", length);
