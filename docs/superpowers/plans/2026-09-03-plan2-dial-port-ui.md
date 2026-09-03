@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
-**Gate:** start only after Mike tags `phase-a-verified` (Phase A checklist in `doc/AUDIT_2026-09-03.md` passed on the DevKit).
+**Gate (revised 2026-09-03):** no DevKit is available, so the Phase A checklist runs on the Dial after Task 1. If BLE misbehaves there, build tag `devkit-baseline-2026-09-03` for `m5stack-stamps3` as a control to separate refactor bugs from S3 port bugs.
 
 **Goal:** Run the refactored firmware on the M5Stack Dial v1.1, then add `DialUi`: tap = start/pause/resume, long-press = stop, side button = stop, rotate = speed (settle then send, rotate-from-stopped starts), screens per spec §4.6, idle dimming, buzzer feedback, OTA for the Dial.
 
