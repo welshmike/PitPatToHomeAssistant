@@ -593,6 +593,12 @@ void DialUi::drawSpeedOverlay(LovyanGFX& gfx, bool paused)
                     kRingStartDeg + ringSweep, colAmber);
     }
 
+    // Blank everything inside the ring so the screen's own centre content
+    // (time, row, PAUSED label, hints) does not show through the overlay,
+    // then put the status dots back since they sit inside that circle.
+    gfx.fillCircle(kRingCx, kRingCy, kRingInner - 2, kColBg);
+    drawStatusDots(gfx);
+
     char centreBuf[16];
     DialFormat::formatSpeedMph(m_targetSpeedMph, centreBuf, sizeof(centreBuf));
     gfx.setTextColor(colAmber, kColBg);
