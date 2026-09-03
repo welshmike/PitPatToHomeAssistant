@@ -21,6 +21,7 @@ MqttView::MqttView(PubSubClient *client)
       m_autoreconnectSwitch(&m_device, "auto-reconnect", "Auto Reconnect"),
       m_idleDisconnectMins(&m_device, "idle-disconnect-mins", "Idle Disconnect Minutes"),
       m_pauseTimeoutMins(&m_device, "pause-timeout-mins", "Pause Timeout Minutes"),
+      m_startSpeed(&m_device, "start-speed", "Start Speed"),
       // Cumulative totals
       m_totalDistance(&m_device, "total-distance", "Total Distance"),
       m_totalSteps(&m_device, "total-steps", "Total Steps"),
@@ -105,6 +106,14 @@ MqttView::MqttView(PubSubClient *client)
     m_pauseTimeoutMins.setMode(NumberMode::BOX);
     m_pauseTimeoutMins.setIcon("mdi:timer-pause-outline");
     m_pauseTimeoutMins.setUnit("min");
+
+    m_startSpeed.setEntityType(EntityCategory::CONFIG);
+    m_startSpeed.setMin(SPEED_MIN_MPH);
+    m_startSpeed.setMax(SPEED_MAX_MPH);
+    m_startSpeed.setStep(0.1f);
+    m_startSpeed.setMode(NumberMode::BOX);
+    m_startSpeed.setIcon("mdi:speedometer-slow");
+    m_startSpeed.setUnit("mph");
 
     // Cumulative totals — each has its own state topic so they can use retain=true
     // and survive MQTT reconnects without waiting for the next live packet.
@@ -213,6 +222,7 @@ void MqttView::publishAllConfigs()
     publishConfig(m_autoreconnectSwitch);
     publishConfig(m_idleDisconnectMins);
     publishConfig(m_pauseTimeoutMins);
+    publishConfig(m_startSpeed);
 
     // Diagnostics
     publishConfig(m_maxSpeed);
@@ -244,6 +254,13 @@ void MqttView::publishPauseTimeoutSetting(uint16_t mins)
     char buf[8];
     snprintf(buf, sizeof(buf), "%u", mins);
     publishMqttState(m_pauseTimeoutMins, buf);
+}
+
+void MqttView::publishStartSpeedSetting(float mph)
+{
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.1f", mph);
+    publishMqttState(m_startSpeed, buf);
 }
 
 void MqttView::publishState(TreadMillData data)

@@ -195,6 +195,9 @@ void NetTask::drainPublishQueue()
         case PubType::PAUSE_MINS:
             m_view.publishPauseTimeoutSetting(item.u16);
             break;
+        case PubType::START_SPEED:
+            m_view.publishStartSpeedSetting(item.f);
+            break;
         case PubType::CALIB_COUNT:
             m_view.publishCalibrationPoints(item.u8);
             break;
@@ -218,6 +221,7 @@ void NetTask::onMqttConnected()
     client.subscribe(m_view.getCalibrate20StepsButton().getCommandTopic(), 1);
     client.subscribe(m_view.getIdleDisconnectNumber().getCommandTopic(), 1);
     client.subscribe(m_view.getPauseTimeoutNumber().getCommandTopic(), 1);
+    client.subscribe(m_view.getStartSpeedNumber().getCommandTopic(), 1);
 
     client.subscribe(m_restoreTotalsTopic);
     log_i("Restore-totals topic: %s", m_restoreTotalsTopic);
@@ -242,6 +246,7 @@ void NetTask::fullResync()
     m_view.publishAutoReconnectSetting(m_treadmill.getAutoReconnect());
     m_view.publishIdleDisconnectSetting(m_treadmill.getIdleDisconnectMins());
     m_view.publishPauseTimeoutSetting(m_treadmill.getPauseTimeoutMins());
+    m_view.publishStartSpeedSetting(m_treadmill.getStartSpeedMph());
     m_view.publishCalibrationPoints(m_treadmill.getCalibrationPointCount());
 
     if (!m_stackLogged)
@@ -387,6 +392,20 @@ void NetTask::onMqttMessage(char *topic, uint8_t *payload, unsigned int length)
             log_i("Pause timeout setting received: %u min", cmd.u16);
             cmd.type = CmdType::SET_PAUSE_MINS;
         }
+        enqueueCommand(cmd);
+        return;
+    }
+
+    if (strcmp(topic, m_view.getStartSpeedNumber().getCommandTopic()) == 0)
+    {
+        if (!payloadToBuf(payload, length, buf, sizeof(buf)))
+        {
+            return;
+        }
+        trimInPlace(buf);
+        cmd.type = CmdType::SET_START_SPEED;
+        cmd.f    = strtof(buf, nullptr);
+        log_i("Start speed setting received: %.1f mph", cmd.f);
         enqueueCommand(cmd);
         return;
     }

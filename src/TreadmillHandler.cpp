@@ -50,14 +50,14 @@ bool TreadmillHandler::setSpeed(uint16_t speed)
     return this->sendCommand(packet, sizeof(packet));
 }
 
-// BA05 Protocol: Start at 1.0 km/h
-bool TreadmillHandler::start()
+// BA05 Protocol: Start at the given raw speed (configured start speed by default).
+bool TreadmillHandler::startAtRaw(uint16_t raw)
 {
     if (!isConnected())
     {
-        log_i("start() while disconnected — queuing command and auto-connecting");
+        log_i("startAtRaw() while disconnected — queuing command and auto-connecting");
         m_pendingCmd   = PendingCmd::START;
-        m_pendingSpeed = START_SPEED_RAW;
+        m_pendingSpeed = raw;
         m_autoReconnect        = true;
         m_userRequestedConnect = false;
         m_reconnectNotBefore   = 0;
@@ -65,9 +65,9 @@ bool TreadmillHandler::start()
         return true; // queued, not failed
     }
     uint8_t packet[27];
-    m_lastSpeed = START_SPEED_RAW;
+    m_lastSpeed = raw;
     // CMD1=0x01 for running, MODE=0x0C for running
-    BA05Protocol::makePacket(START_SPEED_RAW, 0x01, 0x0C, m_seqCounter++, packet);
+    BA05Protocol::makePacket(raw, 0x01, 0x0C, m_seqCounter++, packet);
     printCommandPacket("start", packet, sizeof(packet));
     return this->sendCommand(packet, sizeof(packet));
 }
@@ -213,9 +213,18 @@ void TreadmillHandler::begin(NimBLEAddress address)
         m_autoReconnect      = prefs.getBool("ar",    true);
         m_idleDisconnectMins = prefs.getUShort("idle", 30);
         m_pauseTimeoutMins   = prefs.getUShort("pause", 10);
+        m_startSpeedTenths   = prefs.getUShort("start", 10);
         prefs.end();
-        log_i("Settings loaded: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min",
-              m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins);
+        // Clamp on load too — guards against a stale/out-of-range value written
+        // by an older firmware or a manual NVS edit.
+        {
+            const uint16_t minTenths = (uint16_t)lroundf(SPEED_MIN_MPH * 10.0f);
+            const uint16_t maxTenths = (uint16_t)lroundf(SPEED_MAX_MPH * 10.0f);
+            if (m_startSpeedTenths < minTenths) m_startSpeedTenths = minTenths;
+            if (m_startSpeedTenths > maxTenths) m_startSpeedTenths = maxTenths;
+        }
+        log_i("Settings loaded: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min startSpeed=%u tenths",
+              m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins, m_startSpeedTenths);
     }
 
     // Pre-populate m_snapshot totals from NVS so that the first publishState()
@@ -241,9 +250,19 @@ void TreadmillHandler::saveSettings()
     prefs.putBool("ar",     m_autoReconnect);
     prefs.putUShort("idle",  m_idleDisconnectMins);
     prefs.putUShort("pause", m_pauseTimeoutMins);
+    prefs.putUShort("start", m_startSpeedTenths);
     prefs.end();
-    log_i("Settings saved: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min",
-          m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins);
+    log_i("Settings saved: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min startSpeed=%u tenths",
+          m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins, m_startSpeedTenths);
+}
+
+void TreadmillHandler::setStartSpeedMph(float mph)
+{
+    if (mph < SPEED_MIN_MPH) mph = SPEED_MIN_MPH;
+    if (mph > SPEED_MAX_MPH) mph = SPEED_MAX_MPH;
+    m_startSpeedTenths = (uint16_t)lroundf(mph * 10.0f);
+    saveSettings();
+    log_i("Start speed set: %.1f mph (%u tenths)", getStartSpeedMph(), m_startSpeedTenths);
 }
 
 void TreadmillHandler::setIdleDisconnectMins(uint16_t mins)
@@ -496,7 +515,7 @@ bool TreadmillHandler::handle()
         PendingCmd cmd = m_pendingCmd;
         m_pendingCmd = PendingCmd::NONE;
         if (cmd == PendingCmd::START)
-            start();
+            startAtRaw(m_pendingSpeed);
         else if (cmd == PendingCmd::SET_SPEED)
             setSpeed(m_pendingSpeed);
     }

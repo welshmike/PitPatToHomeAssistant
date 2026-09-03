@@ -25,6 +25,7 @@ enum class CmdType : uint8_t
     SET_AUTO_RECONNECT,
     SET_IDLE_MINS,
     SET_PAUSE_MINS,
+    SET_START_SPEED,
     TOGGLE_CALIBRATION,
     RESTORE_TOTALS,
     RESTORE_CALIBRATION,
@@ -34,7 +35,7 @@ enum class CmdType : uint8_t
 struct Command
 {
     CmdType  type = CmdType::NONE;
-    float    f    = 0;     // SET_SPEED_MPH
+    float    f    = 0;     // SET_SPEED_MPH / SET_START_SPEED
     bool     b    = false; // SET_AUTO_RECONNECT
     uint16_t u16  = 0;     // SET_IDLE_MINS / SET_PAUSE_MINS
 
@@ -63,6 +64,7 @@ enum class PubType : uint8_t
     AUTO_RECONNECT,
     IDLE_MINS,
     PAUSE_MINS,
+    START_SPEED,
     CALIB_COUNT,
     FULL_RESYNC,
 };
@@ -74,4 +76,5 @@ struct PublishItem
     bool          b    = false; // AUTO_RECONNECT
     uint16_t      u16  = 0;     // IDLE_MINS / PAUSE_MINS
     uint8_t       u8   = 0;     // CALIB_COUNT
+    float         f    = 0;     // START_SPEED
 };

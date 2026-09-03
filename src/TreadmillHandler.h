@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <Preferences.h>
+#include <math.h>
 
 #include "platform.h"
 #include "TreadmillState.h"
@@ -20,7 +21,10 @@ public:
     // failure flags DISCONNECTED in the snapshot; a post-connect cooldown block
     // or a missing write characteristic leaves the snapshot unchanged.
     bool setSpeed(uint16_t speed);
-    bool start() override;
+    bool startAtRaw(uint16_t raw) override;
+    // Convenience wrapper — starts at the configured start speed. Kept for
+    // main.cpp/tests; the controller calls startAtRaw(startSpeedRaw()) directly.
+    bool start() { return startAtRaw(startSpeedRaw()); }
     bool pause() override;
     bool stop() override;
 
@@ -54,6 +58,21 @@ public:
     uint16_t getPauseTimeoutMins() const
     {
         return m_pauseTimeoutMins;
+    }
+
+    // Configurable start speed — clamps to [SPEED_MIN_MPH, SPEED_MAX_MPH], rounds
+    // to the nearest tenth (NVS storage unit), and persists.
+    void setStartSpeedMph(float mph);
+
+    float getStartSpeedMph() const
+    {
+        return (float)m_startSpeedTenths / 10.0f;
+    }
+
+    // ITreadmillLink: configured start speed converted to raw belt units.
+    uint16_t startSpeedRaw() const override
+    {
+        return (uint16_t)lroundf(getStartSpeedMph() * SPEED_RAW_PER_MPH);
     }
 
     // Dynamic Step Calibration
@@ -207,6 +226,11 @@ private:
     uint16_t      m_pauseTimeoutMins     = 10;
     unsigned long m_pauseTimeoutDeadline = 0;
     unsigned long m_pauseTimeoutArmedAt  = 0;
+
+    // Configured start speed, in tenths of mph (NVS key "start"). Default 10 =
+    // START_SPEED_DEFAULT_MPH. Every "start" path uses this instead of the fixed
+    // START_SPEED_RAW.
+    uint16_t m_startSpeedTenths = 10;
 
     // Pending command — queued when start()/setSpeed() is called while disconnected.
     // Executed in handle() once reconnected and POST_CONNECT_COOLDOWN has elapsed.

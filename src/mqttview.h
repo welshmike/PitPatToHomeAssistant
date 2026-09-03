@@ -59,6 +59,11 @@ public:
         return m_pauseTimeoutMins;
     }
 
+    const MqttNumber &getStartSpeedNumber() const
+    {
+        return m_startSpeed;
+    }
+
     const MqttButton &getCalibrate20StepsButton() const
     {
         return m_calibrate20StepsBtn;
@@ -69,6 +74,7 @@ public:
     void publishAutoReconnectSetting(bool enabled);
     void publishIdleDisconnectSetting(uint16_t mins);
     void publishPauseTimeoutSetting(uint16_t mins);
+    void publishStartSpeedSetting(float mph);
     void publishState(TreadMillData data);
 
 private:
@@ -109,6 +115,7 @@ private:
     MqttSwitch m_autoreconnectSwitch;
     MqttNumber m_idleDisconnectMins;
     MqttNumber m_pauseTimeoutMins;
+    MqttNumber m_startSpeed;
 
     // Diagnostics
     MqttSensor m_maxSpeed;

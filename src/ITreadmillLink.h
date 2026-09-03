@@ -17,10 +17,13 @@ public:
     // On false the caller must not write optimistic state; it should republish
     // whatever the link's snapshot holds (a failed GATT write has already set
     // DISCONNECTED there; a cooldown block leaves it unchanged).
-    virtual bool start() = 0;                   // start at START_SPEED_RAW (queues if disconnected)
+    virtual bool startAtRaw(uint16_t raw) = 0;  // start at raw (queues if disconnected)
     virtual bool pause() = 0;
     virtual bool stop() = 0;
     virtual bool setSpeedRaw(uint16_t raw) = 0; // queues if disconnected
+    // The configured start speed (NVS "start", default START_SPEED_DEFAULT_MPH),
+    // converted to raw units. start() paths use this instead of START_SPEED_RAW.
+    virtual uint16_t startSpeedRaw() const = 0;
     virtual bool requestConnect() = 0;
     virtual bool requestDisconnect() = 0;       // refuses while the belt is active
     virtual TreadMillData snapshot() const = 0;

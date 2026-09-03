@@ -12,6 +12,11 @@ static constexpr uint16_t SPEED_RAW_MAX     = 6080;   // 3.8 mph
 static constexpr float    SPEED_STOP_BELOW_MPH = 0.55f;
 static constexpr uint16_t START_SPEED_RAW   = 994;    // ~1.0 km/h
 static constexpr uint32_t SPEED_SETTLE_MS   = 400;
+// Configurable start speed (Plan 3 start selector): default and step for the
+// HA number / Dial selector, and how long the selector waits before cancelling.
+static constexpr float    START_SPEED_DEFAULT_MPH = 1.0f;
+static constexpr float    SELECTOR_STEP_MPH        = 0.2f;
+static constexpr uint32_t SELECTOR_TIMEOUT_MS       = 20000;
 // How long the Dial's speed-change overlay stays on screen after a nudge.
 // Used by the render task added in a later task.
 static constexpr uint32_t DIAL_SPEED_OVERLAY_MS = 1500;

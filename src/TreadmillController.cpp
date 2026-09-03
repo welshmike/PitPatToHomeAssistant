@@ -65,7 +65,7 @@ static uint16_t rawFromMph(float mph)
 
 void TreadmillController::start()
 {
-    if (!m_link.start())
+    if (!m_link.startAtRaw(m_link.startSpeedRaw()))
     {
         // The write failed and the link has already put DISCONNECTED in its
         // snapshot — publishing COUNTDOWN over it would hide the failure.
@@ -74,6 +74,21 @@ void TreadmillController::start()
     }
     TreadMillData d = m_link.snapshot();
     d.status = TreadMillData::COUNTDOWN;
+    publishOptimistic(d);
+}
+
+void TreadmillController::startAt(float mph)
+{
+    const float clamped = clampMph(mph);
+    if (!m_link.startAtRaw(rawFromMph(clamped)))
+    {
+        // Failure path notifies the link snapshot like the other commands.
+        notifyLinkSnapshot();
+        return;
+    }
+    TreadMillData d = m_link.snapshot();
+    d.status   = TreadMillData::COUNTDOWN;
+    d.speedCmd = roundToStep(clamped);
     publishOptimistic(d);
 }
 

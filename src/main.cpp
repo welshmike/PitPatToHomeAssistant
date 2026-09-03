@@ -50,13 +50,14 @@ NetStatus g_lastNetStatus = NetStatus::WIFI_DOWN;
 
 // Hands one settings publish to the net task. Snapshots go through the
 // controller's observer instead.
-static void enqueue(PubType type, bool b = false, uint16_t u16 = 0, uint8_t u8 = 0)
+static void enqueue(PubType type, bool b = false, uint16_t u16 = 0, uint8_t u8 = 0, float f = 0)
 {
   PublishItem item;
   item.type = type;
   item.b    = b;
   item.u16  = u16;
   item.u8   = u8;
+  item.f    = f;
   netTask.enqueuePublish(item);
 }
 
@@ -115,6 +116,11 @@ static void drainCommands()
     case CmdType::SET_PAUSE_MINS:
       treadmill.setPauseTimeoutMins(cmd.u16);
       enqueue(PubType::PAUSE_MINS, false, cmd.u16);
+      break;
+
+    case CmdType::SET_START_SPEED:
+      treadmill.setStartSpeedMph(cmd.f);
+      enqueue(PubType::START_SPEED, false, 0, 0, treadmill.getStartSpeedMph());
       break;
 
     case CmdType::TOGGLE_CALIBRATION:

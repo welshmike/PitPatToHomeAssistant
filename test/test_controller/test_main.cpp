@@ -12,7 +12,7 @@
 class FakeLink : public ITreadmillLink
 {
 public:
-    enum class CallType { START, PAUSE, STOP, SET_SPEED, CONNECT, DISCONNECT, PUBLISH };
+    enum class CallType { START_AT, PAUSE, STOP, SET_SPEED, CONNECT, DISCONNECT, PUBLISH };
 
     struct Call
     {
@@ -32,15 +32,17 @@ public:
     uint16_t      lastSpeedRaw = 0;        // last commanded raw speed the link remembers
     bool          connecting = false;      // what isConnecting() reports
     uint16_t      connectAttemptsVal = 0;  // what connectAttempts() reports
+    uint16_t      startSpeedRawVal = START_SPEED_RAW; // what startSpeedRaw() reports
     TreadMillData data;                 // settable snapshot the controller reads
     TreadMillData lastOptimistic;       // last value passed to publishOptimistic()
 
     // --- ITreadmillLink ---
     bool isConnected() const override { return connected; }
-    bool start() override { record(CallType::START, 0); return writeResult; }
+    bool startAtRaw(uint16_t raw) override { record(CallType::START_AT, raw); return writeResult; }
     bool pause() override { record(CallType::PAUSE, 0); return writeResult; }
     bool stop()  override { record(CallType::STOP, 0); return writeResult; }
     bool setSpeedRaw(uint16_t raw) override { record(CallType::SET_SPEED, raw); return writeResult; }
+    uint16_t startSpeedRaw() const override { return startSpeedRawVal; }
     bool requestConnect() override { record(CallType::CONNECT, 0); return connectResult; }
     bool requestDisconnect() override
     {
@@ -75,6 +77,14 @@ public:
     {
         for (int i = 0; i < callCount; ++i)
             if (calls[i].type == CallType::SET_SPEED) return calls[i].raw;
+        return 0xFFFF;
+    }
+
+    // First START_AT raw value, or 0xFFFF if there wasn't one.
+    uint16_t firstStartRaw() const
+    {
+        for (int i = 0; i < callCount; ++i)
+            if (calls[i].type == CallType::START_AT) return calls[i].raw;
         return 0xFFFF;
     }
 
@@ -199,8 +209,75 @@ static void test_start_publishesCountdown(void)
 
     c.start();
 
-    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::START));
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::START_AT));
     TEST_ASSERT_EQUAL_INT(TreadMillData::COUNTDOWN, (int)link.lastOptimistic.status);
+}
+
+// start() always uses the link's configured start speed, not a fixed constant.
+static void test_start_sendsLinksStartSpeedRaw(void)
+{
+    FakeLink link;
+    link.startSpeedRawVal = 2400; // 1.5 mph — a non-default configured start speed
+    TreadmillController c(link);
+
+    c.start();
+
+    TEST_ASSERT_EQUAL_UINT16(2400, link.firstStartRaw());
+}
+
+// startAt() sends an explicit speed instead of the configured start speed.
+static void test_startAt_sendsRequestedRaw(void)
+{
+    FakeLink link;
+    TreadmillController c(link);
+
+    c.startAt(2.0f);
+
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::START_AT));
+    TEST_ASSERT_EQUAL_UINT16(3200, link.firstStartRaw()); // 2.0 * 1600
+    TEST_ASSERT_EQUAL_INT(TreadMillData::COUNTDOWN, (int)link.lastOptimistic.status);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.0f, link.lastOptimistic.speedCmd);
+}
+
+static void test_startAt_clampsAtLowEnd(void)
+{
+    FakeLink link;
+    TreadmillController c(link);
+
+    c.startAt(0.1f);
+
+    TEST_ASSERT_EQUAL_UINT16(960, link.firstStartRaw()); // 0.6 * 1600
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.6f, link.lastOptimistic.speedCmd);
+}
+
+static void test_startAt_clampsAtHighEnd(void)
+{
+    FakeLink link;
+    TreadmillController c(link);
+
+    c.startAt(9.0f);
+
+    TEST_ASSERT_EQUAL_UINT16(SPEED_RAW_MAX, link.firstStartRaw());
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 3.8f, link.lastOptimistic.speedCmd);
+}
+
+// The link queues the command while disconnected but still reports success —
+// the controller has no visibility into the queue, only the return value.
+static void test_start_queuedWhileDisconnected_returnsTrueAndPublishesCountdown(void)
+{
+    FakeLink link;
+    link.connected = false;
+    link.data.status = TreadMillData::DISCONNECTED;
+    TreadmillController c(link);
+    RecordingObserver obs;
+    c.addObserver(obs);
+
+    c.start();
+
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::START_AT));
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::PUBLISH));
+    TEST_ASSERT_EQUAL_INT(TreadMillData::COUNTDOWN, (int)link.lastOptimistic.status);
+    TEST_ASSERT_EQUAL_INT(1, obs.snapshotCount);
 }
 
 static void test_pause_publishesPaused(void)
@@ -289,7 +366,7 @@ static void test_toggleStartPause_disconnectedStarts(void)
 
     c.toggleStartPause();
 
-    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::START));
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::START_AT));
 }
 
 static void test_toggleStartPause_stoppedStarts(void)
@@ -301,7 +378,7 @@ static void test_toggleStartPause_stoppedStarts(void)
 
     c.toggleStartPause();
 
-    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::START));
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::START_AT));
 }
 
 static void test_toggleStartPause_runningPauses(void)
@@ -325,7 +402,7 @@ static void test_toggleStartPause_linkPausedResumes(void)
 
     c.toggleStartPause();
 
-    TEST_ASSERT_EQUAL_INT(0, link.countOf(FakeLink::CallType::START));
+    TEST_ASSERT_EQUAL_INT(0, link.countOf(FakeLink::CallType::START_AT));
     TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::SET_SPEED));
     TEST_ASSERT_EQUAL_UINT16(3200, link.firstSpeedRaw());
 }
@@ -513,7 +590,23 @@ static void test_start_whenWriteFails_keepsLinkSnapshot(void)
 
     c.start();
 
-    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::START));
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::START_AT));
+    TEST_ASSERT_EQUAL_INT(0, link.countOf(FakeLink::CallType::PUBLISH));
+    TEST_ASSERT_EQUAL_INT(1, obs.snapshotCount);
+    TEST_ASSERT_EQUAL_INT(TreadMillData::DISCONNECTED, (int)obs.lastSnapshot.status);
+}
+
+static void test_startAt_whenWriteFails_keepsLinkSnapshot(void)
+{
+    FakeLink link;
+    seedFailedWriteLink(link);
+    TreadmillController c(link);
+    RecordingObserver obs;
+    c.addObserver(obs);
+
+    c.startAt(2.0f);
+
+    TEST_ASSERT_EQUAL_INT(1, link.countOf(FakeLink::CallType::START_AT));
     TEST_ASSERT_EQUAL_INT(0, link.countOf(FakeLink::CallType::PUBLISH));
     TEST_ASSERT_EQUAL_INT(1, obs.snapshotCount);
     TEST_ASSERT_EQUAL_INT(TreadMillData::DISCONNECTED, (int)obs.lastSnapshot.status);
@@ -770,6 +863,11 @@ int main(int argc, char **argv)
     RUN_TEST(test_setSpeedMph_whileRunning_keepsStatus);
 
     RUN_TEST(test_start_publishesCountdown);
+    RUN_TEST(test_start_sendsLinksStartSpeedRaw);
+    RUN_TEST(test_startAt_sendsRequestedRaw);
+    RUN_TEST(test_startAt_clampsAtLowEnd);
+    RUN_TEST(test_startAt_clampsAtHighEnd);
+    RUN_TEST(test_start_queuedWhileDisconnected_returnsTrueAndPublishesCountdown);
     RUN_TEST(test_pause_publishesPaused);
     RUN_TEST(test_stop_publishesStopped);
 
@@ -793,6 +891,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_tick_withNoPendingNudge_doesNothing);
 
     RUN_TEST(test_start_whenWriteFails_keepsLinkSnapshot);
+    RUN_TEST(test_startAt_whenWriteFails_keepsLinkSnapshot);
     RUN_TEST(test_pause_whenWriteFails_keepsLinkSnapshot);
     RUN_TEST(test_stop_whenWriteFails_keepsLinkSnapshot);
     RUN_TEST(test_setSpeedMph_whenWriteFails_keepsLinkSnapshot);

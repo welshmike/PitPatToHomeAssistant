@@ -32,6 +32,9 @@ public:
     void addObserver(ISnapshotObserver& obs);
 
     void start();
+    // Start at an explicit speed (mph), clamped to [SPEED_MIN_MPH, SPEED_MAX_MPH]
+    // — used by the HA start-speed number and the Dial's start selector.
+    void startAt(float mph);
     void pause();
     void resume();
     // Returns the link's own answer: true when the link accepted the stop (or
@@ -68,6 +71,9 @@ public:
     void publishNetStatus(NetStatus s);
 
     float targetSpeedMph() const { return m_targetMph; }
+
+    // Pass-through: the configured start speed (HA number / Dial selector default).
+    float startSpeedMph() const { return m_link.startSpeedRaw() / (float)SPEED_RAW_PER_MPH; }
 
     // The belt reports STOPPED while paused, so this is the only way to tell
     // "paused" apart from "stopped" — delegates to the link's own pause flag.
