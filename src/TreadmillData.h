@@ -47,3 +47,44 @@ public:
     uint32_t sessionDurationSec = 0;
     bool     sessionComplete    = false;
 };
+
+// One walking session's contribution to the all-time totals. Always a delta
+// relative to the belt odometer reading captured at BLE connect time — never a
+// raw odometer value. See doc/Q1_BLE_NOTES.md "Session Delta Accounting".
+struct SessionDelta
+{
+    float    distKm      = 0.0f;
+    uint32_t steps       = 0;
+    uint32_t calories    = 0;
+    uint32_t durationSec = 0;
+};
+
+// Cumulative totals store, as seen by SessionTracker. Implemented by
+// TreadmillState (NVS-backed) on device and by a fake in the host tests.
+class ITotalsStore
+{
+public:
+    virtual float    totalDistanceKm()  const = 0;
+    virtual uint32_t totalSteps()       const = 0;
+    virtual uint32_t totalCalories()    const = 0;
+    virtual uint32_t totalDurationSec() const = 0;
+    virtual float    stepLengthM(float speedMph) const = 0;
+    // Updates the in-memory totals only. The implementation is expected to
+    // defer the flash write so this stays safe to call from a BLE callback.
+    virtual void     addSession(const SessionDelta&) = 0;
+    virtual ~ITotalsStore() = default;
+};
+
+// Side effects the session accounting needs from its owner. TreadmillHandler
+// implements these with the BLE timer/flag code that used to be inline in
+// notifyCallback().
+class ISessionEvents
+{
+public:
+    virtual void onSessionStarted() = 0; // belt moving: cancel idle timer
+    virtual void onSessionEnded()   = 0; // clean STOPPED: autoReconnect=false, arm idle timer
+    virtual void onPaused()         = 0; // arm pause timeout
+    virtual void onResumed()        = 0; // cancel pause timeout
+    virtual void onSettledIdle()    = 0; // first 0x2F STOPPED with no session: arm idle timer
+    virtual ~ISessionEvents() = default;
+};

@@ -42,15 +42,24 @@ void TreadmillState::restoreTotals(float distKm, uint32_t steps,
   m_totalDurationSec = durationSec;
 
   saveTotalsToNVS();
+  m_dirty = false; // written immediately — nothing left for flush() to do
   log_w("Totals restored and saved to NVS.");
 }
 
-void TreadmillState::addSession(float distKm, uint32_t steps, uint32_t calories,
-                                uint32_t durationSec) {
-  m_totalDistanceKm += distKm;
-  m_totalSteps += steps;
-  m_totalCalories += calories;
-  m_totalDurationSec += durationSec;
+// In-memory only. The flash write is deferred to flush() so that this stays
+// callable from the NimBLE notify callback — writing NVS inside a BLE callback
+// blocks the radio task for the duration of the flash erase/write.
+void TreadmillState::addSession(const SessionDelta &d) {
+  m_totalDistanceKm += d.distKm;
+  m_totalSteps += d.steps;
+  m_totalCalories += d.calories;
+  m_totalDurationSec += d.durationSec;
+  m_dirty = true;
+}
+
+void TreadmillState::flush() {
+  if (!m_dirty) return;
+  m_dirty = false;
   saveTotalsToNVS();
 }
 

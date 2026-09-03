@@ -71,6 +71,7 @@ namespace BA05Protocol {
     ParsedData parsePacket(const uint8_t *pData, size_t length)
     {
         ParsedData parsed;
+        parsed.length = length;
         if (length < 20) {
             return parsed; // invalid
         }
@@ -96,6 +97,7 @@ namespace BA05Protocol {
             parsed.durationSec   = duration_total_sec;
 
             uint8_t flags = (packetType == 0x2F) ? pData[45] : pData[28];
+            parsed.statusFlags = flags;
             if      (flags == 0x00) parsed.status = TreadMillData::STOPPED;
             else if (flags == 0x18) parsed.status = TreadMillData::COUNTDOWN;
             else if (flags == 0x10) parsed.status = TreadMillData::PAUSED;

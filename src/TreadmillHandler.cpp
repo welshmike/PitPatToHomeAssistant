@@ -79,15 +79,10 @@ void TreadmillHandler::stop()
     // pause timeout handler cleared the session flags and is about to disconnect.
     m_pauseTimeoutDeadline = 0;
 
-    if (m_isPaused && m_sessionActive)
+    // Commits the stored paused session if one is pending — no new STOPPED
+    // transition will arrive from the belt to do it for us.
+    if (m_tracker.onStopCommand())
     {
-        // Belt is paused (stuck in STOPPED) — commit the stored paused session now,
-        // since no new STOPPED transition will fire from the belt.
-        log_i("Stop after pause — committing paused session: dist=%.3f km steps=%u",
-              m_pausedDistKm, m_pausedSteps);
-        m_state.addSession(m_pausedDistKm, m_pausedSteps, m_pausedCalories, m_pausedDurationSec);
-        m_sessionActive = false;
-        m_isPaused      = false;
         m_autoReconnect = false;
         m_userRequestedConnect = false;
     }
@@ -102,7 +97,7 @@ void TreadmillHandler::stop()
 // BA05 Protocol: Pause (keep current speed in packet)
 void TreadmillHandler::pause()
 {
-    m_isPaused = true;
+    m_tracker.onPauseCommand();
     uint8_t packet[27];
     // CMD1=0x05 for pause, MODE=0x0A for pause, keep last speed
     BA05Protocol::makePacket(m_lastSpeed, 0x05, 0x0A, m_seqCounter++, packet);
@@ -302,40 +297,19 @@ void TreadmillHandler::handle()
     // Pause timeout: commit session and disconnect if belt has been paused too long.
     // Prevents data loss if the user walks away and never resumes or stops.
     if (m_pauseTimeoutDeadline != 0 && millis() >= m_pauseTimeoutDeadline &&
-        m_isPaused && isConnected())
+        m_tracker.isPaused() && isConnected())
     {
         log_w("Pause timeout (%u min) — committing paused session and disconnecting",
               m_pauseTimeoutMins);
         m_pauseTimeoutDeadline = 0;
 
-        // Commit the stored paused session snapshot.
-        m_state.addSession(m_pausedDistKm, m_pausedSteps, m_pausedCalories, m_pausedDurationSec);
-        log_i("Pause timeout session committed: dist=%.3f km  steps=%u  cal=%u  dur=%u s",
-              m_pausedDistKm, m_pausedSteps, m_pausedCalories, m_pausedDurationSec);
-
-        // Publish session summary to MQTT before disconnecting.
-        m_lastData.sessionDistanceKm  = m_pausedDistKm;
-        m_lastData.sessionSteps       = m_pausedSteps;
-        m_lastData.sessionCalories    = m_pausedCalories;
-        m_lastData.sessionDurationSec = m_pausedDurationSec;
-        m_lastData.sessionComplete    = true;
-        m_lastData.totalDistanceKm    = m_state.getTotalDistanceKm();
-        m_lastData.totalSteps         = m_state.getTotalSteps();
-        m_lastData.totalCalories      = m_state.getTotalCalories();
-        m_lastData.totalDurationSec   = m_state.getTotalDurationSec();
-        m_lastData.distanceKm  = 0.0f;
-        m_lastData.calories    = 0;
-        m_lastData.steps       = 0;
-        m_lastData.durationSec = 0;
-        m_lastData.status      = TreadMillData::STOPPED;
+        // Commits the paused snapshot, clears the tracker's session flags (so the
+        // stop() below can't double-commit) and returns the summary to publish.
+        m_lastData = m_tracker.onPauseTimeout(m_lastData);
         if (m_onDataUpdate) m_onDataUpdate(m_lastData);
 
-        // Clear session flags before stop() so it doesn't double-commit.
-        m_sessionActive        = false;
-        m_isPaused             = false;
         m_autoReconnect        = false;
         m_userRequestedConnect = false;
-        m_justResumedFromPause = false;
 
         stop(); // sends stop command to belt
         // Stop keepalives — let supervision timeout fire naturally (reason=520, HCI 0x08).
@@ -404,6 +378,10 @@ void TreadmillHandler::handle()
             m_onDataUpdate(m_lastData);
         }
     }
+
+    // Deferred NVS write. addSession() only touches memory (it runs on the NimBLE
+    // task), so the flash write happens here on the main loop instead.
+    m_state.flush();
 }
 
 bool TreadmillHandler::connectToDevice()
@@ -499,18 +477,13 @@ bool TreadmillHandler::connectToDevice()
     // Reset ALL per-connection state BEFORE subscribing so that any notification
     // that arrives during the remainder of connectToDevice() sees a clean slate.
     m_lastConnectTime         = millis();
-    m_firstPacketAfterConnect = true;
-    m_lastPacketType          = 0;
+    m_logRawFirstPacket       = true;
     m_sendInitNow             = false;
-    m_connectionBaseDistKm    = 0.0f;
-    m_connectionBaseCal       = 0;
-    m_connectionBaseDurSec    = 0;
-    m_sessionActive           = false;
-    m_isPaused                = false;
-    m_justResumedFromPause    = false;
     m_reconnectNotBefore      = 0;
     m_intentionalDrop         = false;
     m_stopKeepalives          = false;
+    // Baselines, packet-type tracking and session/pause flags.
+    m_tracker.onConnected(m_lastConnectTime);
 
     // Subscribe early — the Q1 needs BLE activity within the first few hundred ms
     // of connect or it terminates the session. Calling subscribe() here (before
@@ -563,283 +536,19 @@ void TreadmillHandler::notifyCallback(
         return;
     }
 
-    TreadMillData data = m_lastData;
-    TreadMillData::Status previousStatus = m_lastStatus;
-    uint8_t packetType = parsed.packetType;
+    // All session accounting happens in SessionTracker (pure, host-tested).
+    TreadMillData data = m_tracker.onPacket(parsed, m_lastData, millis());
 
-    if (packetType != m_lastPacketType)
+    // Raw hex dump of the first full packet after connect. The tracker logs the
+    // decoded form; only the handler still has the bytes to dump.
+    if (m_logRawFirstPacket && length >= 50 &&
+        (parsed.packetType == 0x2F || parsed.packetType == 0x34))
     {
-        unsigned long msAfterConnect = millis() - m_lastConnectTime;
-        if (m_lastPacketType == 0)
-        {
-            log_i("First packet: type=0x%02X len=%d at t=+%lums after connect",
-                  packetType, length, msAfterConnect);
-        }
-        else
-        {
-            log_i("Packet type changed: 0x%02X → 0x%02X at t=+%lums after connect",
-                  m_lastPacketType, packetType, msAfterConnect);
-        }
-        m_lastPacketType = packetType;
-
-        // Fix 2: arm idle timer when the device settles to stable 0x2F mode with
-        // no active session. Covers: manual reconnect to idle belt, post-pause-timeout
-        // reconnect, and boot connect to an already-idle belt.
-        // Without this, Q1's own ~3.5h idle kick fires while m_autoReconnect=true
-        // (left true from the initial connect intent), triggering an infinite reconnect loop.
-        if (packetType == 0x2F &&
-            parsed.status == TreadMillData::STOPPED &&
-            !m_sessionActive &&
-            !m_isPaused &&
-            m_idleDisconnectMins > 0 &&
-            m_idleDisconnectDeadline == 0)
-        {
-            m_idleDisconnectArmedAt  = millis();
-            m_idleDisconnectDeadline = m_idleDisconnectArmedAt + (uint32_t)m_idleDisconnectMins * 60000UL;
-            log_i("Idle disconnect timer armed on stable idle connection: %u min", m_idleDisconnectMins);
-        }
-    }
-
-    if (length >= 50 && (packetType == 0x2F || packetType == 0x34)) {
-        data.speedFeedback = parsed.speedFeedback;
-        data.speedCmd      = parsed.speedCmd;
-        data.speedMax      = parsed.speedMax;
-        data.fwVersion     = 0;
-        data.status        = parsed.status;
-
-        if (m_firstPacketAfterConnect)
-        {
-            m_firstPacketAfterConnect = false;
-            // Record belt odometer at connection start. Every addSession() call uses
-            // (current - base) so that reconnects mid-session don't double-count.
-            m_connectionBaseDistKm  = parsed.distanceM / 1000.0f;
-            m_connectionBaseCal     = parsed.calories;
-            m_connectionBaseDurSec  = parsed.durationSec;
-            const char* statusName[] = {"COUNTDOWN","RUNNING","PAUSED","STOPPED","DISCONNECTED"};
-            const char* sn = (data.status <= TreadMillData::DISCONNECTED)
-                             ? statusName[(int)data.status] : "UNKNOWN";
-            log_w("FIRST POST-CONNECT PACKET: type=0x%02X len=%d → status=%s "
-                  "speed=%.3f dist=%dm dur=%u cal=%u (baseline captured)",
-                  packetType, length, sn,
-                  parsed.speedFeedback, parsed.distanceM, parsed.durationSec, parsed.calories);
-            char hex[length * 3 + 1];
-            for (size_t i = 0; i < length; i++) sprintf(hex + i * 3, "%02X ", pData[i]);
-            hex[length * 3 - 1] = '\0';
-            log_w("FIRST POST-CONNECT RAW: %s", hex);
-        }
-
-        // STATUS TRANSITION LOGGING — temporary, for pause vs stop diagnosis
-        if (data.status != previousStatus)
-        {
-            auto statusStr = [](TreadMillData::Status s) -> const char* {
-                switch(s) {
-                    case TreadMillData::COUNTDOWN:    return "COUNTDOWN";
-                    case TreadMillData::RUNNING:      return "RUNNING";
-                    case TreadMillData::PAUSED:       return "PAUSED";
-                    case TreadMillData::STOPPED:      return "STOPPED";
-                    case TreadMillData::DISCONNECTED: return "DISCONNECTED";
-                    default:                          return "UNKNOWN";
-                }
-            };
-            log_w("STATUS: %s → %s  (flags=0x%02X  speed=%.2f  dist=%um  active=%d)",
-                  statusStr(previousStatus), statusStr(data.status),
-                  (packetType == 0x2F) ? pData[45] : pData[28],
-                  parsed.speedFeedback, parsed.distanceM, m_sessionActive);
-        }
-
-        m_lastStatus = data.status;
-
-        if (data.status == TreadMillData::RUNNING && data.speedFeedback > 0.001f)
-        {
-            if (m_isPaused && previousStatus == TreadMillData::STOPPED)
-            {
-                if (parsed.distanceM > 0)
-                {
-                    // Belt resumed from where it left off — session continues, no commit.
-                    // Mark that we just resumed so we can suppress the belt's startup
-                    // RUNNING→STOPPED→RUNNING sequence that fires in the next ~500 ms.
-                    log_i("Resumed from pause (dist=%um) — session continues", parsed.distanceM);
-                    m_justResumedFromPause = true;
-                    m_resumeDistanceM      = parsed.distanceM;
-                }
-                else
-                {
-                    // Belt reset its odometer — commit the stored paused session, then start fresh
-                    log_i("Belt reset after pause — committing paused session: dist=%.3f km steps=%u",
-                          m_pausedDistKm, m_pausedSteps);
-                    data.sessionDistanceKm  = m_pausedDistKm;
-                    data.sessionSteps       = m_pausedSteps;
-                    data.sessionCalories    = m_pausedCalories;
-                    data.sessionDurationSec = m_pausedDurationSec;
-                    data.sessionComplete    = true;
-                    m_state.addSession(m_pausedDistKm, m_pausedSteps, m_pausedCalories, m_pausedDurationSec);
-                }
-                m_isPaused = false;
-                // Cancel pause timeout — belt has resumed.
-                m_pauseTimeoutDeadline = 0;
-            }
-            m_sessionActive = true;
-
-            // Cancel idle-disconnect timer — belt is active.
-            if (m_idleDisconnectDeadline != 0)
-            {
-                log_i("Idle disconnect timer cancelled — session started");
-                m_idleDisconnectDeadline = 0;
-            }
-
-            // If the belt's odometer is below our connection baseline, the user
-            // pressed START and the belt reset its session counter since we connected.
-            // Reset the bases to 0 so all deltas are relative to this walk's start.
-            // This prevents long-session undercount (residual odometer from last session
-            // at connect time was being subtracted from the committed delta).
-            // NOTE: use parsed.distanceM directly — data.distanceKm is not yet set at
-            // this point in the function (it's populated a few lines below).
-            if (parsed.distanceM / 1000.0f < m_connectionBaseDistKm) {
-                m_connectionBaseDistKm  = 0.0f;
-                m_connectionBaseCal     = 0;
-                m_connectionBaseDurSec  = 0;
-                log_i("Belt odometer reset detected — connection bases updated to 0");
-            }
-        }
-
-        if (data.status != TreadMillData::STOPPED)
-        {
-            data.distanceKm  = parsed.distanceM / 1000.0f;
-            data.calories    = parsed.calories;
-            data.steps       = (uint32_t)(parsed.distanceM / m_state.getDynamicStepLength(data.speedFeedback));
-            data.durationSec = parsed.durationSec;
-        }
-
-        if (data.status == TreadMillData::STOPPED &&
-            previousStatus != TreadMillData::STOPPED &&
-            previousStatus != TreadMillData::DISCONNECTED &&
-            data.distanceKm > 0.0f &&
-            m_sessionActive)
-        {
-            if (m_justResumedFromPause && !m_isPaused && parsed.distanceM <= m_resumeDistanceM)
-            {
-                // Belt's startup RUNNING→STOPPED after a resume — distance hasn't advanced,
-                // so this is not a real stop. Suppress the commit and wait for real RUNNING.
-                log_i("Suppressing spurious post-resume STOPPED (dist=%um unchanged)", parsed.distanceM);
-                m_justResumedFromPause = false;
-            }
-            else if (m_isPaused)
-            {
-                // Belt reports STOPPED because we sent a pause command — defer the commit.
-                // We'll commit when the belt resumes (RUNNING with dist=0 = reset) or
-                // when stop()/onDisconnect() is called explicitly.
-                float pDist = data.distanceKm - m_connectionBaseDistKm;
-                if (pDist < 0.0f) pDist = data.distanceKm;
-                m_pausedDistKm      = pDist;
-                m_pausedSteps       = (uint32_t)(pDist * 1000.0f / m_state.getDynamicStepLength(data.speedFeedback));
-                m_pausedCalories    = (data.calories >= m_connectionBaseCal)
-                                      ? data.calories - m_connectionBaseCal : data.calories;
-                m_pausedDurationSec = (data.durationSec >= m_connectionBaseDurSec)
-                                      ? data.durationSec - m_connectionBaseDurSec : data.durationSec;
-                m_justResumedFromPause = false; // clear in case user re-paused right after resume
-                log_i("Pause-stop: deferring commit (dist=%.3f km steps=%u) — waiting for resume or stop",
-                      m_pausedDistKm, m_pausedSteps);
-
-                // Arm pause timeout — if the user never resumes, commit and disconnect.
-                if (m_pauseTimeoutMins > 0)
-                {
-                    m_pauseTimeoutArmedAt  = millis();
-                    m_pauseTimeoutDeadline = m_pauseTimeoutArmedAt + (uint32_t)m_pauseTimeoutMins * 60000UL;
-                    log_i("Pause timeout armed: %u min", m_pauseTimeoutMins);
-                }
-            }
-            else
-            {
-                // Session summary: show the full belt distance for display in HA.
-                data.sessionDistanceKm  = data.distanceKm;
-                data.sessionSteps       = data.steps;
-                data.sessionCalories    = (uint32_t)data.calories;
-                data.sessionDurationSec = data.durationSec;
-                data.sessionComplete    = true;
-
-                // Totals: commit only the delta since this BLE connection started,
-                // so reconnects mid-session don't double-count earlier distance.
-                float sDist = data.distanceKm - m_connectionBaseDistKm;
-                if (sDist < 0.0f) sDist = data.distanceKm;
-                uint32_t sSteps = (uint32_t)(sDist * 1000.0f / m_state.getDynamicStepLength(data.speedFeedback));
-                uint32_t sCal = (data.calories >= m_connectionBaseCal)
-                                ? data.calories - m_connectionBaseCal : data.calories;
-                uint32_t sDur = (data.durationSec >= m_connectionBaseDurSec)
-                                ? data.durationSec - m_connectionBaseDurSec : data.durationSec;
-                m_state.addSession(sDist, sSteps, sCal, sDur);
-
-                log_i("Session ended — totals: dist=%.2f km  steps=%u  cal=%u  dur=%u s",
-                      m_state.getTotalDistanceKm(), m_state.getTotalSteps(),
-                      m_state.getTotalCalories(), m_state.getTotalDurationSec());
-                log_i("Session summary: dist=%.3f km  steps=%u  cal=%u  dur=%u s",
-                      data.sessionDistanceKm, data.sessionSteps,
-                      data.sessionCalories, data.sessionDurationSec);
-
-                m_sessionActive        = false;
-                m_autoReconnect        = false;
-                m_userRequestedConnect = false;
-                m_justResumedFromPause = false;
-
-                // Arm idle-disconnect timer so BLE disconnects automatically after
-                // the configured idle period. Prevents the Q1 kicking loop that
-                // occurs when we stay connected with no belt activity.
-                if (m_idleDisconnectMins > 0)
-                {
-                    m_idleDisconnectArmedAt  = millis();
-                    m_idleDisconnectDeadline = m_idleDisconnectArmedAt + (uint32_t)m_idleDisconnectMins * 60000UL;
-                    log_i("Idle disconnect timer armed: %u min", m_idleDisconnectMins);
-                }
-
-                data.distanceKm  = 0.0f;
-                data.calories    = 0;
-                data.steps       = 0;
-                data.durationSec = 0;
-            }
-        }
-
-        if (data.status != TreadMillData::STOPPED && m_sessionActive)
-        {
-            // Use connection-relative delta, not the raw belt odometer.
-            // Raw odometer causes a spike on mid-session reconnect: onDisconnect()
-            // already committed the pre-reconnect delta to NVS, so adding the full
-            // belt odometer again would double-count it in the HA utility_meter.
-            float lDelta = data.distanceKm - m_connectionBaseDistKm;
-            if (lDelta < 0.0f) lDelta = data.distanceKm;  // safety fallback
-            uint32_t lSteps = (uint32_t)(lDelta * 1000.0f / m_state.getDynamicStepLength(data.speedFeedback));
-            uint32_t lCal   = (data.calories   >= m_connectionBaseCal)     ? data.calories   - m_connectionBaseCal     : data.calories;
-            uint32_t lDur   = (data.durationSec >= m_connectionBaseDurSec) ? data.durationSec - m_connectionBaseDurSec : data.durationSec;
-            data.totalDistanceKm  = m_state.getTotalDistanceKm() + lDelta;
-            data.totalSteps       = m_state.getTotalSteps()       + lSteps;
-            data.totalCalories    = m_state.getTotalCalories()    + lCal;
-            data.totalDurationSec = m_state.getTotalDurationSec() + lDur;
-        }
-        else if (m_isPaused && m_sessionActive)
-        {
-            // Belt is paused (STOPPED state) — hold totals at the paused snapshot.
-            // Without this, total sensors drop back to bare NVS values during the pause
-            // window. When the session resumes and totals rise again, utility_meter in HA
-            // would count the pre-pause distance a second time (double-counting bug).
-            data.totalDistanceKm  = m_state.getTotalDistanceKm() + m_pausedDistKm;
-            data.totalSteps       = m_state.getTotalSteps()       + m_pausedSteps;
-            data.totalCalories    = m_state.getTotalCalories()    + m_pausedCalories;
-            data.totalDurationSec = m_state.getTotalDurationSec() + m_pausedDurationSec;
-        }
-        else
-        {
-            data.totalDistanceKm  = m_state.getTotalDistanceKm();
-            data.totalSteps       = m_state.getTotalSteps();
-            data.totalCalories    = m_state.getTotalCalories();
-            data.totalDurationSec = m_state.getTotalDurationSec();
-        }
-
-        log_d("speed=%.2f mph target=%.2f dist=%.3f km cal=%u dur=%u:%02u status=%d  "
-              "tot_dist=%.2f km tot_steps=%u",
-              data.speedFeedback, data.speedCmd, data.distanceKm,
-              data.calories, data.durationSec / 60, data.durationSec % 60, (int)data.status,
-              data.totalDistanceKm, data.totalSteps);
-    }
-    else if (length == 20) {
-        data.speedFeedback = parsed.speedFeedback;
+        m_logRawFirstPacket = false;
+        char hex[length * 3 + 1];
+        for (size_t i = 0; i < length; i++) sprintf(hex + i * 3, "%02X ", pData[i]);
+        hex[length * 3 - 1] = '\0';
+        log_w("FIRST POST-CONNECT RAW: %s", hex);
     }
 
     m_lastData = data;

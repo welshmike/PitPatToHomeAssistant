@@ -5,8 +5,9 @@
 
 #include "platform.h"
 #include "TreadmillState.h"
+#include "SessionTracker.h"
 
-class TreadmillHandler : public NimBLEClientCallbacks
+class TreadmillHandler : public NimBLEClientCallbacks, public ISessionEvents
 {
 public:
     TreadmillHandler();
@@ -166,8 +167,6 @@ private:
     void sendInitSequence();
     bool connectToDevice();
 
-    TreadMillData::Status m_lastStatus = TreadMillData::DISCONNECTED;
-
     // BA05 protocol state
     static constexpr unsigned long KEEPALIVE_INTERVAL  = 200;  // ms — matches QZ poll rate
     static constexpr unsigned long POST_CONNECT_COOLDOWN = 3000; // ms — block commands after
@@ -194,48 +193,16 @@ private:
     unsigned long m_lastDataTimestamp = 0;
     TreadMillData m_lastData;
 
-    // Set true in connectToDevice() so notifyCallback() can log the first post-connect
-    // packet in full — helps diagnose the phantom RUNNING state on connect.
-    volatile bool m_firstPacketAfterConnect = false;
+    // Set true in connectToDevice() so notifyCallback() can dump the raw bytes of
+    // the first post-connect packet — helps diagnose the phantom RUNNING state on
+    // connect. SessionTracker keeps its own first-packet flag for the baseline
+    // capture; this one exists only because the tracker never sees raw bytes.
+    volatile bool m_logRawFirstPacket = false;
 
     // Set by onConnect() (Core 0) when GATT is ready. handle() (Core 1) sends the
     // initial keepalive — writeValue(true) cannot be called from a NimBLE callback
     // because it blocks waiting for an ATT response processed by the same task.
     volatile bool m_sendInitNow = false;
-
-    // Belt odometer values recorded at the START of the current BLE connection.
-    // Used to compute per-connection deltas so that reconnects mid-session don't
-    // cause the same distance/calories/duration to be committed multiple times.
-    // Set on the first full packet after connect (notifyCallback); reset per-connection.
-    float    m_connectionBaseDistKm  = 0.0f;
-    uint16_t m_connectionBaseCal     = 0;
-    uint32_t m_connectionBaseDurSec  = 0;
-
-    // Tracks the packet type byte (0x2F or 0x34) seen most recently.
-    // Reset to 0 on each new connection. Used to log the moment the device
-    // transitions from the 0x34 "kicking phase" to stable 0x2F mode.
-    uint8_t m_lastPacketType = 0;
-
-    // True once the belt has physically moved (speed > 0) in the current BLE session.
-    // Reset on each new connection. Used by onDisconnect() as the ground-truth indicator
-    // of "belt was genuinely active" — immune to phantom RUNNING status bytes (0x34 packets)
-    // and residual distance from previous sessions.
-    volatile bool m_sessionActive = false;
-
-    // Set when we send a pause command. Suppresses the STOPPED commit that the belt
-    // fires immediately after pause. Cleared when belt resumes (RUNNING) or on stop/disconnect.
-    // On resume: if belt dist > 0 → session continues; if dist = 0 → belt reset, commit stored snapshot.
-    volatile bool m_isPaused = false;
-    float    m_pausedDistKm      = 0.0f;
-    uint32_t m_pausedSteps       = 0;
-    uint32_t m_pausedCalories    = 0;
-    uint32_t m_pausedDurationSec = 0;
-
-    // Set when a pause-resume is detected. The belt fires a brief RUNNING→STOPPED startup
-    // sequence before settling into real RUNNING, so we suppress that spurious STOPPED commit.
-    // Written by notifyCallback (Core 0), read by notifyCallback (Core 0) only — no volatile needed.
-    bool     m_justResumedFromPause = false;
-    uint32_t m_resumeDistanceM      = 0;
 
     // Set when the user explicitly requests a connect from HA (not auto-connect at boot).
     // Determines idle-kick behaviour: if the user asked to connect, keep retrying with a
@@ -289,6 +256,65 @@ private:
 
     TreadmillState m_state;
 
+    // All session accounting (baselines, deltas, pause/resume, live totals) lives
+    // here. Declared after m_state so the reference is bound to a live object.
+    SessionTracker m_tracker{m_state, *this};
+
+    // --- ISessionEvents ---------------------------------------------------
+    // These carry exactly the timer/flag code that used to sit inline in
+    // notifyCallback() at each of these points.
+
+    void onSessionStarted() override
+    {
+        // Cancel idle-disconnect timer — belt is active.
+        if (m_idleDisconnectDeadline != 0)
+        {
+            log_i("Idle disconnect timer cancelled — session started");
+            m_idleDisconnectDeadline = 0;
+        }
+    }
+
+    void onSessionEnded() override
+    {
+        m_autoReconnect        = false;
+        m_userRequestedConnect = false;
+
+        // Arm idle-disconnect timer so BLE disconnects automatically after
+        // the configured idle period. Prevents the Q1 kicking loop that
+        // occurs when we stay connected with no belt activity.
+        if (m_idleDisconnectMins > 0)
+        {
+            m_idleDisconnectArmedAt  = millis();
+            m_idleDisconnectDeadline = m_idleDisconnectArmedAt + (uint32_t)m_idleDisconnectMins * 60000UL;
+            log_i("Idle disconnect timer armed: %u min", m_idleDisconnectMins);
+        }
+    }
+
+    void onPaused() override
+    {
+        // Arm pause timeout — if the user never resumes, commit and disconnect.
+        if (m_pauseTimeoutMins > 0)
+        {
+            m_pauseTimeoutArmedAt  = millis();
+            m_pauseTimeoutDeadline = m_pauseTimeoutArmedAt + (uint32_t)m_pauseTimeoutMins * 60000UL;
+            log_i("Pause timeout armed: %u min", m_pauseTimeoutMins);
+        }
+    }
+
+    void onResumed() override
+    {
+        m_pauseTimeoutDeadline = 0;
+    }
+
+    void onSettledIdle() override
+    {
+        if (m_idleDisconnectMins > 0 && m_idleDisconnectDeadline == 0)
+        {
+            m_idleDisconnectArmedAt  = millis();
+            m_idleDisconnectDeadline = m_idleDisconnectArmedAt + (uint32_t)m_idleDisconnectMins * 60000UL;
+            log_i("Idle disconnect timer armed on stable idle connection: %u min", m_idleDisconnectMins);
+        }
+    }
 
     void onConnect(BLEClient *pClient) override
     {
@@ -330,29 +356,15 @@ private:
             m_stopKeepalives  = false;
         }
 
-        if (m_sessionActive)
-        {
-            if (m_isPaused)
-            {
-                log_w("Disconnect while paused — committing paused session: dist=%.3f km steps=%u",
-                      m_pausedDistKm, m_pausedSteps);
-                m_state.addSession(m_pausedDistKm, m_pausedSteps, m_pausedCalories, m_pausedDurationSec);
-                m_isPaused = false;
-            }
-            else if (m_lastData.distanceKm > 0.0f)
-            {
-                float dDist = m_lastData.distanceKm - m_connectionBaseDistKm;
-                if (dDist < 0.0f) dDist = m_lastData.distanceKm;
-                uint32_t dSteps = (uint32_t)(dDist * 1000.0f / m_state.getDynamicStepLength(m_lastData.speedFeedback));
-                uint32_t dCal = (m_lastData.calories >= m_connectionBaseCal)
-                                ? m_lastData.calories - m_connectionBaseCal : m_lastData.calories;
-                uint32_t dDur = (m_lastData.durationSec >= m_connectionBaseDurSec)
-                                ? m_lastData.durationSec - m_connectionBaseDurSec : m_lastData.durationSec;
-                log_w("Disconnect mid-session — committing delta: dist=%.3f km steps=%u cal=%u dur=%u s",
-                      dDist, dSteps, dCal, dDur);
-                m_state.addSession(dDist, dSteps, dCal, dDur);
-            }
-        }
+        // Use m_tracker.sessionActive() as the ground truth for "belt was genuinely
+        // active". This flag is only set when we observe speed > 0 (belt physically
+        // moving), so it's immune to:
+        //   - Phantom RUNNING status from 0x34 packets (flags=0xBC with speed=0)
+        //   - Residual distanceKm from a previous session persisting on reconnect
+        // Read BEFORE onDisconnected() so the backoff decision below is unaffected
+        // by any state the commit clears.
+        bool beltWasActive = m_tracker.sessionActive();
+        m_tracker.onDisconnected(m_lastData);
 
         // Reason 531 (HCI 0x13: remote user terminated) = treadmill kicked us.
         // When the belt is idle (stopped/disconnected) this is just the treadmill's
@@ -362,12 +374,6 @@ private:
         // If the belt was RUNNING/PAUSED/COUNTDOWN when kicked, reconnect immediately
         // to preserve the active session.
         bool isIdleKick = ((reason - 512) == 0x13);
-        // Use m_sessionActive as the ground truth for "belt was genuinely active".
-        // This flag is only set when we observe speed > 0 (belt physically moving),
-        // so it's immune to:
-        //   - Phantom RUNNING status from 0x34 packets (flags=0xBC with speed=0)
-        //   - Residual distanceKm from a previous session persisting on reconnect
-        bool beltWasActive = m_sessionActive;
 
         if (isIdleKick && !beltWasActive)
         {

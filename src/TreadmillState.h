@@ -5,25 +5,27 @@
 #include <Preferences.h>
 #include "platform.h" // For STEP_LENGTH_M
 
-class TreadMillData;
-
 struct CalibrationPoint {
     float speedMph;
     float spm;
 };
 
-class TreadmillState
+class TreadmillState : public ITotalsStore
 {
 public:
     TreadmillState() = default;
     
     void loadFromNVS();
-    void saveTotalsToNVS();
     void restoreTotals(float distKm, uint32_t steps, uint32_t calories, uint32_t durationSec);
 
-    void addSession(float distKm, uint32_t steps, uint32_t calories, uint32_t durationSec);
-    
+    // ITotalsStore. addSession() only touches memory and raises m_dirty, so it is
+    // safe to call from the NimBLE callback; flush() does the flash write and is
+    // called from TreadmillHandler::handle() on the main loop.
+    void addSession(const SessionDelta& d) override;
+    void flush();
+
     float getDynamicStepLength(float speedMph) const;
+    float stepLengthM(float speedMph) const override { return getDynamicStepLength(speedMph); }
     void toggleCalibration(float currentSpeedMph);
     uint8_t getCalibrationPointCount() const { return m_numCalibrationPoints; }
     const CalibrationPoint* getCalibrationPoints() const { return m_calibrationPoints; }
@@ -34,7 +36,17 @@ public:
     uint32_t getTotalCalories()    const { return m_totalCalories; }
     uint32_t getTotalDurationSec() const { return m_totalDurationSec; }
 
+    float    totalDistanceKm()  const override { return m_totalDistanceKm; }
+    uint32_t totalSteps()       const override { return m_totalSteps; }
+    uint32_t totalCalories()    const override { return m_totalCalories; }
+    uint32_t totalDurationSec() const override { return m_totalDurationSec; }
+
 private:
+    void saveTotalsToNVS();
+
+    // Raised by addSession(); cleared by flush() once the totals reach NVS.
+    bool m_dirty = false;
+
     float m_totalDistanceKm = 0.0f;
     uint32_t m_totalSteps = 0;
     uint32_t m_totalCalories = 0;
