@@ -16,8 +16,10 @@ public:
     virtual bool isConnected() const = 0;
     // The four command calls return true when the command was written to the
     // belt, or queued because the link is disconnected; false when the write
-    // itself failed. On false the link has already published DISCONNECTED into
-    // its own snapshot, so the caller must not overwrite it optimistically.
+    // itself failed (GATT write error, link down, or post-connect cooldown).
+    // On false the caller must not write optimistic state; it should republish
+    // whatever the link's snapshot holds (a failed GATT write has already set
+    // DISCONNECTED there; a cooldown block leaves it unchanged).
     virtual bool start() = 0;                   // start at START_SPEED_RAW (queues if disconnected)
     virtual bool pause() = 0;
     virtual bool stop() = 0;

@@ -16,8 +16,9 @@ public:
     ~TreadmillHandler();
     void begin(NimBLEAddress address);
     // Return true when the command reached the belt (or was queued because the
-    // link is down), false when the GATT write failed — sendCommand() has then
-    // already flagged DISCONNECTED in the snapshot.
+    // link is down), false when sendCommand() refused or failed: a GATT write
+    // failure flags DISCONNECTED in the snapshot; a post-connect cooldown block
+    // or a missing write characteristic leaves the snapshot unchanged.
     bool setSpeed(uint16_t speed);
     bool start() override;
     bool pause() override;
