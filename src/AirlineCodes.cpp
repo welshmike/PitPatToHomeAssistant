@@ -56,7 +56,7 @@ static const Entry kTable[] = {
     {"LOT", "LO"}, // LOT Polish Airlines
     {"WZZ", "W6"}, // Wizz Air
     {"NOZ", "DY"}, // Norwegian Air Norway
-    {"NSZ", "DY"}, // Norwegian Air Sweden
+    {"NSZ", "D8"}, // Norwegian Air Sweden
     {"THY", "TK"}, // Turkish Airlines
     {"ELY", "LY"}, // El Al
     {"AIC", "AI"}, // Air India
