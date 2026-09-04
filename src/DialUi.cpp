@@ -581,7 +581,9 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     const Screen screen = currentScreen(paused);
     // Status dots are hidden while the belt is running (clean screen for
     // walking); they show on every other screen, including Paused.
-    const bool showDots = !(screen == Screen::RUNNING && !paused);
+    // Status dots belong to the treadmill screens only: hidden while the belt is
+    // running (clean walking screen) and on desk cards such as the Clock.
+    const bool showDots = !(screen == Screen::RUNNING && !paused) && screen != Screen::CLOCK;
     if (showDots)
     {
         drawStatusDots(gfx);
