@@ -285,6 +285,14 @@ void FlightsService::fetchAircraft(uint32_t nowMs)
     }
 }
 
+// A lookup result that will not change if we ask again: the server answered
+// (2xx/4xx). Negative results (-1 timeout, -2 over cap, -3 spacing/heap
+// guard) and 5xx are transient and must not be negative-cached.
+static bool isDefinitiveMiss(int status)
+{
+    return status >= 200 && status < 500;
+}
+
 void FlightsService::enrich()
 {
     FlightsModel::FlightsSnapshot working = m_snapshot.read();
@@ -344,13 +352,23 @@ int FlightsService::enrichRoute(FlightsModel::Aircraft &a, int budget)
             routeCachePut(a.callsign, fromIcao, toIcao);
             haveRoute = true;
         }
-        else
+        else if (isDefinitiveMiss(status))
         {
-            // No route on record (404/"unknown"/malformed): remember that
-            // as "known empty" so this callsign isn't retried every tick.
+            // No route on record (404, or a 200 body that is "unknown"/
+            // malformed): remember that as "known empty" so this callsign
+            // isn't retried every tick.
             a.routeKnown   = true;
             a.fromIata[0]  = '\0';
             a.toIata[0]    = '\0';
+            return budget;
+        }
+        else
+        {
+            // Transient (spacing/heap guard -3, timeout -1, 5xx...): leave
+            // routeKnown false so the lookup is retried next tick. Fixes
+            // every aircraft showing "unknown" after the 1.5 s request
+            // spacing was added (2026-09-04): the route request always ran
+            // right after the adsb.fi fetch and was being negative-cached.
             return budget;
         }
     }
@@ -373,7 +391,7 @@ int FlightsService::enrichRoute(FlightsModel::Aircraft &a, int budget)
             airportCachePut(fromIcao, fromIata);
             haveFrom = true;
         }
-        else if (airportFailureBump(fromIcao))
+        else if (isDefinitiveMiss(status) && airportFailureBump(fromIcao))
         {
             // I1: 2 failed lookups for this ICAO — negative-cache an empty
             // IATA so it stops consuming the enrichment budget every tick.
@@ -396,7 +414,7 @@ int FlightsService::enrichRoute(FlightsModel::Aircraft &a, int budget)
             airportCachePut(toIcao, toIata);
             haveTo = true;
         }
-        else if (airportFailureBump(toIcao))
+        else if (isDefinitiveMiss(status) && airportFailureBump(toIcao))
         {
             airportCachePut(toIcao, "");
             haveTo = true;
@@ -441,12 +459,16 @@ int FlightsService::enrichOperator(FlightsModel::Aircraft &a, int budget)
             operatorCachePut(a.hex, operatorIcao, operatorName);
             have = true;
         }
-        else
+        else if (isDefinitiveMiss(status))
         {
             // No operator on record: mark known so this hex isn't retried
             // every tick.
             a.operatorKnown = true;
             return budget;
+        }
+        else
+        {
+            return budget; // transient — retried next tick
         }
     }
 
