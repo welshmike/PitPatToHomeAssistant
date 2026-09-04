@@ -31,9 +31,10 @@ public:
            FlightsService& flights);
 
     // Must run FIRST in setup() on the Dial — M5Unified owns display/I2C/
-    // Serial init via M5Dial.begin(). Creates the render canvas (16bpp,
-    // 240x240); falls back to drawing straight onto M5Dial.Display if the
-    // sprite allocation fails (logs ESP.getFreeHeap() before/after either way).
+    // Serial init via M5Dial.begin(). Creates the render canvas (4bpp
+    // palette, 240x240, ~28.8 KB); falls back to drawing straight onto
+    // M5Dial.Display if the sprite allocation fails (logs ESP.getFreeHeap()
+    // before/after either way).
     void begin();
 
     // Call once per loop() iteration, after controller.tick(). Reads inputs
@@ -53,6 +54,35 @@ private:
     // backlight dims but never turns off (spec 4.8).
     static constexpr uint8_t kBrightFull = 255;
     static constexpr uint8_t kBrightDim  = 50;
+
+    // Palette for the 4-bit (16-colour, ~28.8 KB) canvas sprite created in
+    // begin() — every colour the UI draws, reduced to <= 16 distinct RGB
+    // values (2026-09-04: down from an 8bpp/RGB332 canvas to save another
+    // ~28.8 KB of heap for WiFi). See col()'s definition in DialUi.cpp for
+    // how LovyanGFX interprets a draw call's colour argument for a palette
+    // destination, with citations.
+    enum class Col : uint8_t
+    {
+        BG = 0,     // screen background
+        TEXT,       // primary text/foreground (also clock hands, ring track lit state's text)
+        DIM,        // secondary/caption text, clock ticks, unlit ring track
+        BLE_ON,     // BLE status dot when connected
+        NET_ON,     // WiFi/MQTT status dots when up
+        SPEED,      // speed ring/centre value while not pending (cyan)
+        PENDING,    // speed ring/centre value while a nudge is settling, and the selector (amber)
+        RED,        // long-press-to-stop progress arc
+        SECOND,     // clock second hand — a distinct red shade from RED
+        DIM_DIM,    // paused-dim shade of DIM (also the paused-dim shade of
+                    // TEXT: dimColor565(TFT_WHITE) == TFT_DARKGREY exactly,
+                    // so TEXT's paused shade is DIM itself, not DIM_DIM)
+        SPEED_DIM,  // paused-dim shade of SPEED
+        PENDING_DIM,// paused-dim shade of PENDING
+    };
+    // Returns the value to pass as a "colour" to any LovyanGFX draw call on
+    // gfx: the raw palette index (0-15) while drawing into the 4bpp
+    // m_canvas (m_useCanvas), or the real 24-bit RGB for the direct-to-
+    // M5Dial.Display fallback used when the sprite allocation fails.
+    uint32_t col(Col c) const;
 
     void render(uint32_t nowMs);
     void draw(LovyanGFX& gfx, uint32_t nowMs);
@@ -213,7 +243,10 @@ private:
     // than every call while screen == FLIGHTS.
     char m_lastWantedIata[3] = {0};
 
-    // Airline logos are decoded from LittleFS onto each frame (no resident sprite).
+    // Airline logos are decoded from LittleFS straight onto the display after
+    // the frame is pushed (the palette canvas would posterise them). Set by
+    // drawFlights() for the current aircraft, consumed by render().
+    char m_logoToDraw[3] = {0};
 
     // I4: small ring of IATA codes whose drawPngFile() decode has already
     // failed once this session (a corrupt/unsupported PNG that

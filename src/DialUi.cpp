@@ -1,4 +1,5 @@
 // Must precede "DialUi.h" (which pulls in M5Dial.h -> M5Unified.h -> M5GFX.h):
+#include <math.h>
 // M5GFX's platforms/esp32/common.hpp only compiles in the
 // DataWrapperT<fs::LittleFSFS> specialization that drawPngFile(LittleFS, ...)
 // needs (M1) when _LITTLEFS_H_ is already defined at the point it's
@@ -18,6 +19,25 @@
 #include "Geo.h"
 
 namespace {
+// Thick line without alpha blending: LovyanGFX's anti-aliased wide-line
+// routine reads pixels back through the palette, which faults on a 4-bit
+// palette sprite (LoadProhibited in copy_palette_affine, 2026-09-04). Draws
+// `widthPx` parallel 1-px lines offset along the perpendicular instead.
+void thickLine(LovyanGFX& gfx, int x0, int y0, int x1, int y1, int widthPx, uint32_t color)
+{
+    if (widthPx <= 1) { gfx.drawLine(x0, y0, x1, y1, color); return; }
+    const float dx = (float)(x1 - x0), dy = (float)(y1 - y0);
+    const float len = sqrtf(dx * dx + dy * dy);
+    if (len < 0.5f) { gfx.fillCircle(x0, y0, widthPx / 2, color); return; }
+    const float px = -dy / len, py = dx / len; // unit perpendicular
+    const float half = (widthPx - 1) / 2.0f;
+    for (int i = 0; i < widthPx; ++i)
+    {
+        const float o = -half + i;
+        gfx.drawLine((int)lroundf(x0 + px * o), (int)lroundf(y0 + py * o),
+                     (int)lroundf(x1 + px * o), (int)lroundf(y1 + py * o), color);
+    }
+}
 
 // Three 8px status dots along the top: BLE, WiFi, MQTT, left to right.
 constexpr int32_t kDotY      = 14;
@@ -26,16 +46,45 @@ constexpr int32_t kBleDotX   = 96;
 constexpr int32_t kWifiDotX  = 120;
 constexpr int32_t kMqttDotX  = 144;
 
-constexpr uint16_t kColBg        = TFT_BLACK;
-constexpr uint16_t kColText      = TFT_WHITE;
-constexpr uint16_t kColDim       = TFT_DARKGREY;
-constexpr uint16_t kColBleOn     = TFT_BLUE;
-constexpr uint16_t kColNetOn     = TFT_GREEN;
-constexpr uint16_t kColSpeedVal  = TFT_CYAN;  // ring/centre while not pending
-constexpr uint16_t kColPending   = TFT_ORANGE; // ring/centre while a nudge is settling or overlaid
-constexpr uint16_t kColHold      = TFT_RED;    // long-press-to-stop progress arc
-constexpr uint16_t kColSecond    = lgfx::color565(220, 40, 40); // clock second hand
-constexpr uint16_t kColTick      = TFT_DARKGREY;
+// Palette source values (2026-09-04): the 16 RGB888 colours behind DialUi::Col
+// (declared in DialUi.h), in Col enum order — index i is the palette entry
+// for Col value i. Each was the original RGB565 constant used before the
+// canvas became a 4bpp palette sprite, expanded 565->888 the same way the
+// display itself would (top bits replicated into the low bits), so the
+// on-screen colour is unchanged:
+//   BG          TFT_BLACK    0x0000 -> (  0,   0,   0)
+//   TEXT        TFT_WHITE    0xFFFF -> (255, 255, 255)
+//   DIM         TFT_DARKGREY 0x7BEF -> (123, 125, 123) -- also TFT_darkgrey's
+//               365 "TICK" use, and dimColor565(TFT_WHITE) == TFT_DARKGREY
+//               exactly (both decode to r=15,g=31,b=15 in 565 components),
+//               so this same entry doubles as TEXT's paused-dim shade.
+//   BLE_ON      TFT_BLUE     0x001F -> (  0,   0, 255)
+//   NET_ON      TFT_GREEN    0x07E0 -> (  0, 255,   0)
+//   SPEED       TFT_CYAN     0x07FF -> (  0, 255, 255)
+//   PENDING     TFT_ORANGE   0xFDA0 -> (255, 182,   0)
+//   RED         TFT_RED      0xF800 -> (255,   0,   0)
+//   SECOND      color565(220,40,40) quantised to 565 then back -> (222,40,41)
+//   DIM_DIM     dimColor565(TFT_DARKGREY)                      -> ( 57,  60,  57)
+//   SPEED_DIM   dimColor565(TFT_CYAN)                          -> (  0, 125, 123)
+//   PENDING_DIM dimColor565(TFT_ORANGE)                        -> (123,  89,   0)
+// dimColor565() (the halving of each 565 channel used for the paused-state
+// dim, formerly a runtime helper) is folded into these constants instead —
+// there is nothing left to dim at draw time once the palette holds the
+// dimmed shades directly.
+static const uint32_t kPaletteRgb888[12] = {
+    0x000000, // BG
+    0xFFFFFF, // TEXT
+    0x7B7D7B, // DIM
+    0x0000FF, // BLE_ON
+    0x00FF00, // NET_ON
+    0x00FFFF, // SPEED
+    0xFFB600, // PENDING
+    0xFF0000, // RED
+    0xDE2829, // SECOND
+    0x393C39, // DIM_DIM
+    0x007D7B, // SPEED_DIM
+    0x7B5900, // PENDING_DIM
+};
 
 // Clock card layout (spec 4.8), centred on the same 240x240 canvas as the
 // speed ring.
@@ -115,17 +164,6 @@ constexpr int32_t kSelectorMphY   = 140;
 constexpr int32_t kSelectorHint1Y = 196;
 constexpr int32_t kSelectorHint2Y = 214;
 
-// Halves each RGB565 channel — the ~50% dim used for the whole paused
-// layout. Cheap bit-twiddling, no float, safe to call once per element per
-// frame.
-uint16_t dimColor565(uint16_t c)
-{
-    const uint16_t r = (c >> 11) & 0x1F;
-    const uint16_t g = (c >> 5) & 0x3F;
-    const uint16_t b = c & 0x1F;
-    return ((r >> 1) << 11) | ((g >> 1) << 5) | (b >> 1);
-}
-
 // Formats a non-negative integer with comma thousands separators by hand
 // (spec 4.9: "12,000 ft", not "12000 ft") — no locale, no String, no heap.
 // Truncates safely if `out` is too small; always NUL-terminates within n.
@@ -161,6 +199,46 @@ DialUi::DialUi(TreadmillController& controller, const TimeService& timeService,
 {
 }
 
+// See the DialUi::Col declaration in DialUi.h and the kPaletteRgb888 comment
+// above for what each entry means. How LovyanGFX interprets the value
+// returned here, for a 4bpp palette destination (m_useCanvas true):
+//  - fillCircle/fillArc/drawCircle/drawString/fillScreen/... all route their
+//    colour argument through LGFXBase::setColor() -> _write_conv.convert(T)
+//    (lgfx/v1/LGFXBase.hpp, the `setColor`/`LGFX_INLINE_T` draw-call
+//    forwarders). For T=uint32_t, color_conv_t::convert() calls
+//    convert_rgb888(), a function pointer selected by
+//    get_fp_convert_src<rgb888_t>(dst_depth) (lgfx/v1/misc/colortype.hpp,
+//    get_fp_convert_src): a 4-bit *palette* dst_depth matches none of that
+//    function's named pixel formats, so it falls through to
+//    `switch (dst_depth & bit_mask) { case 4: return
+//    convert_uint32_to_palette4; ... }`, and
+//    `convert_uint32_to_palette4(uint32_t c) { return (c & 0x0F) * 0x11; }`
+//    (colortype.hpp, near the top) takes the low nibble of whatever integer
+//    was passed as the raw index — not an RGB value.
+//  - setTextColor() makes this explicit rather than routing through convert():
+//    `_text_style.fore_rgb888 = _text_style.back_rgb888 = this->hasPalette()
+//    ? color : convert_to_rgb888(color);` (LGFXBase.hpp, setTextColor).
+//  - drawWideLine()/drawWedgeLine() (used for the clock hands/ticks) instead
+//    call `convert_to_rgb888(color)` and hand that to draw_wedgeline(), which
+//    builds a one-pixel rgb888_t gradient and pushes it through the same
+//    paletted pixelcopy path (misc/pixelcopy.cpp, the `dst_palette_` branch
+//    of pixelcopy_t's constructor uses `copy_bit_affine`, which reads the
+//    *first* in-memory byte of that rgb888_t). rgb888_t's field order is
+//    `{ uint8_t b; uint8_t g; uint8_t r; }` (colortype.hpp, struct rgb888_t)
+//    — for a small integer built via `rgb888_t(uint32_t)`, that first byte
+//    is the low byte of the value that was passed, i.e. the same raw index
+//    survives this longer path too.
+// createPalette()/setPaletteColor() (LGFX_Sprite.hpp), by contrast, take a
+// real RGB888/RGB565 value and store it in the palette table — that's why
+// begin() below passes kPaletteRgb888[i] there rather than the index.
+// Net effect: every draw call in this file can be handed col(Col::X) as its
+// colour argument, uniformly, on either destination.
+uint32_t DialUi::col(Col c) const
+{
+    const uint8_t idx = static_cast<uint8_t>(c);
+    return m_useCanvas ? idx : kPaletteRgb888[idx];
+}
+
 void DialUi::begin()
 {
     // M5Unified owns display/I2C/Serial init on the Dial — this must be the
@@ -172,12 +250,23 @@ void DialUi::begin()
     M5Dial.begin(cfg, true, false);
 
     M5Dial.Display.setTextDatum(middle_center);
-    M5Dial.Display.fillScreen(kColBg);
+    M5Dial.Display.fillScreen(col(Col::BG));
     M5Dial.Display.setBrightness(kBrightFull);
 
     log_i("DialUi: free heap before sprite = %u bytes", (unsigned)ESP.getFreeHeap());
-    m_canvas.setColorDepth(8); // RGB332: halves the 240x240 canvas to ~57 KB so WiFi TX buffers have heap (2026-09-04)
+    // 4-bit (16-colour) palette: an 8th of the 8bpp canvas this replaced
+    // (~28.8 KB instead of ~57.6 KB for the 240x240 frame) so WiFi TX
+    // buffers have more heap to work with (2026-09-04).
+    m_canvas.setColorDepth(4);
     m_useCanvas = m_canvas.createSprite(240, 240);
+    if (m_useCanvas)
+    {
+        m_canvas.createPalette();
+        for (uint8_t i = 0; i < 12; ++i)
+        {
+            m_canvas.setPaletteColor(i, kPaletteRgb888[i]);
+        }
+    }
     log_i("DialUi: free heap after sprite = %u bytes", (unsigned)ESP.getFreeHeap());
 
     if (!m_useCanvas)
@@ -192,6 +281,9 @@ void DialUi::begin()
     // Flights card logos are decoded straight from LittleFS onto the frame
     // being drawn (no resident logo sprite): on the S3 without PSRAM the
     // extra 11.5 KB of heap starved the WiFi driver's TX buffers (2026-09-04).
+    // A palette canvas would also posterise a PNG's full-colour pixels down
+    // to 16 shades, so logos are never decoded into m_canvas at all — see
+    // drawFlights()/render() for the direct-to-M5Dial.Display draw instead.
 }
 
 void DialUi::tick(uint32_t nowMs)
@@ -691,6 +783,7 @@ void DialUi::render(uint32_t nowMs)
     m_haveLastFrame  = true;
     m_lastFrameDrawMs = nowMs;
 
+    m_logoToDraw[0] = '\0';
     if (m_useCanvas)
     {
         draw(m_canvas, nowMs);
@@ -703,6 +796,21 @@ void DialUi::render(uint32_t nowMs)
     {
         draw(M5Dial.Display, nowMs);
     }
+    // Airline logo in full colour, drawn over the pushed frame (the palette
+    // canvas would posterise it). Frames only redraw on a key change, so this
+    // decode runs rarely. Failures are remembered per session (text fallback).
+    if (m_logoToDraw[0] != '\0')
+    {
+        char path[24];
+        snprintf(path, sizeof(path), "/logos/%s.png", m_logoToDraw);
+        if (!M5Dial.Display.drawPngFile(LittleFS, path, kFlightsLogoX, kFlightsLogoY))
+        {
+            log_w("DialUi: logo %s decode failed (drawPngFile), using text fallback for this session", m_logoToDraw);
+            markLogoDecodeFailed(m_logoToDraw);
+            m_lastFrame.flightHash ^= 0x5A5A; // force a redraw so the text fallback appears
+        }
+        m_logoToDraw[0] = '\0';
+    }
 }
 
 void DialUi::drawStatusDots(LovyanGFX& gfx)
@@ -711,14 +819,14 @@ void DialUi::drawStatusDots(LovyanGFX& gfx)
     const bool wifiUp = m_netStatus >= NetStatus::WIFI_UP;
     const bool mqttUp = m_netStatus == NetStatus::MQTT_UP;
 
-    gfx.fillCircle(kBleDotX,  kDotY, kDotRadius, bleUp  ? kColBleOn : kColDim);
-    gfx.fillCircle(kWifiDotX, kDotY, kDotRadius, wifiUp ? kColNetOn : kColDim);
-    gfx.fillCircle(kMqttDotX, kDotY, kDotRadius, mqttUp ? kColNetOn : kColDim);
+    gfx.fillCircle(kBleDotX,  kDotY, kDotRadius, bleUp  ? col(Col::BLE_ON) : col(Col::DIM));
+    gfx.fillCircle(kWifiDotX, kDotY, kDotRadius, wifiUp ? col(Col::NET_ON) : col(Col::DIM));
+    gfx.fillCircle(kMqttDotX, kDotY, kDotRadius, mqttUp ? col(Col::NET_ON) : col(Col::DIM));
 }
 
 void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
 {
-    gfx.fillScreen(kColBg);
+    gfx.fillScreen(col(Col::BG));
     gfx.setTextDatum(middle_center);
 
     const bool paused = isPausedState();
@@ -787,7 +895,7 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
 // the previous session's summary and a hint to start a new one.
 void DialUi::drawDisconnected(LovyanGFX& gfx)
 {
-    gfx.setTextColor(kColText, kColBg);
+    gfx.setTextColor(col(Col::TEXT), col(Col::BG));
     gfx.drawString("LAST SESSION", kCentreX, kDiscTitleY, &fonts::Font2);
 
     // formatDuration(0) reads "00:00", which looks like a real (very short)
@@ -807,19 +915,19 @@ void DialUi::drawDisconnected(LovyanGFX& gfx)
     // so no zero-session branch is needed for these two.
     char distBuf[8];
     DialFormat::formatDistanceKm(m_snapshot.sessionDistanceKm, distBuf, sizeof(distBuf));
-    gfx.setTextColor(kColText, kColBg);
+    gfx.setTextColor(col(Col::TEXT), col(Col::BG));
     gfx.drawString(distBuf, kRowLeftX, kDiscRowY, &fonts::Font4);
-    gfx.setTextColor(kColDim, kColBg);
+    gfx.setTextColor(col(Col::DIM), col(Col::BG));
     gfx.drawString("km", kRowLeftX, kDiscCaptionY, &fonts::Font2);
 
     char stepsBuf[12];
     DialFormat::formatSteps(m_snapshot.sessionSteps, stepsBuf, sizeof(stepsBuf));
-    gfx.setTextColor(kColText, kColBg);
+    gfx.setTextColor(col(Col::TEXT), col(Col::BG));
     gfx.drawString(stepsBuf, kRowRightX, kDiscRowY, &fonts::Font4);
-    gfx.setTextColor(kColDim, kColBg);
+    gfx.setTextColor(col(Col::DIM), col(Col::BG));
     gfx.drawString("steps", kRowRightX, kDiscCaptionY, &fonts::Font2);
 
-    gfx.setTextColor(kColDim, kColBg);
+    gfx.setTextColor(col(Col::DIM), col(Col::BG));
     gfx.drawString("tap: speed   hold: start", kCentreX, kDiscHintY, &fonts::Font2);
 }
 
@@ -839,15 +947,15 @@ void DialUi::drawClock(LovyanGFX& gfx)
         const HandLine t = ClockFace::tick(i, kRingCx, kRingCy,
                                             cardinal ? kClockR0Long : kClockR0,
                                             kClockR1);
-        gfx.drawWideLine(t.x0, t.y0, t.x1, t.y1, cardinal ? 1.5f : 1.0f, kColTick);
+        thickLine(gfx, t.x0, t.y0, t.x1, t.y1, cardinal ? 3 : 2, col(Col::DIM));
     }
 
     struct tm t;
     if (!m_time.localTime(t))
     {
-        gfx.setTextColor(kColText, kColBg);
+        gfx.setTextColor(col(Col::TEXT), col(Col::BG));
         gfx.drawString("--:--", kRingCx, kRingCy, &fonts::Font4);
-        gfx.setTextColor(kColDim, kColBg);
+        gfx.setTextColor(col(Col::DIM), col(Col::BG));
         gfx.drawString("waiting for time", kRingCx, kClockDateY, &fonts::Font2);
         return;
     }
@@ -859,12 +967,12 @@ void DialUi::drawClock(LovyanGFX& gfx)
     const HandLine ss = ClockFace::hand(ClockFace::secondAngle(t.tm_sec),
                                          kRingCx, kRingCy, kSecondHandLen);
 
-    gfx.drawWideLine(hh.x0, hh.y0, hh.x1, hh.y1, kHourHandW / 2.0f, kColText);
-    gfx.drawWideLine(mm.x0, mm.y0, mm.x1, mm.y1, kMinuteHandW / 2.0f, kColText);
-    gfx.drawWideLine(ss.x0, ss.y0, ss.x1, ss.y1, kSecondHandW / 2.0f, kColSecond);
+    thickLine(gfx, hh.x0, hh.y0, hh.x1, hh.y1, kHourHandW, col(Col::TEXT));
+    thickLine(gfx, mm.x0, mm.y0, mm.x1, mm.y1, kMinuteHandW, col(Col::TEXT));
+    thickLine(gfx, ss.x0, ss.y0, ss.x1, ss.y1, kSecondHandW, col(Col::SECOND));
 
-    gfx.fillCircle(kRingCx, kRingCy, kClockCentreDotR, kColText);
-    gfx.fillCircle(kRingCx, kRingCy, kClockSecondDotR, kColSecond);
+    gfx.fillCircle(kRingCx, kRingCy, kClockCentreDotR, col(Col::TEXT));
+    gfx.fillCircle(kRingCx, kRingCy, kClockSecondDotR, col(Col::SECOND));
 
     // "Mon 3 Sep" — %-e (no leading zero/space) isn't universally supported
     // by newlib's strftime, so use %e (space-padded to width 2) instead. On
@@ -880,7 +988,7 @@ void DialUi::drawClock(LovyanGFX& gfx)
             break;
         }
     }
-    gfx.setTextColor(kColDim, kColBg);
+    gfx.setTextColor(col(Col::DIM), col(Col::BG));
     gfx.drawString(dateBuf, kCentreX, kClockDateY, &fonts::Font2);
 }
 
@@ -892,23 +1000,23 @@ void DialUi::drawFlights(LovyanGFX& gfx)
 {
     if (m_flightsSnap.stale)
     {
-        gfx.fillCircle(kFlightsStaleDotX, kFlightsStaleDotY, kFlightsStaleDotR, kColDim);
+        gfx.fillCircle(kFlightsStaleDotX, kFlightsStaleDotY, kFlightsStaleDotR, col(Col::DIM));
     }
 
     if (m_flightsSnap.offline)
     {
-        gfx.setTextColor(kColText, kColBg);
+        gfx.setTextColor(col(Col::TEXT), col(Col::BG));
         gfx.drawString("waiting for WiFi", kRingCx, kRingCy, &fonts::Font4);
         return;
     }
 
     if (m_flightsSnap.count == 0)
     {
-        gfx.setTextColor(kColText, kColBg);
+        gfx.setTextColor(col(Col::TEXT), col(Col::BG));
         gfx.drawString("no aircraft nearby", kRingCx, kRingCy, &fonts::Font4);
         char radiusBuf[24];
         snprintf(radiusBuf, sizeof(radiusBuf), "within %d mi", static_cast<int>(FLIGHTS_RADIUS_MI));
-        gfx.setTextColor(kColDim, kColBg);
+        gfx.setTextColor(col(Col::DIM), col(Col::BG));
         gfx.drawString(radiusBuf, kCentreX, kFlightsEmptyCaptionY, &fonts::Font2);
         return;
     }
@@ -927,30 +1035,19 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     // <= 4 Hz is cheap on the S3); remember decode failures per session so a
     // bad file is not retried every frame. LittleFS reads are safe from the
     // loop task (internally locked).
-    bool haveLogo = false;
+    // The canvas is a 16-colour palette, which would posterise the PNG, so
+    // the logo is drawn straight onto M5Dial.Display in render() after the
+    // frame is pushed. Here we only decide whether there is a logo to draw.
     const bool wantLogo = ac.airlineIata[0] != '\0' && !isLogoDecodeFailed(ac.airlineIata);
-    if (wantLogo && m_flights.logoReady(ac.airlineIata))
-    {
-        char path[24];
-        snprintf(path, sizeof(path), "/logos/%s.png", ac.airlineIata);
-        if (gfx.drawPngFile(LittleFS, path, kFlightsLogoX, kFlightsLogoY))
-        {
-            haveLogo = true;
-        }
-        else
-        {
-            log_w("DialUi: logo %s decode failed (drawPngFile), using text fallback for this session",
-                  ac.airlineIata);
-            markLogoDecodeFailed(ac.airlineIata);
-        }
-    }
+    const bool haveLogo = wantLogo && m_flights.logoReady(ac.airlineIata);
     if (haveLogo)
     {
-        // drawn above
+        strncpy(m_logoToDraw, ac.airlineIata, 2);
+        m_logoToDraw[2] = '\0';
     }
     else
     {
-        gfx.setTextColor(kColText, kColBg);
+        gfx.setTextColor(col(Col::TEXT), col(Col::BG));
         const char* fallback = (ac.operatorKnown && ac.operatorName[0] != '\0') ? ac.operatorName : ac.callsign;
         gfx.drawString(fallback, kCentreX, kFlightsFallbackY, &fonts::Font2);
     }
@@ -965,7 +1062,7 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     {
         snprintf(line1, sizeof(line1), "%s", ac.callsign);
     }
-    gfx.setTextColor(kColText, kColBg);
+    gfx.setTextColor(col(Col::TEXT), col(Col::BG));
     gfx.drawString(line1, kCentreX, kFlightsCallsignY, &fonts::Font2);
 
     // Route, large: "LHR -> JFK" (ASCII arrow — Font4 may lack the real one)
@@ -974,12 +1071,12 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     {
         char routeBuf[16];
         snprintf(routeBuf, sizeof(routeBuf), "%s -> %s", ac.fromIata, ac.toIata);
-        gfx.setTextColor(kColText, kColBg);
+        gfx.setTextColor(col(Col::TEXT), col(Col::BG));
         gfx.drawString(routeBuf, kCentreX, kFlightsRouteY, &fonts::Font4);
     }
     else
     {
-        gfx.setTextColor(kColDim, kColBg);
+        gfx.setTextColor(col(Col::DIM), col(Col::BG));
         gfx.drawString("route unknown", kCentreX, kFlightsRouteY, &fonts::Font2);
     }
 
@@ -988,17 +1085,17 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     formatThousands(ac.altFt, altBuf, sizeof(altBuf));
     char altSpeedBuf[32];
     snprintf(altSpeedBuf, sizeof(altSpeedBuf), "%s ft - %d kt", altBuf, ac.gsKt);
-    gfx.setTextColor(kColText, kColBg);
+    gfx.setTextColor(col(Col::TEXT), col(Col::BG));
     gfx.drawString(altSpeedBuf, kCentreX, kFlightsAltY, &fonts::Font2);
 
     // Distance/compass/index: "3.1 mi NE - 2/5".
     char distBuf[32];
     snprintf(distBuf, sizeof(distBuf), "%.1f mi %s - %d/%d", static_cast<double>(ac.distMi),
              Geo::compass8(static_cast<float>(ac.bearing)), idx + 1, m_flightsSnap.count);
-    gfx.setTextColor(kColText, kColBg);
+    gfx.setTextColor(col(Col::TEXT), col(Col::BG));
     gfx.drawString(distBuf, kCentreX, kFlightsDistY, &fonts::Font2);
 
-    gfx.setTextColor(kColDim, kColBg);
+    gfx.setTextColor(col(Col::DIM), col(Col::BG));
     gfx.drawString("tap: next", kCentreX, kFlightsHintY, &fonts::Font2);
 }
 
@@ -1034,7 +1131,7 @@ void DialUi::markLogoDecodeFailed(const char* iata)
 
 void DialUi::drawConnecting(LovyanGFX& gfx)
 {
-    gfx.setTextColor(kColText, kColBg);
+    gfx.setTextColor(col(Col::TEXT), col(Col::BG));
     gfx.drawString("Connecting...", kCentreX, kConnLabelY, &fonts::Font4);
 
     // Only show "attempt N" once there has actually been one — attempt 0
@@ -1045,11 +1142,11 @@ void DialUi::drawConnecting(LovyanGFX& gfx)
     {
         char attemptBuf[24];
         snprintf(attemptBuf, sizeof(attemptBuf), "attempt %u", (unsigned)attempts);
-        gfx.setTextColor(kColDim, kColBg);
+        gfx.setTextColor(col(Col::DIM), col(Col::BG));
         gfx.drawString(attemptBuf, kCentreX, kConnAttemptY, &fonts::Font2);
     }
 
-    gfx.setTextColor(kColDim, kColBg);
+    gfx.setTextColor(col(Col::DIM), col(Col::BG));
     gfx.drawString("belt beeps are normal", kCentreX, kConnBeepY, &fonts::Font2);
     gfx.drawString("tap or hold to cancel", kCentreX, kConnHintY, &fonts::Font2);
 }
@@ -1064,10 +1161,10 @@ void DialUi::drawStarting(LovyanGFX& gfx, uint32_t nowMs)
     const uint8_t pulsePhase = static_cast<uint8_t>((nowMs / 500) % 2);
     if (pulsePhase == 0)
     {
-        gfx.setTextColor(kColText, kColBg);
+        gfx.setTextColor(col(Col::TEXT), col(Col::BG));
         gfx.drawString("STARTING", kCentreX, kStartLabelY, &fonts::Font4);
     }
-    gfx.setTextColor(kColDim, kColBg);
+    gfx.setTextColor(col(Col::DIM), col(Col::BG));
     gfx.drawString("tap to cancel", kCentreX, kStartHintY, &fonts::Font2);
 }
 
@@ -1077,36 +1174,41 @@ void DialUi::drawStarting(LovyanGFX& gfx, uint32_t nowMs)
 void DialUi::drawSelector(LovyanGFX& gfx)
 {
     gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
-                kRingStartDeg + kRingSweepDeg, kColDim);
+                kRingStartDeg + kRingSweepDeg, col(Col::DIM));
 
     const float value = m_selector.value();
     const float ringSweep = DialFormat::speedToAngle(value);
     if (ringSweep > 0.0f)
     {
         gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
-                    kRingStartDeg + ringSweep, kColPending);
+                    kRingStartDeg + ringSweep, col(Col::PENDING));
     }
 
-    gfx.setTextColor(kColText, kColBg);
+    gfx.setTextColor(col(Col::TEXT), col(Col::BG));
     gfx.drawString("START SPEED", kCentreX, kSelectorTitleY, &fonts::Font2);
 
     char valueBuf[16];
     DialFormat::formatSpeedMph(value, valueBuf, sizeof(valueBuf));
-    gfx.setTextColor(kColPending, kColBg);
+    gfx.setTextColor(col(Col::PENDING), col(Col::BG));
     gfx.drawString(valueBuf, kCentreX, kCentreY, &fonts::Font7);
     gfx.drawString("mph", kCentreX, kSelectorMphY, &fonts::Font2);
 
-    gfx.setTextColor(kColDim, kColBg);
+    gfx.setTextColor(col(Col::DIM), col(Col::BG));
     gfx.drawString("tap to start", kCentreX, kSelectorHint1Y, &fonts::Font2);
     gfx.drawString("hold: default", kCentreX, kSelectorHint2Y, &fonts::Font2);
 }
 
 void DialUi::drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs)
 {
-    const uint16_t colTrack = paused ? dimColor565(kColDim)      : kColDim;
-    const uint16_t colText  = paused ? dimColor565(kColText)     : kColText;
-    const uint16_t colDim   = paused ? dimColor565(kColDim)      : kColDim;
-    const uint16_t colCyan  = paused ? dimColor565(kColSpeedVal) : kColSpeedVal;
+    // Paused dims each colour to its DialUi::Col::*_DIM palette entry — see
+    // the kPaletteRgb888 comment above for how those shades were derived
+    // (formerly a runtime dimColor565() halving, now baked into the
+    // palette). TEXT's paused shade is DIM itself (dimColor565(TFT_WHITE)
+    // == TFT_DARKGREY exactly), not a dedicated TEXT_DIM entry.
+    const uint32_t colTrack = paused ? col(Col::DIM_DIM)   : col(Col::DIM);
+    const uint32_t colText  = paused ? col(Col::DIM)       : col(Col::TEXT);
+    const uint32_t colDim   = paused ? col(Col::DIM_DIM)   : col(Col::DIM);
+    const uint32_t colCyan  = paused ? col(Col::SPEED_DIM) : col(Col::SPEED);
 
     // Speed ring: dark 300 deg track (120 deg gap centred at the bottom),
     // then the current-speed arc from the same start angle. fillArc's
@@ -1128,22 +1230,22 @@ void DialUi::drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs)
     // with the target speed instead while a nudge's overlay window is open.
     char centreBuf[16];
     DialFormat::formatDuration(m_snapshot.durationSec, centreBuf, sizeof(centreBuf));
-    gfx.setTextColor(colText, kColBg);
+    gfx.setTextColor(colText, col(Col::BG));
     gfx.drawString(centreBuf, kCentreX, kCentreY, &fonts::Font7);
 
     // Row: distance (left) / steps (right), each with a caption beneath.
     char distBuf[8];
     DialFormat::formatDistanceKm(m_snapshot.distanceKm, distBuf, sizeof(distBuf));
-    gfx.setTextColor(colText, kColBg);
+    gfx.setTextColor(colText, col(Col::BG));
     gfx.drawString(distBuf, kRowLeftX, kRowY, &fonts::Font4);
-    gfx.setTextColor(colDim, kColBg);
+    gfx.setTextColor(colDim, col(Col::BG));
     gfx.drawString("km", kRowLeftX, kRowCaptionY, &fonts::Font2);
 
     char stepsBuf[12];
     DialFormat::formatSteps(m_snapshot.steps, stepsBuf, sizeof(stepsBuf));
-    gfx.setTextColor(colText, kColBg);
+    gfx.setTextColor(colText, col(Col::BG));
     gfx.drawString(stepsBuf, kRowRightX, kRowY, &fonts::Font4);
-    gfx.setTextColor(colDim, kColBg);
+    gfx.setTextColor(colDim, col(Col::BG));
     gfx.drawString("steps", kRowRightX, kRowCaptionY, &fonts::Font2);
 
     // Speed readout, fixed position (not on the ring) for stability.
@@ -1151,7 +1253,7 @@ void DialUi::drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs)
     DialFormat::formatSpeedMph(m_snapshot.speedFeedback, speedBuf, sizeof(speedBuf));
     char speedLine[16];
     snprintf(speedLine, sizeof(speedLine), "%s mph", speedBuf);
-    gfx.setTextColor(colText, kColBg);
+    gfx.setTextColor(colText, col(Col::BG));
     gfx.drawString(speedLine, kCentreX, kSpeedReadoutY, &fonts::Font4);
 
     if (paused)
@@ -1160,10 +1262,10 @@ void DialUi::drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs)
         const uint8_t pulsePhase = static_cast<uint8_t>((nowMs / 500) % 2);
         if (pulsePhase == 0)
         {
-            gfx.setTextColor(colText, kColBg);
+            gfx.setTextColor(colText, col(Col::BG));
             gfx.drawString("PAUSED", kCentreX, kPausedY, &fonts::Font4);
         }
-        gfx.setTextColor(colDim, kColBg);
+        gfx.setTextColor(colDim, col(Col::BG));
         gfx.drawString("tap resume - hold stop", kCentreX, kHintY, &fonts::Font2);
     }
 }
@@ -1174,8 +1276,8 @@ void DialUi::drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs)
 // the overlay window from the last nudge (m_speedOverlayUntilMs) is open.
 void DialUi::drawSpeedOverlay(LovyanGFX& gfx, bool paused)
 {
-    const uint16_t colTrack = paused ? dimColor565(kColDim)     : kColDim;
-    const uint16_t colAmber = paused ? dimColor565(kColPending) : kColPending;
+    const uint32_t colTrack = paused ? col(Col::DIM_DIM)     : col(Col::DIM);
+    const uint32_t colAmber = paused ? col(Col::PENDING_DIM) : col(Col::PENDING);
 
     gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
                 kRingStartDeg + kRingSweepDeg, colTrack);
@@ -1190,7 +1292,7 @@ void DialUi::drawSpeedOverlay(LovyanGFX& gfx, bool paused)
     // Blank everything inside the ring so the screen's own centre content
     // (time, row, PAUSED label, hints) does not show through the overlay,
     // then put the status dots back since they sit inside that circle.
-    gfx.fillCircle(kRingCx, kRingCy, kRingInner - 2, kColBg);
+    gfx.fillCircle(kRingCx, kRingCy, kRingInner - 2, col(Col::BG));
     if (!(m_snapshot.status == TreadMillData::RUNNING && !paused))
     {
         drawStatusDots(gfx);
@@ -1198,7 +1300,7 @@ void DialUi::drawSpeedOverlay(LovyanGFX& gfx, bool paused)
 
     char centreBuf[16];
     DialFormat::formatSpeedMph(m_targetSpeedMph, centreBuf, sizeof(centreBuf));
-    gfx.setTextColor(colAmber, kColBg);
+    gfx.setTextColor(colAmber, col(Col::BG));
     gfx.drawString(centreBuf, kCentreX, kCentreY, &fonts::Font7);
     gfx.drawString("mph", kCentreX, kOverlayCaptionY, &fonts::Font2);
 }
@@ -1210,7 +1312,7 @@ void DialUi::drawSpeedOverlay(LovyanGFX& gfx, bool paused)
 void DialUi::drawHoldArc(LovyanGFX& gfx)
 {
     gfx.fillArc(kRingCx, kRingCy, kHoldOuter, kHoldInner, kRingStartDeg,
-                kRingStartDeg + kRingSweepDeg * m_holdProgress, kColHold);
+                kRingStartDeg + kRingSweepDeg * m_holdProgress, col(Col::RED));
 }
 
 #endif // HAS_DIAL_UI
