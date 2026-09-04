@@ -176,7 +176,7 @@ void DialUi::begin()
     M5Dial.Display.setBrightness(kBrightFull);
 
     log_i("DialUi: free heap before sprite = %u bytes", (unsigned)ESP.getFreeHeap());
-    m_canvas.setColorDepth(16);
+    m_canvas.setColorDepth(8); // RGB332: halves the 240x240 canvas to ~57 KB so WiFi TX buffers have heap (2026-09-04)
     m_useCanvas = m_canvas.createSprite(240, 240);
     log_i("DialUi: free heap after sprite = %u bytes", (unsigned)ESP.getFreeHeap());
 
@@ -189,18 +189,9 @@ void DialUi::begin()
         m_canvas.setTextDatum(middle_center);
     }
 
-    // Flights card logo sprite (spec 4.9): allocated once here, reused for
-    // every airline decoded over the session. A failed allocation just means
-    // drawFlights() always falls back to the operator-name/callsign text —
-    // not fatal, so no different from the main canvas falling back above.
-    log_i("DialUi: free heap before logo sprite = %u bytes", (unsigned)ESP.getFreeHeap());
-    m_logo.setColorDepth(16);
-    m_logoSpriteOk = m_logo.createSprite(120, 48);
-    log_i("DialUi: free heap after logo sprite = %u bytes", (unsigned)ESP.getFreeHeap());
-    if (!m_logoSpriteOk)
-    {
-        log_e("DialUi: logo sprite createSprite(120,48) failed, Flights card uses text fallback only");
-    }
+    // Flights card logos are decoded straight from LittleFS onto the frame
+    // being drawn (no resident logo sprite): on the S3 without PSRAM the
+    // extra 11.5 KB of heap starved the WiFi driver's TX buffers (2026-09-04).
 }
 
 void DialUi::tick(uint32_t nowMs)
@@ -932,39 +923,30 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     // 2026-09-04): the logo is decoded straight off LittleFS — no PNG byte
     // buffer lives in either DialUi or FlightsService any more. LittleFS
     // reads are safe from the loop task (LittleFS is internally locked).
-    const bool wantLogo = m_logoSpriteOk && ac.airlineIata[0] != '\0' && !isLogoDecodeFailed(ac.airlineIata);
-    if (wantLogo && strncmp(ac.airlineIata, m_logoIata, 2) != 0 && m_flights.logoReady(ac.airlineIata))
+    // Decode the PNG straight from LittleFS onto this frame (a ~6 KB PNG at
+    // <= 4 Hz is cheap on the S3); remember decode failures per session so a
+    // bad file is not retried every frame. LittleFS reads are safe from the
+    // loop task (internally locked).
+    bool haveLogo = false;
+    const bool wantLogo = ac.airlineIata[0] != '\0' && !isLogoDecodeFailed(ac.airlineIata);
+    if (wantLogo && m_flights.logoReady(ac.airlineIata))
     {
         char path[24];
         snprintf(path, sizeof(path), "/logos/%s.png", ac.airlineIata);
-        m_logo.fillSprite(kColBg);
-        if (m_logo.drawPngFile(LittleFS, path, 0, 0))
+        if (gfx.drawPngFile(LittleFS, path, kFlightsLogoX, kFlightsLogoY))
         {
-            strncpy(m_logoIata, ac.airlineIata, 2);
-            m_logoIata[2] = '\0';
+            haveLogo = true;
         }
         else
         {
-            // I4: decode failed on a file FlightsService already validated
-            // (PNG signature + size on both the download and cache-hit
-            // paths) — so this is a LovyanGFX-side decode failure (an
-            // encoding it doesn't support, or corruption the signature
-            // check can't catch). Remember it for this session so
-            // drawFlights() doesn't re-attempt the same decode on every
-            // redraw; the text fallback (operatorName/callsign) takes over
-            // for this airline instead.
             log_w("DialUi: logo %s decode failed (drawPngFile), using text fallback for this session",
                   ac.airlineIata);
             markLogoDecodeFailed(ac.airlineIata);
         }
     }
-    const bool haveLogo = wantLogo && m_logoIata[0] != '\0' && strncmp(ac.airlineIata, m_logoIata, 2) == 0;
     if (haveLogo)
     {
-        // gfx is whichever destination draw() is currently painting (the
-        // main canvas, or M5Dial.Display directly in the no-canvas
-        // fallback) — &gfx is the right LovyanGFX* either way.
-        m_logo.pushSprite(&gfx, kFlightsLogoX, kFlightsLogoY);
+        // drawn above
     }
     else
     {

@@ -213,18 +213,7 @@ private:
     // than every call while screen == FLIGHTS.
     char m_lastWantedIata[3] = {0};
 
-    // Airline logo sprite (spec 4.9): 120x48, 16bpp, allocated once in
-    // begin() (m_logoSpriteOk false — and drawFlights() falls back to text —
-    // if the allocation failed). m_logoIata is the IATA code currently
-    // decoded into m_logo (empty if none); drawFlights() only re-decodes
-    // when the current aircraft's airlineIata differs from it and
-    // FlightsService reports that logo ready. The decode itself now reads
-    // straight off LittleFS (m_logo.drawPngFile(LittleFS, path, 0, 0)) —
-    // M1, spec review 2026-09-04: no PNG byte buffer lives in DialUi any
-    // more (the old 16 KB m_logoCopyBuf is gone).
-    M5Canvas m_logo;
-    bool m_logoSpriteOk = false;
-    char m_logoIata[3] = {0};
+    // Airline logos are decoded from LittleFS onto each frame (no resident sprite).
 
     // I4: small ring of IATA codes whose drawPngFile() decode has already
     // failed once this session (a corrupt/unsupported PNG that

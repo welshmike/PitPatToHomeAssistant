@@ -247,6 +247,8 @@ void loop()
     }
     g_lastNetStatus = netStatus;
     controller.publishNetStatus(netStatus);
+    log_i("Net status %d: heap=%u minFree=%u", (int)netStatus,
+          (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
   }
 
   delay(1); // yield to the idle task
