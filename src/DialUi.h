@@ -214,13 +214,13 @@ private:
     // if the allocation failed). m_logoIata is the IATA code currently
     // decoded into m_logo (empty if none); drawFlights() only re-decodes
     // when the current aircraft's airlineIata differs from it and
-    // FlightsService reports that logo ready. m_logoCopyBuf is scratch for
-    // FlightsService::copyLogo() — sized to match FlightsService's own
-    // internal logo buffer (16 KB) so any logo it can hold, this can copy.
+    // FlightsService reports that logo ready. The decode itself now reads
+    // straight off LittleFS (m_logo.drawPngFile(LittleFS, path, 0, 0)) —
+    // M1, spec review 2026-09-04: no PNG byte buffer lives in DialUi any
+    // more (the old 16 KB m_logoCopyBuf is gone).
     M5Canvas m_logo;
     bool m_logoSpriteOk = false;
     char m_logoIata[3] = {0};
-    uint8_t m_logoCopyBuf[16384];
 
 #if DIAL_SOUND
     bool m_secondBeepPending = false;

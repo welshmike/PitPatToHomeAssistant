@@ -1,3 +1,9 @@
+// Must precede "DialUi.h" (which pulls in M5Dial.h -> M5Unified.h -> M5GFX.h):
+// M5GFX's platforms/esp32/common.hpp only compiles in the
+// DataWrapperT<fs::LittleFSFS> specialization that drawPngFile(LittleFS, ...)
+// needs (M1) when _LITTLEFS_H_ is already defined at the point it's
+// processed — LittleFS.h has to be included before that chain, not after it.
+#include <LittleFS.h>
 #include "DialUi.h"
 #if HAS_DIAL_UI
 
@@ -912,19 +918,20 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     // Logo, else operatorName, else callsign (spec 4.9). Only (re)decode the
     // sprite when the current aircraft's airline differs from what's
     // resident and FlightsService actually has that logo ready — decoding is
-    // a real PNG parse, not something to redo every frame.
+    // a real PNG parse, not something to redo every frame. M1 (spec review
+    // 2026-09-04): the logo is decoded straight off LittleFS — no PNG byte
+    // buffer lives in either DialUi or FlightsService any more. LittleFS
+    // reads are safe from the loop task (LittleFS is internally locked).
     const bool wantLogo = m_logoSpriteOk && ac.airlineIata[0] != '\0';
     if (wantLogo && strncmp(ac.airlineIata, m_logoIata, 2) != 0 && m_flights.logoReady(ac.airlineIata))
     {
-        size_t len = 0;
-        if (m_flights.copyLogo(ac.airlineIata, m_logoCopyBuf, sizeof(m_logoCopyBuf), len))
+        char path[24];
+        snprintf(path, sizeof(path), "/logos/%s.png", ac.airlineIata);
+        m_logo.fillSprite(kColBg);
+        if (m_logo.drawPngFile(LittleFS, path, 0, 0))
         {
-            m_logo.fillSprite(kColBg);
-            if (m_logo.drawPng(m_logoCopyBuf, len, 0, 0))
-            {
-                strncpy(m_logoIata, ac.airlineIata, 2);
-                m_logoIata[2] = '\0';
-            }
+            strncpy(m_logoIata, ac.airlineIata, 2);
+            m_logoIata[2] = '\0';
         }
     }
     const bool haveLogo = wantLogo && m_logoIata[0] != '\0' && strncmp(ac.airlineIata, m_logoIata, 2) == 0;

@@ -35,8 +35,11 @@ class NetManager;
 // — all for the Dial's Flights card (spec 4.9). Every network call happens
 // on the network task (see NetTask.h/.cpp): begin() and tick() must only
 // ever be called from there. The loop task (DialUi) talks to this class
-// only through setVisible(), setWantedLogo(), snapshot(), logoReady() and
-// copyLogo(), all of which are safe to call from any task.
+// only through setVisible(), setWantedLogo(), snapshot() and logoReady(),
+// all of which are safe to call from any task. The logo PNG itself is never
+// resident in this class — it lives only in /logos/{IATA}.png on LittleFS;
+// DialUi decodes it straight from there once logoReady() says the file is
+// present and valid (M1, spec review 2026-09-04).
 //
 // Device-only: this header is portable (no Arduino/ESP32 types), but the
 // whole .cpp is compiled out (empty translation unit) unless HAS_DIAL_UI,
@@ -67,27 +70,23 @@ public:
     // loop task: safe from any task. Returns a copy.
     FlightsModel::FlightsSnapshot snapshot() const { return m_snapshot.read(); }
 
-    // loop task: true once `iata`'s logo is the one currently resident in
-    // the service's logo buffer and ready to copy out. Never triggers
-    // network work itself — the fetch happens in tick() for whatever IATA
-    // setWantedLogo() last set.
+    // loop task: true once `iata`'s cached logo file (/logos/{iata}.png on
+    // LittleFS) is confirmed present and valid — i.e. DialUi can go straight
+    // to drawPngFile() on it. Never triggers network work itself — the
+    // fetch/validate happens in tick() for whatever IATA setWantedLogo()
+    // last set (M1, spec review 2026-09-04: no logo bytes are ever resident
+    // in this class any more, only this tiny ready flag).
     bool logoReady(const char *iata) const;
-
-    // loop task: copies the resident logo for `iata` into `dst` (capacity
-    // `dstCap`) if it is the one currently loaded and it fits. Returns
-    // false (dst/len untouched) if not ready, iata doesn't match, or it
-    // doesn't fit.
-    bool copyLogo(const char *iata, uint8_t *dst, size_t dstCap, size_t &len) const;
 
 private:
     // Not part of FlightsModel: it's local buffering/caching state, not a
-    // wire format, so it stays private to this class.
-    struct LogoBuf
+    // wire format, so it stays private to this class. Deliberately tiny —
+    // no PNG bytes here (M1): the file on LittleFS is the only copy, and
+    // DialUi decodes it directly from there.
+    struct LogoStatus
     {
-        char    iata[3] = {0};
-        uint8_t data[16384];
-        size_t  len   = 0;
-        bool    ready = false;
+        char iata[3] = {0};
+        bool ready   = false;
     };
     struct WantedIata
     {
@@ -114,6 +113,19 @@ private:
     {
         char iata[3] = {0};
     };
+    // I1: per-ICAO failure counter for the airport-IATA lookup used inside
+    // enrichRoute() (hexdb.io /api/v1/airport/icao/{ICAO}). Unlike the
+    // route/operator lookups (which give up and negative-cache after their
+    // one attempt for the tick), a from/to airport can legitimately take a
+    // couple of tries to resolve, so this only gives up — caching an empty
+    // IATA in m_airportCache via airportCachePut(icao, "") — after 2
+    // failures, so a persistently-unresolvable ICAO stops consuming the
+    // enrichment budget every tick.
+    struct AirportFailure
+    {
+        char    icao[5] = {0};
+        uint8_t count    = 0;
+    };
 
     void fetchAircraft(uint32_t nowMs);
     void enrich();
@@ -122,6 +134,21 @@ private:
     int  enrichRoute(FlightsModel::Aircraft &a, int budget);
     int  enrichOperator(FlightsModel::Aircraft &a, int budget);
     void tickLogo(uint32_t nowMs);
+
+    // M2: (de)allocates m_httpBuf. `wantActive` is `visible && wifiUp` as
+    // observed by tick(); called unconditionally at the top of every tick()
+    // so the 60 s free-delay countdown advances even while the card is
+    // off-screen. malloc's on the first tick the card is wanted and frees
+    // kHttpBufFreeDelayMs after it stops being wanted (never frees mid-call
+    // — every httpsGet() runs to completion synchronously inside tick(),
+    // so "wantActive" only ever goes false between requests, not during
+    // one).
+    void manageHttpBuf(uint32_t nowMs, bool wantActive);
+
+    // C2: cache-hit validation for /logos/{iata}.png — true iff the file
+    // opens, its size is > 8 bytes and its first 8 bytes are the PNG
+    // signature. Does not touch m_httpBuf.
+    bool validateLogoFile(const char *path) const;
 
     // Round-robin caches, resolved before spending a hexdb request.
     bool routeCacheGet(const char *callsign, char from[5], char to[5]) const;
@@ -132,6 +159,10 @@ private:
     void operatorCachePut(const char *hex, const char *operatorIcao, const char *operatorName);
     bool isLogoMissing(const char *iata) const;
     void markLogoMissing(const char *iata);
+    // I1: bumps the failure count for `icao`, creating the entry on first
+    // failure. Returns true once the count reaches 2 (caller should then
+    // negative-cache the ICAO via airportCachePut(icao, "")).
+    bool airportFailureBump(const char *icao);
 
     // Private HTTPS GET helper: WiFiClientSecure::setInsecure() (public,
     // read-only data — no certificate to pin), 5 s connect/read timeouts,
@@ -152,21 +183,32 @@ private:
     std::atomic<bool> m_visible{false};
 
     Guarded<FlightsModel::FlightsSnapshot> m_snapshot;
-    Guarded<LogoBuf>                       m_logo;
+    Guarded<LogoStatus>                    m_logoStatus;
     Guarded<WantedIata>                    m_wanted;
 
     uint32_t m_lastFetchMs = 0; // 0 = never fetched, forces an immediate fetch
 
-    // Shared HTTP scratch buffer: one request in flight at a time, reused
-    // for adsb.fi JSON, hexdb JSON and logo PNG bodies alike. This is the
-    // largest static buffer FlightsService owns, tied with LogoBuf::data.
-    uint8_t m_httpBuf[16384];
-    char    m_lastContentType[40] = {0};
+    // M2: shared HTTP scratch buffer — one request in flight at a time,
+    // reused for adsb.fi JSON, hexdb JSON and logo PNG bodies alike. Lazily
+    // malloc'ed/freed by manageHttpBuf() (see tick()) rather than a static
+    // member, so it only actually costs heap while the Flights card is
+    // visible and WiFi is up (plus a kHttpBufFreeDelayMs grace window after
+    // that stops being true, so flipping cards doesn't churn malloc/free).
+    // 8 KB (down from the old static 16 KB): adsb.fi JSON for a 3 mi radius
+    // and hexdb.io responses are well under that, and pics.avs.io 120x48
+    // logo PNGs run ~5-10 KB — an outlier over the cap is treated as
+    // missing-for-session rather than grown into (spec review 2026-09-04).
+    static constexpr size_t   kHttpBufCap = 8192;
+    static constexpr uint32_t kHttpBufFreeDelayMs = 60000;
+    uint8_t  *m_httpBuf = nullptr;
+    uint32_t  m_httpBufIdleSinceMs = 0; // 0 = not counting down (active, or already freed)
+    char      m_lastContentType[40] = {0};
 
-    static constexpr uint8_t kRouteCacheSize    = 24;
-    static constexpr uint8_t kAirportCacheSize  = 32;
-    static constexpr uint8_t kOperatorCacheSize = 24;
-    static constexpr uint8_t kMissingLogoSize   = 16;
+    static constexpr uint8_t kRouteCacheSize          = 24;
+    static constexpr uint8_t kAirportCacheSize        = 32;
+    static constexpr uint8_t kOperatorCacheSize       = 24;
+    static constexpr uint8_t kMissingLogoSize         = 16;
+    static constexpr uint8_t kAirportFailureSize      = 16;
 
     RouteEntry    m_routeCache[kRouteCacheSize];
     uint8_t       m_routeCount = 0;
@@ -183,4 +225,8 @@ private:
     MissingLogo   m_missingLogos[kMissingLogoSize];
     uint8_t       m_missingCount = 0;
     uint8_t       m_missingNext  = 0;
+
+    AirportFailure m_airportFailures[kAirportFailureSize];
+    uint8_t        m_airportFailureCount = 0;
+    uint8_t        m_airportFailureNext  = 0;
 };
