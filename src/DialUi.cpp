@@ -439,7 +439,11 @@ void DialUi::handleInput(uint32_t nowMs)
                                                        : LightsModel::LightKey::OFFICE;
             LightCardState& card = lightCardFor(screen);
             const Button b = hitTest(ev.tapX, ev.tapY, card.hasColour());
-            if (b != Button::NONE)
+            // MQTT down ("waiting for HA") means every button is drawn inert
+            // (drawLightButtons() gates all three on mqttUp), and there is no
+            // path for a command to reach HA anyway — so a hit on one is a
+            // no-op with no beep, exactly like a tap on bare background.
+            if (b != Button::NONE && m_netStatus == NetStatus::MQTT_UP)
             {
                 // LightCardState silently ignores a tap it can't act on
                 // (no data yet, colour on a light that has none), and

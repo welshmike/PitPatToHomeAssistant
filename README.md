@@ -248,8 +248,8 @@ around the edge in the same style as the speed ring. Three small on-screen butto
 bottom replace the belt cards' tap/hold gestures:
 
 * **Power** toggles the light on/off immediately — it stays live even before any brightness/colour
-  data has arrived (a "blind" switch-on), as long as at least one state message has been seen
-  since boot
+  data has arrived (a "blind" switch-on), as long as MQTT is up and at least one state message has
+  been seen since boot
 * **Bright** engages brightness: once engaged (the button fills amber) the knob adjusts it ±5% per
   detent, clamped 1–100%; tapping **Bright** again releases it, sending immediately whatever change
   hadn't yet settled
@@ -263,13 +263,17 @@ command is sent once, 300 ms after the last detent, the same debounce the treadm
 control uses — spinning several clicks quickly still only produces one MQTT publish. Engagement
 also releases itself automatically after 10 seconds with no tap or detent, and silently (dropping
 any not-yet-sent change) the moment the card ring scrolls away, the side button homes, or a
-belt/connection screen takes over. With nothing engaged, the knob scrolls the card ring exactly
+belt/connection screen takes over. Switching straight from one control to another (`Bright` while
+colour is engaged, or `Colour` while brightness is) sends the change you had made rather than
+dropping it. After a command goes out the card keeps showing the value it just sent for up to 1.5
+seconds, so the reading doesn't flick back to HA's old state while the echo is still in flight. With nothing engaged, the knob scrolls the card ring exactly
 like the other desk cards.
 
 The card shows `waiting for HA` (dimmed) while MQTT itself is down, or `no data` (dimmed) once
-MQTT is up but no retained state has arrived yet for that light (or HA reports it `unavailable`) —
-`Power` is still tappable in both of those states once a first message has parsed, everything else
-is inert. Topics: commands go out on `pacekeeper-dial/light/{office|lamp}/set`, retained state
+MQTT is up but no retained state has arrived yet for that light (or HA reports it `unavailable`).
+During `waiting for HA` all three buttons are inert — there is nowhere for a command to go. During
+`no data`, `Power` stays tappable (once a first message has parsed) and `Bright`/`Colour` are
+inert. Topics: commands go out on `pacekeeper-dial/light/{office|lamp}/set`, retained state
 comes back on `pacekeeper-dial/light/{office|lamp}/state`, and the Dial asks for a fresh snapshot
 on `pacekeeper-dial/light/refresh` once after each MQTT (re)connect. The two Home Assistant
 automations that apply commands and mirror state are documented, with their full YAML, in
