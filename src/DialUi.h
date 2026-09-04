@@ -269,6 +269,13 @@ private:
     uint8_t m_logoFailedNext  = 0;
     bool isLogoDecodeFailed(const char* iata) const;
     void markLogoDecodeFailed(const char* iata);
+    // Airlines whose cached logo failed once and was re-downloaded; a second
+    // failure goes to m_logoFailed (permanent for the session).
+    char m_logoRetried[kLogoFailedSize][3] = {{0}};
+    uint8_t m_logoRetriedCount = 0;
+    uint8_t m_logoRetriedNext  = 0;
+    bool isLogoRetried(const char* iata) const;
+    void markLogoRetried(const char* iata);
 
 #if DIAL_SOUND
     bool m_secondBeepPending = false;

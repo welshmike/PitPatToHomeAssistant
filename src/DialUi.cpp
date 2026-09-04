@@ -813,19 +813,83 @@ void DialUi::render(uint32_t nowMs)
     // canvas would posterise it), and only when the airline changed.
     if (m_logoToDraw[0] != '\0' && strncmp(m_logoToDraw, m_logoOnScreen, 2) != 0)
     {
-        char path[24];
-        snprintf(path, sizeof(path), "/logos/%s.png", m_logoToDraw);
-        if (M5Dial.Display.drawPngFile(LittleFS, path, kFlightsLogoX, kFlightsLogoY))
+        // The PNG decoder needs a few tens of KB; while the network task has a
+        // TLS session open there may not be enough. Defer the decode (the
+        // 250 ms frame fallback retries) instead of failing, and only remember
+        // a failure as permanent when heap was ample at the time.
+        const uint32_t largest  = ESP.getMaxAllocHeap();
+        const uint32_t freeHeap = ESP.getFreeHeap();
+        // pngle needs ~45 KB of workspace plus line buffers: wait for a quiet
+        // moment (no TLS session open on the net task) before decoding.
+        if (largest >= 48 * 1024 && freeHeap >= 80 * 1024)
         {
-            strncpy(m_logoOnScreen, m_logoToDraw, 2);
-            m_logoOnScreen[2] = '\0';
+            char path[24];
+            snprintf(path, sizeof(path), "/logos/%s.png", m_logoToDraw);
+            // Decode into a temporary 16-bit sprite (black background, so the
+            // PNG's transparent pixels do not show whatever was under them),
+            // push it, free it. Decoding straight onto the display was found to
+            // hold ~43 KB of heap afterwards (2026-09-04).
+            const uint32_t heapBefore = ESP.getFreeHeap();
+            bool pngOk = false;
+            size_t dbgFsz = 0, dbgGot = 0; int dbgSprite = -1;
+            {
+                // Read the PNG ourselves (<= 8 KB) and decode from memory: the
+                // drawPngFile(fs, path) wrapper was found to hold ~43 KB after
+                // a successful display decode (2026-09-04).
+                File f = LittleFS.open(path, "r");
+                const size_t fsz = f ? (size_t)f.size() : 0;
+                uint8_t* png = (f && fsz > 8 && fsz <= 8192) ? (uint8_t*)malloc(fsz) : nullptr;
+                size_t got = 0;
+                if (png) { got = f.read(png, fsz); }
+                if (f) f.close();
+                dbgFsz = fsz; dbgGot = got;
+                if (png && got == fsz)
+                {
+                    M5Canvas tmp;
+                    tmp.setColorDepth(16);
+                    dbgSprite = tmp.createSprite(120, 48) ? 1 : 0;
+                    if (dbgSprite == 1)
+                    {
+                        tmp.fillSprite(TFT_BLACK);
+                        pngOk = tmp.drawPng(png, fsz, 0, 0);
+                        if (pngOk) tmp.pushSprite(&M5Dial.Display, kFlightsLogoX, kFlightsLogoY);
+                        // LovyanGFX keeps its ~45 KB pngle workspace allocated
+                        // for reuse; release it or every decode leaks it.
+                        tmp.releasePngMemory();
+                        tmp.deleteSprite();
+                    }
+                }
+                if (png) free(png);
+            }
+            log_i("DialUi: logo %s decode heap %u -> %u ok=%d file=%u read=%u sprite=%d", m_logoToDraw, (unsigned)heapBefore, (unsigned)ESP.getFreeHeap(), (int)pngOk, (unsigned)dbgFsz, (unsigned)dbgGot, (int)dbgSprite);
+            if (pngOk)
+            {
+                strncpy(m_logoOnScreen, m_logoToDraw, 2);
+                m_logoOnScreen[2] = '\0';
+            }
+            else if (!isLogoRetried(m_logoToDraw))
+            {
+                // First failure for this airline: the cached file may be bad
+                // (seen with files written by an earlier session). Drop it and
+                // let FlightsService download a fresh copy once.
+                log_w("DialUi: logo %s decode failed (%u free / %u largest), dropping cache and retrying once",
+                      m_logoToDraw, (unsigned)freeHeap, (unsigned)largest);
+                markLogoRetried(m_logoToDraw);
+                m_flights.invalidateLogo(m_logoToDraw);
+                m_logoOnScreen[0] = '\0';
+                m_lastFrame.flightHash ^= 0x5A5A;
+            }
+            else
+            {
+                log_w("DialUi: logo %s decode failed again, using text fallback for this session", m_logoToDraw);
+                markLogoDecodeFailed(m_logoToDraw);
+                m_logoOnScreen[0] = '\0';
+                m_lastFrame.flightHash ^= 0x5A5A; // force a redraw so the text fallback appears
+            }
         }
         else
         {
-            log_w("DialUi: logo %s decode failed (drawPngFile), using text fallback for this session", m_logoToDraw);
-            markLogoDecodeFailed(m_logoToDraw);
-            m_logoOnScreen[0] = '\0';
-            m_lastFrame.flightHash ^= 0x5A5A; // force a redraw so the text fallback appears
+            m_lastFrame.flightHash ^= 0x5A5A; // force another frame soon to retry
         }
     }
 }
@@ -1337,3 +1401,22 @@ void DialUi::drawHoldArc(LovyanGFX& gfx)
 }
 
 #endif // HAS_DIAL_UI
+
+#if HAS_DIAL_UI
+bool DialUi::isLogoRetried(const char* iata) const
+{
+    for (uint8_t i = 0; i < m_logoRetriedCount; i++)
+    {
+        if (strncmp(m_logoRetried[i], iata, 2) == 0) return true;
+    }
+    return false;
+}
+
+void DialUi::markLogoRetried(const char* iata)
+{
+    strncpy(m_logoRetried[m_logoRetriedNext], iata, 2);
+    m_logoRetried[m_logoRetriedNext][2] = '\0';
+    m_logoRetriedNext = (uint8_t)((m_logoRetriedNext + 1) % kLogoFailedSize);
+    if (m_logoRetriedCount < kLogoFailedSize) m_logoRetriedCount++;
+}
+#endif

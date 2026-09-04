@@ -7,6 +7,7 @@
 #include <esp_task_wdt.h>
 
 #include "config.h"
+#include <esp_coexist.h>
 #include "platform.h"
 #include "utils.h"
 #include "Commands.h"
@@ -205,6 +206,9 @@ void setup()
 
   log_i("Starting BLE Client...");
   NimBLEDevice::init("PaceKeeper");
+  // WiFi and BLE share the radio; the belt heartbeat matters more than
+  // background HTTPS. Bias the coexistence arbiter towards Bluetooth.
+  esp_coex_preference_set(ESP_COEX_PREFER_BT);
 
   controller.addObserver(g_publishObserver);
 #if HAS_DIAL_UI

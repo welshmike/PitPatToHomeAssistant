@@ -37,7 +37,7 @@ void safeCopy(const char *src, char *dst, size_t dstSize)
 }
 
 constexpr uint32_t kFetchIntervalMs   = 20000;
-constexpr int       kEnrichBudget     = 3;
+constexpr int       kEnrichBudget     = 1; // one background request per tick: keeps WiFi duty cycle low so BLE keeps its radio time (2026-09-04)
 
 // I1: enrichment (hexdb) and logo (pics.avs.io) requests are background
 // work riding along on the net task, which also has to keep servicing
@@ -98,6 +98,20 @@ void FlightsService::setWantedLogo(const char *iata)
     WantedIata w;
     safeCopy(iata, w.v, sizeof(w.v));
     m_wanted.write(w);
+}
+
+void FlightsService::invalidateLogo(const char *iata)
+{
+    m_logoStatus.modify([&](LogoStatus &ls) {
+        if (strncmp(ls.iata, iata, sizeof(ls.iata)) == 0) { ls.ready = false; }
+    });
+    char path[24];
+    snprintf(path, sizeof(path), "/logos/%.2s.png", iata);
+    if (LittleFS.exists(path))
+    {
+        LittleFS.remove(path); // LittleFS is internally locked; safe from the loop task
+        log_w("FlightsService: logo %.2s removed after a decode failure, will re-download once", iata);
+    }
 }
 
 void FlightsService::tick(uint32_t nowMs)
@@ -518,6 +532,10 @@ void FlightsService::tickLogo(uint32_t nowMs)
         log_i("FlightsService: logo %s not found (404), remembered for this session", wanted.v);
         return;
     }
+    if (status == -3)
+    {
+        return; // heap guard skipped this request — transient, retry next tick
+    }
     if (status == -2)
     {
         // M2: body exceeded kHttpBufCap. pics.avs.io 120x48 PNGs normally
@@ -751,6 +769,18 @@ bool FlightsService::airportFailureBump(const char *icao)
 int FlightsService::httpsGet(const char *url, uint8_t *buf, size_t cap, size_t &len, const char *accept,
                               uint32_t connectTimeoutMs, uint32_t readTimeoutMs, uint32_t overallDeadlineMs)
 {
+    // Radio sharing: WiFi and BLE share the S3's antenna. Back-to-back TLS
+    // requests starved the belt heartbeat (kicks every ~11 s), so enforce a
+    // minimum gap between any two HTTPS requests.
+    {
+        static uint32_t s_lastRequestMs = 0;
+        const uint32_t now = millis();
+        if (s_lastRequestMs != 0 && (uint32_t)(now - s_lastRequestMs) < 1500)
+        {
+            return -3; // transient: try again next tick
+        }
+        s_lastRequestMs = now;
+    }
     // Heap guard: a TLS session needs ~45-55 KB transient, mostly as blocks of
     // 16 KB or less. Skip (rather than starve the WiFi driver's TX buffers,
     // which stalls every socket write; seen 2026-09-04) when total free heap
@@ -761,7 +791,7 @@ int FlightsService::httpsGet(const char *url, uint8_t *buf, size_t cap, size_t &
         if (freeHeap < 60 * 1024 || largest < 20 * 1024)
         {
             log_w("FlightsService: skipping fetch, heap free=%u largest=%u", (unsigned)freeHeap, (unsigned)largest);
-            return -2;
+            return -3;
         }
     }
     len                    = 0;

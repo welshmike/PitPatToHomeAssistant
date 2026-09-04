@@ -77,6 +77,9 @@ public:
     // last set (M1, spec review 2026-09-04: no logo bytes are ever resident
     // in this class any more, only this tiny ready flag).
     bool logoReady(const char *iata) const;
+    // Loop-task safe: the UI failed to decode this cached logo. Clears the
+    // ready flag and deletes the file so tick() re-downloads it once.
+    void invalidateLogo(const char *iata);
 
 private:
     // Not part of FlightsModel: it's local buffering/caching state, not a
