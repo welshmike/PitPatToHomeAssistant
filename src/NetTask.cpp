@@ -19,11 +19,16 @@ NetTask *s_self = nullptr;
 
 constexpr UBaseType_t kQueueDepth = 8;
 
-// 8 KB: the deepest paths are the discovery resync (a 255-byte topic buffer plus
-// String/JSON scratch, roughly 3 KB with log formatting) and ArduinoOTA's 1460-byte
-// read buffer during an update — they never overlap, leaving ~4.5 KB headroom.
-// The one-shot high-water-mark log after the first resync confirms it on hardware.
-constexpr uint32_t kStackBytes = 8192;
+// 12 KB (bumped from 8 KB for FlightsService, spec 4.9): the deepest paths
+// were the discovery resync (a 255-byte topic buffer plus String/JSON
+// scratch, roughly 3 KB with log formatting) and ArduinoOTA's 1460-byte
+// read buffer during an update, which left ~4.5 KB headroom on 8 KB. On the
+// Dial, FlightsService::tick() now also runs here: WiFiClientSecure/
+// HTTPClient/JsonDocument scratch for a single in-flight HTTPS GET is the
+// new deepest path, and it never overlaps the MQTT/OTA paths above (net
+// task is single-threaded). The one-shot high-water-mark log after the
+// first resync confirms actual headroom on hardware.
+constexpr uint32_t kStackBytes = 12288;
 
 constexpr UBaseType_t kPriority = 1;
 
@@ -78,6 +83,9 @@ void taskTrampoline(void *arg)
 
 NetTask::NetTask(NetManager &net, MqttView &view, TreadmillHandler &treadmill)
     : m_net(net), m_view(view), m_treadmill(treadmill)
+#if HAS_DIAL_UI
+    , m_flights(net)
+#endif
 {
 }
 
@@ -106,6 +114,13 @@ void NetTask::begin(const char *clientId)
     m_net.setMqttCallback(mqttTrampoline);
     m_net.onMqttConnected([this]() { this->onMqttConnected(); });
 
+#if HAS_DIAL_UI
+    // Runs on the caller's task (setup()), same as NetManager::begin() being
+    // deferred into run() below rather than called here — a one-time boot
+    // mount, not a per-loop cost, so it doesn't need the net task.
+    m_flights.begin();
+#endif
+
     if (xTaskCreatePinnedToCore(taskTrampoline, "net", kStackBytes, this, kPriority, &m_task, kCore) != pdPASS)
     {
         log_e("NetTask: task creation failed — networking disabled");
@@ -123,6 +138,9 @@ void NetTask::run()
         m_net.tick(millis());
         m_status.store(m_net.status(), std::memory_order_relaxed);
         drainPublishQueue();
+#if HAS_DIAL_UI
+        m_flights.tick(millis());
+#endif
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

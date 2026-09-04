@@ -9,6 +9,11 @@
 #include "Commands.h"
 #include "NetStatus.h"
 #include "TreadmillController.h" // ISnapshotObserver, ITreadmillLink
+#include "board.h"
+
+#if HAS_DIAL_UI
+#include "FlightsService.h"
+#endif
 
 class NetManager;
 class MqttView;
@@ -51,6 +56,14 @@ public:
     void onMqttConnected();
     void onMqttMessage(char *topic, uint8_t *payload, unsigned int length);
 
+#if HAS_DIAL_UI
+    // Dial only (spec 4.9). FlightsService::begin()/tick() only ever run
+    // here (see NetTask::begin()/run()); the loop task (DialUi) talks to it
+    // only through the loop-task-safe methods documented on the class
+    // itself.
+    FlightsService &flights() { return m_flights; }
+#endif
+
 private:
     void drainPublishQueue();
     void fullResync();
@@ -71,6 +84,10 @@ private:
     char m_restoreCalibTopic[64]  = {0};
 
     bool m_stackLogged = false;
+
+#if HAS_DIAL_UI
+    FlightsService m_flights;
+#endif
 };
 
 // The controller's bridge to the net task: turns observer notifications into
