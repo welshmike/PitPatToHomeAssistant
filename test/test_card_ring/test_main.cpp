@@ -15,37 +15,29 @@ static void test_startsAtClock(void)
 }
 
 // ---------------------------------------------------------------------------
-// next() / prev() with wraparound
+// next() / prev() with wraparound (ring order: TREADMILL -> CLOCK -> FLIGHTS)
 // ---------------------------------------------------------------------------
 
-static void test_next_fromClock_wrapsToTreadmill(void)
+static void test_next_advancesThroughAllThreeCards_thenWraps(void)
 {
-    CardRing ring;
+    CardRing ring; // starts at CLOCK
+    ring.next();
+    TEST_ASSERT_TRUE(CardId::FLIGHTS == ring.current());
     ring.next();
     TEST_ASSERT_TRUE(CardId::TREADMILL == ring.current());
-}
-
-static void test_next_fromTreadmill_wrapsToClock(void)
-{
-    CardRing ring;
-    ring.next(); // -> TREADMILL
-    ring.next(); // -> wraps back to CLOCK
+    ring.next();
     TEST_ASSERT_TRUE(CardId::CLOCK == ring.current());
 }
 
-static void test_prev_fromTreadmill_wrapsToClock(void)
+static void test_prev_wrapsBackwardThroughAllThreeCards(void)
 {
-    CardRing ring;
-    ring.set(CardId::TREADMILL);
+    CardRing ring; // starts at CLOCK
+    ring.prev();
+    TEST_ASSERT_TRUE(CardId::TREADMILL == ring.current());
+    ring.prev();
+    TEST_ASSERT_TRUE(CardId::FLIGHTS == ring.current());
     ring.prev();
     TEST_ASSERT_TRUE(CardId::CLOCK == ring.current());
-}
-
-static void test_prev_fromClock_wrapsToTreadmill(void)
-{
-    CardRing ring;
-    ring.prev(); // starts at CLOCK, wraps backward to TREADMILL
-    TEST_ASSERT_TRUE(CardId::TREADMILL == ring.current());
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +50,9 @@ static void test_set_movesDirectlyToGivenCard(void)
     ring.set(CardId::TREADMILL);
     TEST_ASSERT_TRUE(CardId::TREADMILL == ring.current());
 
+    ring.set(CardId::FLIGHTS);
+    TEST_ASSERT_TRUE(CardId::FLIGHTS == ring.current());
+
     ring.set(CardId::CLOCK);
     TEST_ASSERT_TRUE(CardId::CLOCK == ring.current());
 }
@@ -67,10 +62,8 @@ int main(int argc, char **argv)
     UNITY_BEGIN();
 
     RUN_TEST(test_startsAtClock);
-    RUN_TEST(test_next_fromClock_wrapsToTreadmill);
-    RUN_TEST(test_next_fromTreadmill_wrapsToClock);
-    RUN_TEST(test_prev_fromTreadmill_wrapsToClock);
-    RUN_TEST(test_prev_fromClock_wrapsToTreadmill);
+    RUN_TEST(test_next_advancesThroughAllThreeCards_thenWraps);
+    RUN_TEST(test_prev_wrapsBackwardThroughAllThreeCards);
     RUN_TEST(test_set_movesDirectlyToGivenCard);
 
     return UNITY_END();

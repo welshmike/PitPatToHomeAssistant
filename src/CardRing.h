@@ -2,13 +2,15 @@
 #include <stdint.h>
 
 // Which desk-mode card is on screen while the belt is idle. Pure state
-// machine — no Arduino, no display — driven by knob detents in DialUi. New
-// cards (Calendar, Flights, Lights, Music — spec 4.8) are added to this ring
-// by later sub-projects; keep COUNT last.
+// machine — no Arduino, no display — driven by knob detents in DialUi. Ring
+// order is TREADMILL -> CLOCK -> FLIGHTS -> (wraps to TREADMILL). New cards
+// (Calendar, Lights, Music — spec 4.8) are added to this ring by later
+// sub-projects; keep COUNT last.
 enum class CardId : uint8_t
 {
     TREADMILL,
     CLOCK,
+    FLIGHTS,
     COUNT
 };
 

@@ -11,6 +11,8 @@
 #include "SpeedSelector.h"
 #include "CardRing.h"
 #include "TimeService.h"
+#include "FlightsService.h"
+#include "FlightsModel.h"
 
 // Loop-task ISnapshotObserver that renders treadmill/net state to the Dial's
 // round 240x240 display and drives the controller from the encoder, touch
@@ -22,8 +24,11 @@ class DialUi : public ISnapshotObserver
 public:
     // timeService backs the clock card (spec 4.8) — kept as a reference, not
     // a copy, so the clock always reads the live wall clock TimeService.tick()
-    // is updating in main.cpp's loop().
-    DialUi(TreadmillController& controller, const TimeService& timeService);
+    // is updating in main.cpp's loop(). flights backs the Flights card (spec
+    // 4.9) — also a reference to NetTask's own FlightsService member; safe
+    // to bind before NetTask::begin() runs (see NetTask::flights()).
+    DialUi(TreadmillController& controller, const TimeService& timeService,
+           FlightsService& flights);
 
     // Must run FIRST in setup() on the Dial — M5Unified owns display/I2C/
     // Serial init via M5Dial.begin(). Creates the render canvas (16bpp,
@@ -57,6 +62,8 @@ private:
     void drawConnecting(LovyanGFX& gfx);
     void drawStarting(LovyanGFX& gfx, uint32_t nowMs);
     void drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs);
+    // Flights card (spec 4.9): nearest aircraft, logo/route/altitude/speed.
+    void drawFlights(LovyanGFX& gfx);
     // Start-speed picker (spec 4.7), opened by a tap on Disconnected.
     void drawSelector(LovyanGFX& gfx);
     // Centre speed overlay (target speed in Font7 amber + "mph" caption, and
@@ -76,17 +83,24 @@ private:
     // Starting screen shows with no way to cancel it); COUNTDOWN -> Starting;
     // (RUNNING or paused) -> Running/Paused; m_selector.isOpen() -> Selector;
     // else the current card (m_cards.current(), spec 4.8): TREADMILL ->
-    // Disconnected (the Treadmill card), CLOCK -> Clock. Connecting/Starting/
-    // Running all win over an open selector — handleInput() closes it as soon
-    // as any of those becomes true, so a stale selector can't resurface once
-    // they clear; they also win over the card ring, which simply resumes on
-    // its last card once the belt screens clear. `paused` is passed in rather
-    // than recomputed so callers that already have it (draw(), handleInput())
-    // don't pay for isPausedState() twice in the same tick.
-    enum class Screen : uint8_t { DISCONNECTED, CLOCK, CONNECTING, STARTING, RUNNING, SELECTOR };
+    // Disconnected (the Treadmill card), CLOCK -> Clock, FLIGHTS -> Flights
+    // (spec 4.9). Connecting/Starting/Running all win over an open selector —
+    // handleInput() closes it as soon as any of those becomes true, so a
+    // stale selector can't resurface once they clear; they also win over the
+    // card ring, which simply resumes on its last card once the belt screens
+    // clear. `paused` is passed in rather than recomputed so callers that
+    // already have it (draw(), handleInput()) don't pay for isPausedState()
+    // twice in the same tick.
+    enum class Screen : uint8_t { DISCONNECTED, CLOCK, FLIGHTS, CONNECTING, STARTING, RUNNING, SELECTOR };
     Screen currentScreen(bool paused) const;
 
     void handleInput(uint32_t nowMs);
+    // Flights card housekeeping (spec 4.9), called from tick() every call
+    // while screen == FLIGHTS: pulls a fresh snapshot at most every
+    // kFlightsSnapIntervalMs, clamps m_flightIdx to the (possibly changed)
+    // aircraft count, and tells FlightsService which airline logo the net
+    // task should be fetching for the currently-selected aircraft.
+    void tickFlights(uint32_t nowMs);
     void applyBrightness();
     // Plays the accepted/refused tone pair for a stop-or-cancel gesture
     // (Connecting-screen cancel, hold-to-stop, side button). No-op when
@@ -132,6 +146,18 @@ private:
         // validity itself flips (--:-- <-> a real face).
         int32_t  clockSec       = -1;
 
+        // Flights card (spec 4.9): the fields drawFlights() actually reads.
+        // flightHash is a 16-bit FNV-1a hash of the current aircraft's
+        // callsign plus coarsened altFt/gsKt (see buildFrameKey()) — cheap
+        // stand-in for hashing the whole Aircraft struct field-by-field, and
+        // catches an in-place snapshot update (same idx/count, aircraft data
+        // moved) that idx/count alone would miss.
+        uint8_t  flightIdx      = 0;
+        uint8_t  flightCount    = 0;
+        bool     flightStale    = false;
+        bool     flightOffline  = false;
+        uint16_t flightHash     = 0;
+
         bool operator==(const FrameKey& o) const
         {
             return status == o.status && screen == o.screen && paused == o.paused &&
@@ -145,7 +171,10 @@ private:
                    sessionDistanceCenti == o.sessionDistanceCenti &&
                    sessionSteps == o.sessionSteps &&
                    selectorOpen == o.selectorOpen && selectorTenths == o.selectorTenths &&
-                   cardId == o.cardId && clockSec == o.clockSec;
+                   cardId == o.cardId && clockSec == o.clockSec &&
+                   flightIdx == o.flightIdx && flightCount == o.flightCount &&
+                   flightStale == o.flightStale && flightOffline == o.flightOffline &&
+                   flightHash == o.flightHash;
         }
     };
     FrameKey buildFrameKey(uint32_t nowMs) const;
@@ -169,6 +198,29 @@ private:
     CardRing m_cards;
     DialInput::Backlight m_lastBacklight = DialInput::Backlight::FULL;
     float m_holdProgress = 0.0f; // last tick's hold-in-progress fraction [0,1]; drives the long-press ring
+
+    // Flights card (spec 4.9). m_flights is NetTask's own FlightsService
+    // member, bound at construction (see the DialUi() comment above) — every
+    // call here is loop-task-safe by FlightsService's own contract.
+    FlightsService& m_flights;
+    static constexpr uint32_t kFlightsSnapIntervalMs = 250;
+    FlightsModel::FlightsSnapshot m_flightsSnap{};
+    bool m_haveFlightsSnap = false;
+    uint32_t m_lastFlightsSnapMs = 0;
+    uint8_t m_flightIdx = 0; // index into m_flightsSnap.ac[], cycled by tap
+
+    // Airline logo sprite (spec 4.9): 120x48, 16bpp, allocated once in
+    // begin() (m_logoSpriteOk false — and drawFlights() falls back to text —
+    // if the allocation failed). m_logoIata is the IATA code currently
+    // decoded into m_logo (empty if none); drawFlights() only re-decodes
+    // when the current aircraft's airlineIata differs from it and
+    // FlightsService reports that logo ready. m_logoCopyBuf is scratch for
+    // FlightsService::copyLogo() — sized to match FlightsService's own
+    // internal logo buffer (16 KB) so any logo it can hold, this can copy.
+    M5Canvas m_logo;
+    bool m_logoSpriteOk = false;
+    char m_logoIata[3] = {0};
+    uint8_t m_logoCopyBuf[16384];
 
 #if DIAL_SOUND
     bool m_secondBeepPending = false;

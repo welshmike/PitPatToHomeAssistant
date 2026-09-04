@@ -9,6 +9,7 @@
 #include "DialFormat.h"
 #include "TreadmillData.h"
 #include "ClockFace.h"
+#include "Geo.h"
 
 namespace {
 
@@ -44,6 +45,21 @@ constexpr float    kSecondHandW    = 1.0f;
 constexpr int32_t kClockCentreDotR = 4;
 constexpr int32_t kClockSecondDotR = 2;
 constexpr int32_t kClockDateY      = 168; // date when valid, "waiting for time" hint when not
+
+// Flights card layout (spec 4.9), centred on the same 240x240 canvas
+// (centre x=120, reusing kRingCx/kRingCy where a row sits on that centre).
+constexpr int32_t kFlightsLogoX         = 60;  // (240 - 120-wide sprite) / 2
+constexpr int32_t kFlightsLogoY         = 16;  // sprite is 48 tall -> bottom at 64
+constexpr int32_t kFlightsFallbackY     = 40;  // operatorName/callsign when there's no logo
+constexpr int32_t kFlightsCallsignY     = 76;  // "callsign - type"
+constexpr int32_t kFlightsRouteY        = 112; // "LHR -> JFK" / "route unknown"
+constexpr int32_t kFlightsAltY          = 150; // "12,000 ft - 450 kt"
+constexpr int32_t kFlightsDistY         = 170; // "3.1 mi NE - 2/5"
+constexpr int32_t kFlightsHintY         = 214; // "tap: next"
+constexpr int32_t kFlightsEmptyCaptionY = 150; // "within N mi" under "no aircraft nearby"
+constexpr int32_t kFlightsStaleDotX     = 120;
+constexpr int32_t kFlightsStaleDotY     = 8;
+constexpr int32_t kFlightsStaleDotR     = 6;
 
 // Speed ring geometry, centred on the 240x240 canvas.
 constexpr int32_t kRingCx    = 120;
@@ -104,10 +120,38 @@ uint16_t dimColor565(uint16_t c)
     return ((r >> 1) << 11) | ((g >> 1) << 5) | (b >> 1);
 }
 
+// Formats a non-negative integer with comma thousands separators by hand
+// (spec 4.9: "12,000 ft", not "12000 ft") — no locale, no String, no heap.
+// Truncates safely if `out` is too small; always NUL-terminates within n.
+void formatThousands(int value, char* out, size_t n)
+{
+    if (value < 0)
+    {
+        value = 0;
+    }
+    char digits[12];
+    const int len = snprintf(digits, sizeof(digits), "%d", value);
+    int outPos = 0;
+    for (int i = 0; i < len && outPos < static_cast<int>(n) - 1; ++i)
+    {
+        if (i > 0 && (len - i) % 3 == 0)
+        {
+            out[outPos++] = ',';
+            if (outPos >= static_cast<int>(n) - 1)
+            {
+                break;
+            }
+        }
+        out[outPos++] = digits[i];
+    }
+    out[outPos] = '\0';
+}
+
 } // namespace
 
-DialUi::DialUi(TreadmillController& controller, const TimeService& timeService)
-    : m_controller(controller), m_time(timeService)
+DialUi::DialUi(TreadmillController& controller, const TimeService& timeService,
+               FlightsService& flights)
+    : m_controller(controller), m_time(timeService), m_flights(flights)
 {
 }
 
@@ -138,6 +182,19 @@ void DialUi::begin()
     {
         m_canvas.setTextDatum(middle_center);
     }
+
+    // Flights card logo sprite (spec 4.9): allocated once here, reused for
+    // every airline decoded over the session. A failed allocation just means
+    // drawFlights() always falls back to the operator-name/callsign text —
+    // not fatal, so no different from the main canvas falling back above.
+    log_i("DialUi: free heap before logo sprite = %u bytes", (unsigned)ESP.getFreeHeap());
+    m_logo.setColorDepth(16);
+    m_logoSpriteOk = m_logo.createSprite(120, 48);
+    log_i("DialUi: free heap after logo sprite = %u bytes", (unsigned)ESP.getFreeHeap());
+    if (!m_logoSpriteOk)
+    {
+        log_e("DialUi: logo sprite createSprite(120,48) failed, Flights card uses text fallback only");
+    }
 }
 
 void DialUi::tick(uint32_t nowMs)
@@ -147,6 +204,17 @@ void DialUi::tick(uint32_t nowMs)
     // every call, independent of the render throttle below.
     M5Dial.update();
     handleInput(nowMs);
+
+    // Flights card (spec 4.9): tell FlightsService whether the card is on
+    // screen every tick (cheap atomic write; NetTask::flights() only fetches
+    // aircraft while visible), and pull fresh data at most every
+    // kFlightsSnapIntervalMs while it is.
+    const Screen screenNow = currentScreen(isPausedState());
+    m_flights.setVisible(screenNow == Screen::FLIGHTS);
+    if (screenNow == Screen::FLIGHTS)
+    {
+        tickFlights(nowMs);
+    }
 
     if (nowMs - m_lastRenderMs < kRenderIntervalMs)
     {
@@ -225,6 +293,14 @@ void DialUi::handleInput(uint32_t nowMs)
             // The Clock card owns no value and starts nothing — tap is a
             // no-op, no beep (spec 4.8).
         }
+        else if (screen == Screen::FLIGHTS)
+        {
+            // Cycle to the next aircraft (spec 4.9); wraps at the current
+            // count, or stays at 0 when the list is empty.
+            const uint8_t count = m_flightsSnap.count;
+            m_flightIdx = static_cast<uint8_t>((m_flightIdx + 1) % (count > 0 ? count : 1));
+            playAcceptBeep(true);
+        }
         else
         {
             // The controller notifies observers (including this one, via
@@ -264,10 +340,10 @@ void DialUi::handleInput(uint32_t nowMs)
             const bool accepted = (m_snapshot.status != statusBefore);
             playAcceptBeep(accepted);
         }
-        else if (screen == Screen::CLOCK)
+        else if (screen == Screen::CLOCK || screen == Screen::FLIGHTS)
         {
-            // The Clock card owns no value and starts nothing — hold is a
-            // no-op, no beep (spec 4.8).
+            // Neither desk card owns a value to skip/confirm — hold is a
+            // no-op, no beep (spec 4.8, spec 4.9).
         }
         else
         {
@@ -329,7 +405,8 @@ void DialUi::handleInput(uint32_t nowMs)
                 m_controller.nudgeSpeed(ev.detents, nowMs);
                 m_speedOverlayUntilMs = nowMs + DIAL_SPEED_OVERLAY_MS;
             }
-            else if (screen == Screen::DISCONNECTED || screen == Screen::CLOCK)
+            else if (screen == Screen::DISCONNECTED || screen == Screen::CLOCK ||
+                     screen == Screen::FLIGHTS)
             {
                 if (ev.detents > 0)
                 {
@@ -366,6 +443,31 @@ void DialUi::handleInput(uint32_t nowMs)
         m_secondBeepPending = false;
     }
 #endif
+}
+
+void DialUi::tickFlights(uint32_t nowMs)
+{
+    // Pull a fresh copy at most every kFlightsSnapIntervalMs (and always on
+    // the very first call) — snapshot() is a Guarded copy, cheap but no
+    // reason to pay for it every loop() iteration.
+    if (!m_haveFlightsSnap || (nowMs - m_lastFlightsSnapMs) >= kFlightsSnapIntervalMs)
+    {
+        m_lastFlightsSnapMs = nowMs;
+        m_flightsSnap = m_flights.snapshot();
+        m_haveFlightsSnap = true;
+    }
+
+    // Clamp to the (possibly just-changed) aircraft count — 0 when empty.
+    if (m_flightsSnap.count == 0 || m_flightIdx >= m_flightsSnap.count)
+    {
+        m_flightIdx = 0;
+    }
+
+    // Tell the net task which airline logo to have ready for the currently-
+    // selected aircraft; empty string when there is none (list empty, or the
+    // aircraft's airline isn't known yet).
+    const char* iata = (m_flightsSnap.count > 0) ? m_flightsSnap.ac[m_flightIdx].airlineIata : "";
+    m_flights.setWantedLogo(iata);
 }
 
 void DialUi::playStopBeep(uint32_t nowMs, bool accepted)
@@ -479,11 +581,13 @@ DialUi::Screen DialUi::currentScreen(bool paused) const
     }
     // Belt idle and no selector open: show whichever card the ring is
     // parked on (spec 4.8). TREADMILL is the existing Disconnected screen;
-    // CLOCK is the new clock card.
+    // CLOCK is the clock card; FLIGHTS is the flights card (spec 4.9).
     switch (m_cards.current())
     {
     case CardId::TREADMILL:
         return Screen::DISCONNECTED;
+    case CardId::FLIGHTS:
+        return Screen::FLIGHTS;
     case CardId::CLOCK:
     default:
         return Screen::CLOCK;
@@ -527,6 +631,39 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
     {
         key.clockSec = -1;
     }
+
+    // Flights card (spec 4.9): idx/count/stale/offline cover most redraw
+    // triggers (cycling aircraft, a fetch landing, going offline); the hash
+    // catches the remaining case where a fresh snapshot lands with the same
+    // idx/count but different data underneath it (e.g. a moving aircraft's
+    // altitude/speed changed, or the whole list got replaced 1-for-1).
+    key.flightIdx     = m_flightIdx;
+    key.flightCount    = m_flightsSnap.count;
+    key.flightStale    = m_flightsSnap.stale;
+    key.flightOffline  = m_flightsSnap.offline;
+    if (m_flightsSnap.count > 0 && m_flightIdx < m_flightsSnap.count)
+    {
+        // FNV-1a over the callsign bytes, then folded in altFt/100 and
+        // gsKt/10 (coarsened the same way FrameKey coarsens speed/distance
+        // elsewhere) — cheap, deterministic, no heap.
+        const FlightsModel::Aircraft& a = m_flightsSnap.ac[m_flightIdx];
+        uint32_t h = 2166136261u;
+        for (const char* p = a.callsign; *p != '\0'; ++p)
+        {
+            h ^= static_cast<uint8_t>(*p);
+            h *= 16777619u;
+        }
+        h ^= static_cast<uint32_t>(a.altFt / 100);
+        h *= 16777619u;
+        h ^= static_cast<uint32_t>(a.gsKt / 10);
+        h *= 16777619u;
+        key.flightHash = static_cast<uint16_t>(h ^ (h >> 16));
+    }
+    else
+    {
+        key.flightHash = 0;
+    }
+
     return key;
 }
 
@@ -582,8 +719,10 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     // Status dots are hidden while the belt is running (clean screen for
     // walking); they show on every other screen, including Paused.
     // Status dots belong to the treadmill screens only: hidden while the belt is
-    // running (clean walking screen) and on desk cards such as the Clock.
-    const bool showDots = !(screen == Screen::RUNNING && !paused) && screen != Screen::CLOCK;
+    // running (clean walking screen) and on desk cards such as the Clock and
+    // Flights (spec 4.8, spec 4.9).
+    const bool showDots = !(screen == Screen::RUNNING && !paused) &&
+                          screen != Screen::CLOCK && screen != Screen::FLIGHTS;
     if (showDots)
     {
         drawStatusDots(gfx);
@@ -604,6 +743,9 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
         break;
     case Screen::CLOCK:
         drawClock(gfx);
+        break;
+    case Screen::FLIGHTS:
+        drawFlights(gfx);
         break;
     case Screen::DISCONNECTED:
     default:
@@ -733,6 +875,118 @@ void DialUi::drawClock(LovyanGFX& gfx)
     }
     gfx.setTextColor(kColDim, kColBg);
     gfx.drawString(dateBuf, kCentreX, kClockDateY, &fonts::Font2);
+}
+
+// Flights card (spec 4.9): nearest aircraft, nearest-first, cycled by tap
+// (see handleInput()/tickFlights()). m_flightsSnap/m_flightIdx are only
+// touched by tickFlights() (called from tick(), loop task), so this is a
+// plain read — no locking needed on top of Guarded's own.
+void DialUi::drawFlights(LovyanGFX& gfx)
+{
+    if (m_flightsSnap.stale)
+    {
+        gfx.fillCircle(kFlightsStaleDotX, kFlightsStaleDotY, kFlightsStaleDotR, kColDim);
+    }
+
+    if (m_flightsSnap.offline)
+    {
+        gfx.setTextColor(kColText, kColBg);
+        gfx.drawString("waiting for WiFi", kRingCx, kRingCy, &fonts::Font4);
+        return;
+    }
+
+    if (m_flightsSnap.count == 0)
+    {
+        gfx.setTextColor(kColText, kColBg);
+        gfx.drawString("no aircraft nearby", kRingCx, kRingCy, &fonts::Font4);
+        char radiusBuf[24];
+        snprintf(radiusBuf, sizeof(radiusBuf), "within %d mi", static_cast<int>(FLIGHTS_RADIUS_MI));
+        gfx.setTextColor(kColDim, kColBg);
+        gfx.drawString(radiusBuf, kCentreX, kFlightsEmptyCaptionY, &fonts::Font2);
+        return;
+    }
+
+    const uint8_t idx = (m_flightIdx < m_flightsSnap.count) ? m_flightIdx : 0;
+    const FlightsModel::Aircraft& ac = m_flightsSnap.ac[idx];
+
+    // Logo, else operatorName, else callsign (spec 4.9). Only (re)decode the
+    // sprite when the current aircraft's airline differs from what's
+    // resident and FlightsService actually has that logo ready — decoding is
+    // a real PNG parse, not something to redo every frame.
+    const bool wantLogo = m_logoSpriteOk && ac.airlineIata[0] != '\0';
+    if (wantLogo && strncmp(ac.airlineIata, m_logoIata, 2) != 0 && m_flights.logoReady(ac.airlineIata))
+    {
+        size_t len = 0;
+        if (m_flights.copyLogo(ac.airlineIata, m_logoCopyBuf, sizeof(m_logoCopyBuf), len))
+        {
+            m_logo.fillSprite(kColBg);
+            if (m_logo.drawPng(m_logoCopyBuf, len, 0, 0))
+            {
+                strncpy(m_logoIata, ac.airlineIata, 2);
+                m_logoIata[2] = '\0';
+            }
+        }
+    }
+    const bool haveLogo = wantLogo && m_logoIata[0] != '\0' && strncmp(ac.airlineIata, m_logoIata, 2) == 0;
+    if (haveLogo)
+    {
+        // gfx is whichever destination draw() is currently painting (the
+        // main canvas, or M5Dial.Display directly in the no-canvas
+        // fallback) — &gfx is the right LovyanGFX* either way.
+        m_logo.pushSprite(&gfx, kFlightsLogoX, kFlightsLogoY);
+    }
+    else
+    {
+        gfx.setTextColor(kColText, kColBg);
+        const char* fallback = (ac.operatorKnown && ac.operatorName[0] != '\0') ? ac.operatorName : ac.callsign;
+        gfx.drawString(fallback, kCentreX, kFlightsFallbackY, &fonts::Font2);
+    }
+
+    // "callsign - type"
+    char line1[32];
+    if (ac.type[0] != '\0')
+    {
+        snprintf(line1, sizeof(line1), "%s - %s", ac.callsign, ac.type);
+    }
+    else
+    {
+        snprintf(line1, sizeof(line1), "%s", ac.callsign);
+    }
+    gfx.setTextColor(kColText, kColBg);
+    gfx.drawString(line1, kCentreX, kFlightsCallsignY, &fonts::Font2);
+
+    // Route, large: "LHR -> JFK" (ASCII arrow — Font4 may lack the real one)
+    // or "route unknown" when not yet enriched.
+    if (ac.routeKnown && ac.fromIata[0] != '\0' && ac.toIata[0] != '\0')
+    {
+        char routeBuf[16];
+        snprintf(routeBuf, sizeof(routeBuf), "%s -> %s", ac.fromIata, ac.toIata);
+        gfx.setTextColor(kColText, kColBg);
+        gfx.drawString(routeBuf, kCentreX, kFlightsRouteY, &fonts::Font4);
+    }
+    else
+    {
+        gfx.setTextColor(kColDim, kColBg);
+        gfx.drawString("route unknown", kCentreX, kFlightsRouteY, &fonts::Font2);
+    }
+
+    // Altitude/speed: "12,000 ft - 450 kt".
+    char altBuf[12];
+    formatThousands(ac.altFt, altBuf, sizeof(altBuf));
+    char altSpeedBuf[32];
+    snprintf(altSpeedBuf, sizeof(altSpeedBuf), "%s ft - %d kt", altBuf, ac.gsKt);
+    gfx.setTextColor(kColText, kColBg);
+    gfx.drawString(altSpeedBuf, kCentreX, kFlightsAltY, &fonts::Font2);
+
+    // Distance/compass/index: "3.1 mi NE - 2/5".
+    char distBuf[32];
+    snprintf(distBuf, sizeof(distBuf), "%.1f mi %s - %d/%d", static_cast<double>(ac.distMi),
+             Geo::compass8(static_cast<float>(ac.bearing)), idx + 1, m_flightsSnap.count);
+    gfx.setTextColor(kColText, kColBg);
+    gfx.drawString(distBuf, kCentreX, kFlightsDistY, &fonts::Font2);
+
+    gfx.setTextColor(kColDim, kColBg);
+    gfx.drawString("tap: next", kCentreX, kFlightsHintY, &fonts::Font2);
 }
 
 void DialUi::drawConnecting(LovyanGFX& gfx)
