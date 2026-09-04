@@ -40,24 +40,31 @@ public:
     // Adopts HA's light state into view(). While settling() (a detent-driven
     // command is pending), keeps only the locally-edited engaged field
     // (brightnessPct for BRIGHT, kelvin for TEMP, hue+sat for HUE) and
-    // adopts everything else, including `on`. Otherwise adopts everything.
+    // adopts everything else, including `on`. When TEMP is the field being
+    // kept, the retained kelvin is re-clamped into the freshly-adopted
+    // [minKelvin, maxKelvin] in case sync() narrowed the bulb's range.
+    // Otherwise adopts everything.
     void sync(const LightsModel::LightState& s);
 
     // Handles a tap on button b (from LightButtons::hitTest()).
     //
     // POWER: ignored unless view().valid; toggles view().on, releases any
-    // engagement (dropping a pending settle without sending it), and
-    // returns a POWER command immediately.
+    // engagement (dropping a pending settle without sending it -- the
+    // POWER command wins), and returns a POWER command immediately.
     //
     // BRIGHT: ignored unless view().available; toggles engagement between
-    // NONE and BRIGHT. Never itself returns a command (detents + tick()
-    // produce the BRIGHT command).
+    // NONE and BRIGHT. Engaging never returns a command (detents + tick()
+    // produce the BRIGHT command). Releasing (re-tap while engaged) flushes
+    // a pending settle: if settling(), returns the same command tick()
+    // would have emitted (via buildSettleCommand()) instead of dropping it;
+    // otherwise returns NONE.
     //
     // COLOUR: ignored unless hasColour && view().supportsColor &&
     // view().available. Cycles NONE -> (TEMP if view().mode != HS, else
     // HUE) -> HUE -> NONE (third tap releases). Entering HUE with no usable
-    // saturation from HA (sat <= 0) seeds it to 100. Never itself returns a
-    // command.
+    // saturation from HA (sat <= 0) seeds it to 100. Engaging (first/second
+    // tap) never returns a command. Releasing (third tap, from HUE) flushes
+    // a pending settle the same way BRIGHT's release does.
     //
     // Any tap that isn't ignored refreshes the idle timer.
     LightsModel::Command tapButton(Button b, uint32_t nowMs);

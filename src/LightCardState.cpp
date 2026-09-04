@@ -61,7 +61,10 @@ void LightCardState::sync(const LightsModel::LightState& s)
         merged.brightnessPct = m_view.brightnessPct;
         break;
     case Engaged::TEMP:
-        merged.kelvin = m_view.kelvin;
+        // Re-clamp into the freshly-adopted [minKelvin, maxKelvin] in case
+        // sync() narrowed the bulb's range out from under the pending edit.
+        merged.kelvin = static_cast<uint16_t>(
+            clampInt(m_view.kelvin, merged.minKelvin, merged.maxKelvin));
         break;
     case Engaged::HUE:
         merged.hue = m_view.hue;
@@ -108,6 +111,10 @@ LightsModel::Command LightCardState::tapButton(Button b, uint32_t nowMs)
         m_lastInput = nowMs;
         if (m_engaged == Engaged::BRIGHT)
         {
+            if (m_settling)
+            {
+                cmd = buildSettleCommand();
+            }
             release();
         }
         else
@@ -132,6 +139,10 @@ LightsModel::Command LightCardState::tapButton(Button b, uint32_t nowMs)
         }
         else if (m_engaged == Engaged::HUE)
         {
+            if (m_settling)
+            {
+                cmd = buildSettleCommand();
+            }
             release();
         }
         else

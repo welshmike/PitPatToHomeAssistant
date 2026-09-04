@@ -327,6 +327,50 @@ static void test_colour_engageHue_zeroSaturation_seedsTo100(void)
 }
 
 // ---------------------------------------------------------------------------
+// LightCardState: release tap flushes a pending settle
+// ---------------------------------------------------------------------------
+
+static void test_tapBright_reTapWithPendingSettle_flushesSettleCommand(void)
+{
+    LightCardState card(true);
+    card.sync(colourState()); // pct = 50
+    card.tapButton(Button::BRIGHT, 1000);
+    card.detents(1, 1000); // pct -> 55, settling
+
+    LightsModel::Command cmd = card.tapButton(Button::BRIGHT, 1100);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::BRIGHT == cmd.type);
+    TEST_ASSERT_EQUAL_UINT8(55, cmd.pct);
+    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
+    TEST_ASSERT_FALSE(card.settling());
+}
+
+static void test_tapColour_thirdTapWithPendingSettle_flushesSettleCommand(void)
+{
+    LightCardState card(true);
+    LightsModel::LightState s = colourState();
+    s.mode = LightsModel::ColorMode::HS; // COLOUR engages HUE directly
+    card.sync(s);
+    card.tapButton(Button::COLOUR, 1000); // engage HUE
+    card.detents(1, 1000);                // hue changes, settling
+
+    LightsModel::Command cmd = card.tapButton(Button::COLOUR, 1100); // third tap: release
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::HUE == cmd.type);
+    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
+    TEST_ASSERT_FALSE(card.settling());
+}
+
+static void test_tapBright_reTapWithNoPendingSettle_returnsNone(void)
+{
+    LightCardState card(true);
+    card.sync(colourState());
+    card.tapButton(Button::BRIGHT, 1000); // engage, no detent
+
+    LightsModel::Command cmd = card.tapButton(Button::BRIGHT, 1100); // release
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == cmd.type);
+    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
+}
+
+// ---------------------------------------------------------------------------
 // LightCardState: settle timing
 // ---------------------------------------------------------------------------
 
@@ -466,6 +510,29 @@ static void test_sync_afterSettled_adoptsEngagedFieldToo(void)
     TEST_ASSERT_EQUAL_UINT8(55, card.view().brightnessPct);
 }
 
+static void test_sync_duringSettle_reclampsKelvinToNewBounds(void)
+{
+    LightCardState card(true);
+    LightsModel::LightState s = colourState();
+    s.kelvin = 6500;
+    s.minKelvin = 2000;
+    s.maxKelvin = 6500;
+    card.sync(s);
+    card.tapButton(Button::COLOUR, 1000); // engages TEMP (mode == TEMP)
+    card.detents(0, 1000);                // arm settling; kelvin stays 6500 pending
+
+    LightsModel::LightState echo = colourState();
+    echo.minKelvin = 2000;
+    echo.maxKelvin = 6000; // HA narrows the bulb's max kelvin
+    card.sync(echo);
+
+    TEST_ASSERT_EQUAL_UINT16(6000, card.view().kelvin);
+
+    LightsModel::Command cmd = card.tick(1000 + 300);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::TEMP == cmd.type);
+    TEST_ASSERT_EQUAL_UINT16(6000, cmd.kelvin);
+}
+
 // ---------------------------------------------------------------------------
 // LightCardState: ringFraction()
 // ---------------------------------------------------------------------------
@@ -528,6 +595,10 @@ int main(int argc, char** argv)
     RUN_TEST(test_colour_cycle_hsMode_engagesHueDirectlyFromNone);
     RUN_TEST(test_colour_engageHue_zeroSaturation_seedsTo100);
 
+    RUN_TEST(test_tapBright_reTapWithPendingSettle_flushesSettleCommand);
+    RUN_TEST(test_tapColour_thirdTapWithPendingSettle_flushesSettleCommand);
+    RUN_TEST(test_tapBright_reTapWithNoPendingSettle_returnsNone);
+
     RUN_TEST(test_settle_noCommandBeforeDeadline);
     RUN_TEST(test_settle_emitsExactlyOneCommandAtDeadline);
     RUN_TEST(test_settle_rearmsFromLastDetent);
@@ -539,6 +610,7 @@ int main(int argc, char** argv)
     RUN_TEST(test_sync_duringSettle_keepsLocalEngagedValue);
     RUN_TEST(test_sync_duringSettle_adoptsOtherFields);
     RUN_TEST(test_sync_afterSettled_adoptsEngagedFieldToo);
+    RUN_TEST(test_sync_duringSettle_reclampsKelvinToNewBounds);
 
     RUN_TEST(test_ringFraction_brightness50_isHalf);
     RUN_TEST(test_ringFraction_kelvinMidRange_isHalf);
