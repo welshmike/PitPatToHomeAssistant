@@ -140,6 +140,8 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
             uint32_t heldMs = nowMs - m_touchStartMs;
             if (!m_touchIsDrag && !m_longPressFired && heldMs < TAP_MAX_MS) {
                 ev.tap = true;
+                ev.tapX = m_touchStartX;
+                ev.tapY = m_touchStartY;
             }
         }
         m_touchActive = false;

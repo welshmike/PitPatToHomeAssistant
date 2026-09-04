@@ -12,6 +12,8 @@ struct DialEvents
 {
     int detents = 0;
     bool tap = false;
+    int tapX = 0; // touch-down position of the gesture that produced tap=true
+    int tapY = 0;
     bool longPress = false;
     float holdProgress = 0;
     bool wake = false;

@@ -10,6 +10,8 @@ FIXTURES = [
     ("kFixtureHexdbRouteVIR359", "hexdb_route_VIR359.json"),
     ("kFixtureHexdbAirportEGLL", "hexdb_airport_EGLL.json"),
     ("kFixtureHexdbAircraft407131", "hexdb_aircraft_407131.json"),
+    ("kFixtureHaLightOffice", "ha_light_office_2026-09-04.json"),
+    ("kFixtureHaLightLamp", "ha_light_lamp_2026-09-04.json"),
 ]
 
 

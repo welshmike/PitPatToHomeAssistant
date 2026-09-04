@@ -25,3 +25,7 @@ static const char kFixtureHexdbRouteVIR359[] = R"json({"flight": "VIR359", "rout
 static const char kFixtureHexdbAirportEGLL[] = R"json({"country_code": "GB", "region_name": "England", "iata": "LHR", "icao": "EGLL", "airport": "Heathrow Airport", "latitude": 51.4775, "longitude": -0.461389})json";
 
 static const char kFixtureHexdbAircraft407131[] = R"json({"ModeS": "407131", "Registration": "G-VBOW", "Manufacturer": "Boeing", "ICAOTypeCode": "B789", "Type": "787 9", "RegisteredOwners": "Virgin Atlantic Airways", "OperatorFlagCode": "VIR"})json";
+
+static const char kFixtureHaLightOffice[] = R"json({"state":"off","brightness_pct":0,"color_mode":null,"color_temp_kelvin":null,"hs_color":null,"min_kelvin":2202,"max_kelvin":4000,"supports_color":false})json";
+
+static const char kFixtureHaLightLamp[] = R"json({"state":"off","brightness_pct":0,"color_mode":null,"color_temp_kelvin":null,"hs_color":null,"min_kelvin":2000,"max_kelvin":6535,"supports_color":true})json";

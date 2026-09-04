@@ -65,6 +65,19 @@ static void test_tap_insideTapWindow(void)
     TEST_ASSERT_FALSE(e.wake);
 }
 
+static void test_tap_reportsTouchDownPosition(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, true, 56, 186, false, t0); // touch down at (56,186)
+
+    DialEvents e = input.tick(0, false, 0, 0, false, t0 + 300); // release at 300ms
+    TEST_ASSERT_TRUE(e.tap);
+    TEST_ASSERT_EQUAL_INT(56, e.tapX);
+    TEST_ASSERT_EQUAL_INT(186, e.tapY);
+}
+
 static void test_tap_outsideTapWindow_notATap(void)
 {
     DialInput input;
@@ -431,6 +444,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_detents_sixPulses_thenTwoMore_secondDetent);
     RUN_TEST(test_detents_negativeDirection);
     RUN_TEST(test_tap_insideTapWindow);
+    RUN_TEST(test_tap_reportsTouchDownPosition);
     RUN_TEST(test_tap_outsideTapWindow_notATap);
     RUN_TEST(test_drag_exceedsMovement_notTapNotLongPress);
     RUN_TEST(test_longPress_firesOnceAt1000ms_progressHalfAt500ms);
