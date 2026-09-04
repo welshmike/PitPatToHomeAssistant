@@ -97,19 +97,24 @@ bool parseAdsbFi(const char* json, size_t len, float homeLat, float homeLon, Fli
     }
     JsonArray arr = aircraftVar.as<JsonArray>();
 
-    // adsb.fi's radius query keeps result sets small; this is a generous
-    // upper bound so we can sort before capping at 6.
-    static const size_t kMaxCandidates = 64;
-    Aircraft candidates[kMaxCandidates];
-    size_t n = 0;
+    // I2: streaming top-6 insertion, no intermediate candidates buffer. The
+    // old version collected every parseable aircraft into a
+    // candidates[64] array before sorting and capping at 6 — up to 64 *
+    // sizeof(Aircraft) of net-task stack for a card that only ever shows 6.
+    // Since FlightsSnapshot only ever holds 6, each parsed aircraft is
+    // instead inserted directly into `kept` (ascending by distMi) as it's
+    // parsed, evicting the current farthest kept entry once `kept` is full
+    // and a nearer one turns up. `kept`/`keptCount` end up holding exactly
+    // what the old candidates[]+sort+cap-at-6 pipeline produced — the 6
+    // nearest, nearest first — using only one Aircraft-sized scratch (`a`)
+    // plus the 6-entry `kept` array, regardless of how many aircraft are in
+    // the response (so the old kMaxCandidates=64 cap on the result set is
+    // gone too — every aircraft in the response is now considered).
+    Aircraft kept[6];
+    size_t keptCount = 0;
 
     for (JsonObject obj : arr)
     {
-        if (n >= kMaxCandidates)
-        {
-            break;
-        }
-
         JsonVariant latV = obj["lat"];
         JsonVariant lonV = obj["lon"];
         if (!latV.is<double>() || !lonV.is<double>())
@@ -124,7 +129,7 @@ bool parseAdsbFi(const char* json, size_t len, float homeLat, float homeLon, Fli
             continue;
         }
 
-        Aircraft& a = candidates[n];
+        Aircraft a;
         memset(&a, 0, sizeof(a));
 
         trimCopy(obj["hex"] | "", a.hex, sizeof(a.hex));
@@ -152,30 +157,40 @@ bool parseAdsbFi(const char* json, size_t len, float homeLat, float homeLon, Fli
         a.routeKnown = false;
         a.operatorKnown = false;
 
-        n++;
-    }
-
-    // Insertion sort ascending by distMi. n is small (a handful of aircraft
-    // within the query radius), so O(n^2) is fine and avoids pulling in
-    // <algorithm> for the device build.
-    for (size_t i = 1; i < n; i++)
-    {
-        Aircraft key = candidates[i];
-        size_t j = i;
-        while (j > 0 && candidates[j - 1].distMi > key.distMi)
+        if (keptCount < 6)
         {
-            candidates[j] = candidates[j - 1];
-            j--;
+            // Still filling up: insertion-sort `a` into its place among
+            // what's kept so far (stable — equal distances keep arrival
+            // order, matching the old full-sort's stability).
+            size_t j = keptCount;
+            while (j > 0 && kept[j - 1].distMi > a.distMi)
+            {
+                kept[j] = kept[j - 1];
+                j--;
+            }
+            kept[j] = a;
+            keptCount++;
         }
-        candidates[j] = key;
+        else if (a.distMi < kept[keptCount - 1].distMi)
+        {
+            // Full: only displace the current farthest kept entry if `a`
+            // is strictly nearer (ties keep whichever arrived first, same
+            // as the old stable full-sort would after capping at 6).
+            size_t j = keptCount - 1;
+            while (j > 0 && kept[j - 1].distMi > a.distMi)
+            {
+                kept[j] = kept[j - 1];
+                j--;
+            }
+            kept[j] = a;
+        }
     }
 
-    const size_t kept = n < 6 ? n : 6;
-    for (size_t i = 0; i < kept; i++)
+    for (size_t i = 0; i < keptCount; i++)
     {
-        out.ac[i] = candidates[i];
+        out.ac[i] = kept[i];
     }
-    out.count = static_cast<uint8_t>(kept);
+    out.count = static_cast<uint8_t>(keptCount);
     return true;
 }
 

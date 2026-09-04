@@ -135,6 +135,18 @@ private:
     int  enrichOperator(FlightsModel::Aircraft &a, int budget);
     void tickLogo(uint32_t nowMs);
 
+    // I1: true once more than kTickWallCapMs has elapsed since this tick()
+    // call began (m_tickStartMs, set at the top of tick()). Checked before
+    // every hexdb/logo request past the first so a slow or stalled request
+    // can't push the whole net task loop iteration past MQTT's 15 s
+    // keepalive — NetTask::run() only calls PubSubClient's loop()
+    // (m_net.tick()) between tick() calls, never during one, so tick()
+    // itself must stay well under that. Aircraft fetch is exempt (it's
+    // gated by its own 20 s interval and already has the tightest deadline
+    // of the four request kinds); this only bounds how many *additional*
+    // enrichment/logo requests a single tick() can chain.
+    bool tickBudgetExceeded() const;
+
     // M2: (de)allocates m_httpBuf. `wantActive` is `visible && wifiUp` as
     // observed by tick(); called unconditionally at the top of every tick()
     // so the 60 s free-delay countdown advances even while the card is
@@ -165,16 +177,25 @@ private:
     bool airportFailureBump(const char *icao);
 
     // Private HTTPS GET helper: WiFiClientSecure::setInsecure() (public,
-    // read-only data — no certificate to pin), 5 s connect/read timeouts,
-    // useHTTP10(true) so Content-Length is known up front, body read via
-    // getStreamPtr() in chunks capped at `cap` bytes with an overall 6 s
-    // deadline. `accept` sets the Accept request header. Returns the HTTP
-    // status code, or a negative value on a transport/library error or an
-    // oversized body. One request at a time; net task only. Every call
-    // logs status, bytes and ESP.getFreeHeap() at log_i. The response's
-    // Content-Type (if any) is left in m_lastContentType for callers that
-    // need to gate on it (the logo download does; JSON callers don't).
-    int httpsGet(const char *url, uint8_t *buf, size_t cap, size_t &len, const char *accept);
+    // read-only data — no certificate to pin), useHTTP10(true) so
+    // Content-Length is known up front, body read via getStreamPtr() in
+    // chunks capped at `cap` bytes. `accept` sets the Accept request
+    // header. Returns the HTTP status code, or a negative value on a
+    // transport/library error or an oversized body. One request at a time;
+    // net task only. Every call logs status, bytes and ESP.getFreeHeap() at
+    // log_i. The response's Content-Type (if any) is left in
+    // m_lastContentType for callers that need to gate on it (the logo
+    // download does; JSON callers don't).
+    //
+    // I1: `connectTimeoutMs`/`readTimeoutMs` bound HTTPClient's own
+    // connect/read timeouts, and `overallDeadlineMs` bounds the body-read
+    // loop below — all three are per-call now rather than fixed constants,
+    // so every caller can choose how much of the net task's time budget a
+    // given request is allowed to spend (see tick()'s wall-clock cap and
+    // the per-call values fetchAircraft()/enrichRoute()/enrichOperator()/
+    // tickLogo() pass).
+    int httpsGet(const char *url, uint8_t *buf, size_t cap, size_t &len, const char *accept,
+                 uint32_t connectTimeoutMs, uint32_t readTimeoutMs, uint32_t overallDeadlineMs);
 
     NetManager &m_net;
 
@@ -187,6 +208,18 @@ private:
     Guarded<WantedIata>                    m_wanted;
 
     uint32_t m_lastFetchMs = 0; // 0 = never fetched, forces an immediate fetch
+
+    // I1: wall-clock start of the current tick() call, used by
+    // tickBudgetExceeded() to bound how many requests a single tick() can
+    // chain (see tick()/tickBudgetExceeded() comments).
+    uint32_t m_tickStartMs = 0;
+
+    // I2: one-shot stack high-water-mark logs — one after the first
+    // successful aircraft fetch, one after the first successful logo
+    // download — so hardware headroom on the net task's stack is visible
+    // in the log without repeating every tick.
+    bool m_aircraftStackLogged = false;
+    bool m_logoStackLogged     = false;
 
     // M2: shared HTTP scratch buffer — one request in flight at a time,
     // reused for adsb.fi JSON, hexdb JSON and logo PNG bodies alike. Lazily

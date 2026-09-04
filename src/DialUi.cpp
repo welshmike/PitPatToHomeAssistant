@@ -471,9 +471,19 @@ void DialUi::tickFlights(uint32_t nowMs)
 
     // Tell the net task which airline logo to have ready for the currently-
     // selected aircraft; empty string when there is none (list empty, or the
-    // aircraft's airline isn't known yet).
+    // aircraft's airline isn't known yet). Minor: only actually call
+    // setWantedLogo() when that IATA has changed since the last call — it's
+    // a Guarded write (cheap, but not free), and tickFlights() runs every
+    // tick() while the Flights card is showing, so without this it fires
+    // every ~loop-tick rather than only on an actual selection/enrichment
+    // change.
     const char* iata = (m_flightsSnap.count > 0) ? m_flightsSnap.ac[m_flightIdx].airlineIata : "";
-    m_flights.setWantedLogo(iata);
+    if (strncmp(iata, m_lastWantedIata, 2) != 0)
+    {
+        m_flights.setWantedLogo(iata);
+        strncpy(m_lastWantedIata, iata, 2);
+        m_lastWantedIata[2] = '\0';
+    }
 }
 
 void DialUi::playStopBeep(uint32_t nowMs, bool accepted)
@@ -922,7 +932,7 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     // 2026-09-04): the logo is decoded straight off LittleFS — no PNG byte
     // buffer lives in either DialUi or FlightsService any more. LittleFS
     // reads are safe from the loop task (LittleFS is internally locked).
-    const bool wantLogo = m_logoSpriteOk && ac.airlineIata[0] != '\0';
+    const bool wantLogo = m_logoSpriteOk && ac.airlineIata[0] != '\0' && !isLogoDecodeFailed(ac.airlineIata);
     if (wantLogo && strncmp(ac.airlineIata, m_logoIata, 2) != 0 && m_flights.logoReady(ac.airlineIata))
     {
         char path[24];
@@ -932,6 +942,20 @@ void DialUi::drawFlights(LovyanGFX& gfx)
         {
             strncpy(m_logoIata, ac.airlineIata, 2);
             m_logoIata[2] = '\0';
+        }
+        else
+        {
+            // I4: decode failed on a file FlightsService already validated
+            // (PNG signature + size on both the download and cache-hit
+            // paths) — so this is a LovyanGFX-side decode failure (an
+            // encoding it doesn't support, or corruption the signature
+            // check can't catch). Remember it for this session so
+            // drawFlights() doesn't re-attempt the same decode on every
+            // redraw; the text fallback (operatorName/callsign) takes over
+            // for this airline instead.
+            log_w("DialUi: logo %s decode failed (drawPngFile), using text fallback for this session",
+                  ac.airlineIata);
+            markLogoDecodeFailed(ac.airlineIata);
         }
     }
     const bool haveLogo = wantLogo && m_logoIata[0] != '\0' && strncmp(ac.airlineIata, m_logoIata, 2) == 0;
@@ -994,6 +1018,36 @@ void DialUi::drawFlights(LovyanGFX& gfx)
 
     gfx.setTextColor(kColDim, kColBg);
     gfx.drawString("tap: next", kCentreX, kFlightsHintY, &fonts::Font2);
+}
+
+// I4: see m_logoFailed's comment in DialUi.h. `iata` is compared with
+// strncmp(..., 2) throughout, same as m_logoIata/ac.airlineIata elsewhere in
+// drawFlights() — a 2-letter IATA code, not necessarily NUL-padded past that.
+bool DialUi::isLogoDecodeFailed(const char* iata) const
+{
+    for (uint8_t i = 0; i < m_logoFailedCount; i++)
+    {
+        if (strncmp(m_logoFailed[i], iata, 2) == 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void DialUi::markLogoDecodeFailed(const char* iata)
+{
+    if (isLogoDecodeFailed(iata))
+    {
+        return;
+    }
+    strncpy(m_logoFailed[m_logoFailedNext], iata, 2);
+    m_logoFailed[m_logoFailedNext][2] = '\0';
+    m_logoFailedNext = (uint8_t)((m_logoFailedNext + 1) % kLogoFailedSize);
+    if (m_logoFailedCount < kLogoFailedSize)
+    {
+        m_logoFailedCount++;
+    }
 }
 
 void DialUi::drawConnecting(LovyanGFX& gfx)

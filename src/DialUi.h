@@ -208,6 +208,10 @@ private:
     bool m_haveFlightsSnap = false;
     uint32_t m_lastFlightsSnapMs = 0;
     uint8_t m_flightIdx = 0; // index into m_flightsSnap.ac[], cycled by tap
+    // Minor: last IATA passed to m_flights.setWantedLogo(), so tickFlights()
+    // only calls it again when the wanted airline actually changes rather
+    // than every call while screen == FLIGHTS.
+    char m_lastWantedIata[3] = {0};
 
     // Airline logo sprite (spec 4.9): 120x48, 16bpp, allocated once in
     // begin() (m_logoSpriteOk false — and drawFlights() falls back to text —
@@ -221,6 +225,23 @@ private:
     M5Canvas m_logo;
     bool m_logoSpriteOk = false;
     char m_logoIata[3] = {0};
+
+    // I4: small ring of IATA codes whose drawPngFile() decode has already
+    // failed once this session (a corrupt/unsupported PNG that
+    // FlightsService's own PNG-signature check let through, or a
+    // LovyanGFX decode failure) — checked before re-attempting a decode so
+    // a bad file doesn't get re-parsed on every card redraw. 4 entries is
+    // generous for a single session's worth of distinct airlines seen on
+    // the card; round-robin overwrite if that's ever exceeded. Cleared only
+    // by a reboot — there's no signal here that a re-cached logo file (a
+    // fresh download replacing a corrupt one) would even be different, so
+    // this deliberately doesn't try to self-heal mid-session.
+    static constexpr uint8_t kLogoFailedSize = 4;
+    char m_logoFailed[kLogoFailedSize][3] = {{0}};
+    uint8_t m_logoFailedCount = 0;
+    uint8_t m_logoFailedNext  = 0;
+    bool isLogoDecodeFailed(const char* iata) const;
+    void markLogoDecodeFailed(const char* iata);
 
 #if DIAL_SOUND
     bool m_secondBeepPending = false;

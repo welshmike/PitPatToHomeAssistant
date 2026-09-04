@@ -38,7 +38,27 @@ void safeCopy(const char *src, char *dst, size_t dstSize)
 
 constexpr uint32_t kFetchIntervalMs   = 20000;
 constexpr int       kEnrichBudget     = 3;
-constexpr uint32_t kOverallDeadlineMs = 6000;
+
+// I1: enrichment (hexdb) and logo (pics.avs.io) requests are background
+// work riding along on the net task, which also has to keep servicing
+// PubSubClient (MQTT keepalive is 15 s, and NetTask::run() only calls
+// m_net.tick() — which drives PubSubClient::loop() — between tick() calls,
+// never during one). They get short timeouts so one slow/stalled request
+// can't eat the whole budget. The adsb.fi aircraft fetch is the one
+// request tick() always wants to complete (it's already rate-limited to
+// once per kFetchIntervalMs), so it keeps the older, more generous values.
+constexpr uint32_t kAircraftConnectMs  = 5000;
+constexpr uint32_t kAircraftReadMs     = 5000;
+constexpr uint32_t kAircraftDeadlineMs = 6000;
+constexpr uint32_t kEnrichConnectMs    = 2000;
+constexpr uint32_t kEnrichReadMs       = 2000;
+constexpr uint32_t kEnrichDeadlineMs   = 3000;
+
+// I1: once a tick() call has been running longer than this, no further
+// hexdb/logo requests are issued this tick — whatever enrichment/logo work
+// didn't get done carries over to the next tick (nothing here is lost,
+// just deferred). See FlightsService::tickBudgetExceeded().
+constexpr uint32_t kTickWallCapMs = 4000;
 
 // C2: PNG signature, checked before a downloaded logo is written to
 // LittleFS and again on the cache-hit path (a file that fails this check —
@@ -82,6 +102,10 @@ void FlightsService::setWantedLogo(const char *iata)
 
 void FlightsService::tick(uint32_t nowMs)
 {
+    // I1: start of this tick() call's wall-clock budget — see
+    // tickBudgetExceeded() and kTickWallCapMs.
+    m_tickStartMs = nowMs;
+
     const bool wifiUp  = m_net.wifiUp();
     const bool visible = m_visible.load(std::memory_order_relaxed);
 
@@ -172,7 +196,8 @@ void FlightsService::fetchAircraft(uint32_t nowMs)
              (double)HOME_LAT, (double)HOME_LON, nm);
 
     size_t len    = 0;
-    int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json");
+    int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json",
+                              kAircraftConnectMs, kAircraftReadMs, kAircraftDeadlineMs);
 
     FlightsModel::FlightsSnapshot working;
     memset(&working, 0, sizeof(working));
@@ -235,6 +260,15 @@ void FlightsService::fetchAircraft(uint32_t nowMs)
 
     log_i("FlightsService: adsb.fi fetch ok, %u aircraft, heap=%u minFree=%u",
           (unsigned)working.count, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
+
+    // I2: one-shot, first successful fetch only — confirms actual net task
+    // stack headroom on hardware.
+    if (!m_aircraftStackLogged)
+    {
+        m_aircraftStackLogged = true;
+        log_i("FlightsService: net task stack high-water mark %u bytes free",
+              (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+    }
 }
 
 void FlightsService::enrich()
@@ -276,14 +310,18 @@ int FlightsService::enrichRoute(FlightsModel::Aircraft &a, int budget)
 
     if (!haveRoute)
     {
-        if (budget <= 0)
+        // I1: budget<=0 is the per-tick request-count cap (kEnrichBudget);
+        // tickBudgetExceeded() is the wall-clock cap — either stops further
+        // requests, deferring the rest to the next tick().
+        if (budget <= 0 || tickBudgetExceeded())
         {
             return budget;
         }
         char url[64];
         snprintf(url, sizeof(url), "https://hexdb.io/api/v1/route/icao/%s", a.callsign);
         size_t len    = 0;
-        int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json");
+        int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json",
+                                  kEnrichConnectMs, kEnrichReadMs, kEnrichDeadlineMs);
         budget--;
 
         if (status == 200 &&
@@ -308,12 +346,13 @@ int FlightsService::enrichRoute(FlightsModel::Aircraft &a, int budget)
     bool haveFrom    = airportCacheGet(fromIcao, fromIata);
     bool haveTo      = airportCacheGet(toIcao, toIata);
 
-    if (!haveFrom && budget > 0)
+    if (!haveFrom && budget > 0 && !tickBudgetExceeded())
     {
         char url[64];
         snprintf(url, sizeof(url), "https://hexdb.io/api/v1/airport/icao/%s", fromIcao);
         size_t len    = 0;
-        int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json");
+        int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json",
+                                  kEnrichConnectMs, kEnrichReadMs, kEnrichDeadlineMs);
         budget--;
         if (status == 200 && FlightsModel::parseHexdbAirport(reinterpret_cast<const char *>(m_httpBuf), len, fromIata))
         {
@@ -330,12 +369,13 @@ int FlightsService::enrichRoute(FlightsModel::Aircraft &a, int budget)
         }
     }
 
-    if (!haveTo && budget > 0)
+    if (!haveTo && budget > 0 && !tickBudgetExceeded())
     {
         char url[64];
         snprintf(url, sizeof(url), "https://hexdb.io/api/v1/airport/icao/%s", toIcao);
         size_t len    = 0;
-        int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json");
+        int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json",
+                                  kEnrichConnectMs, kEnrichReadMs, kEnrichDeadlineMs);
         budget--;
         if (status == 200 && FlightsModel::parseHexdbAirport(reinterpret_cast<const char *>(m_httpBuf), len, toIata))
         {
@@ -370,14 +410,15 @@ int FlightsService::enrichOperator(FlightsModel::Aircraft &a, int budget)
 
     if (!have)
     {
-        if (budget <= 0)
+        if (budget <= 0 || tickBudgetExceeded())
         {
             return budget;
         }
         char url[48];
         snprintf(url, sizeof(url), "https://hexdb.io/api/v1/aircraft/%s", a.hex);
         size_t len    = 0;
-        int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json");
+        int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json",
+                                  kEnrichConnectMs, kEnrichReadMs, kEnrichDeadlineMs);
         budget--;
 
         if (status == 200 && FlightsModel::parseHexdbAircraft(reinterpret_cast<const char *>(m_httpBuf), len,
@@ -457,10 +498,19 @@ void FlightsService::tickLogo(uint32_t nowMs)
         LittleFS.remove(path);
     }
 
+    // I1: the wall-clock cap applies here too — a logo download queued
+    // behind a full budget of hexdb requests this tick() just defers to the
+    // next one, same as any other request past the cap.
+    if (tickBudgetExceeded())
+    {
+        return;
+    }
+
     char url[48];
     snprintf(url, sizeof(url), "https://pics.avs.io/120/48/%s.png", wanted.v);
     size_t len    = 0;
-    int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "image/png");
+    int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "image/png",
+                              kEnrichConnectMs, kEnrichReadMs, kEnrichDeadlineMs);
 
     if (status == 404)
     {
@@ -520,6 +570,19 @@ void FlightsService::tickLogo(uint32_t nowMs)
     });
     log_i("FlightsService: logo %s downloaded and cached (%u bytes), heap=%u",
           wanted.v, (unsigned)len, (unsigned)ESP.getFreeHeap());
+
+    // I2: one-shot, first successful logo download only.
+    if (!m_logoStackLogged)
+    {
+        m_logoStackLogged = true;
+        log_i("FlightsService: net task stack high-water mark %u bytes free",
+              (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+    }
+}
+
+bool FlightsService::tickBudgetExceeded() const
+{
+    return (millis() - m_tickStartMs) >= kTickWallCapMs;
 }
 
 bool FlightsService::logoReady(const char *iata) const
@@ -685,17 +748,33 @@ bool FlightsService::airportFailureBump(const char *icao)
 
 // --- HTTPS helper -----------------------------------------------------------
 
-int FlightsService::httpsGet(const char *url, uint8_t *buf, size_t cap, size_t &len, const char *accept)
+int FlightsService::httpsGet(const char *url, uint8_t *buf, size_t cap, size_t &len, const char *accept,
+                              uint32_t connectTimeoutMs, uint32_t readTimeoutMs, uint32_t overallDeadlineMs)
 {
     len                    = 0;
     m_lastContentType[0]   = '\0';
 
     WiFiClientSecure client;
+    // I3 (attempted, not possible on this toolchain): the plan was
+    // client.setBufferSizes(4096, 1024) before setInsecure() — responses
+    // here are capped at kHttpBufCap (8 KB) and requests are tiny (a GET
+    // line plus a couple of headers), so mbedTLS's default 16 KB TX/RX
+    // buffers are more than this class ever needs. Checked directly against
+    // the framework-arduinoespressif32 headers this project actually builds
+    // against (package version 3.20017.241212, i.e. arduino-esp32 2.0.17,
+    // pinned via espressif32@6.13.0 in platformio.ini): WiFiClientSecure has
+    // no setBufferSizes() method in this release (see
+    // libraries/WiFiClientSecure/src/WiFiClientSecure.h) — that API was
+    // added in a later arduino-esp32 release. mbedTLS's SSL in/out content
+    // length is fixed at build time in this SDK's prebuilt libmbedtls.a,
+    // with no per-connection Arduino-level override available, so this
+    // item is not achievable without bumping the pinned framework version
+    // (out of scope here — see the final fix report).
     client.setInsecure(); // public read-only data — no cert to pin (documented trade-off)
 
     HTTPClient http;
-    http.setConnectTimeout(5000);
-    http.setTimeout(5000);
+    http.setConnectTimeout(connectTimeoutMs);
+    http.setTimeout(readTimeoutMs);
     // I3: forces HTTP/1.0 semantics specifically so the server can't reply
     // with a chunked Transfer-Encoding — a chunked body carries no
     // Content-Length, which would defeat the pre-flight size-cap check
@@ -751,7 +830,7 @@ int FlightsService::httpsGet(const char *url, uint8_t *buf, size_t cap, size_t &
     }
 
     WiFiClient    *stream   = http.getStreamPtr();
-    const uint32_t deadline = millis() + kOverallDeadlineMs;
+    const uint32_t deadline = millis() + overallDeadlineMs;
     size_t         total    = 0;
     while (http.connected() && total < cap)
     {
