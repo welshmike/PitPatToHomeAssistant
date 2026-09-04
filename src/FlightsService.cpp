@@ -751,14 +751,16 @@ bool FlightsService::airportFailureBump(const char *icao)
 int FlightsService::httpsGet(const char *url, uint8_t *buf, size_t cap, size_t &len, const char *accept,
                               uint32_t connectTimeoutMs, uint32_t readTimeoutMs, uint32_t overallDeadlineMs)
 {
-    // Heap guard: a TLS session needs ~45 KB transient. If the largest free
-    // block is below 48 KB, skip rather than risk starving the WiFi driver's
-    // TX buffers (which stalls every socket write; seen 2026-09-04).
+    // Heap guard: a TLS session needs ~45-55 KB transient, mostly as blocks of
+    // 16 KB or less. Skip (rather than starve the WiFi driver's TX buffers,
+    // which stalls every socket write; seen 2026-09-04) when total free heap
+    // is under 60 KB or the largest free block is under 20 KB.
     {
-        const size_t largest = ESP.getMaxAllocHeap();
-        if (largest < 48 * 1024)
+        const size_t freeHeap = ESP.getFreeHeap();
+        const size_t largest  = ESP.getMaxAllocHeap();
+        if (freeHeap < 60 * 1024 || largest < 20 * 1024)
         {
-            log_w("FlightsService: skipping fetch, largest free block %u < 48 KB", (unsigned)largest);
+            log_w("FlightsService: skipping fetch, heap free=%u largest=%u", (unsigned)freeHeap, (unsigned)largest);
             return -2;
         }
     }
