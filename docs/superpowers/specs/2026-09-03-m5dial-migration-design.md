@@ -201,3 +201,18 @@ Decomposition agreed with Mike: (1) card framework + knob navigation + analogue 
 - **Boot card is Clock.** No idle return. **Backlight dims after 2 min and never turns off** (the OFF stage is removed); the first input on a dimmed screen only wakes it.
 - **Clock card**: analogue face on the round display — 12 tick marks, hour/minute/second hands, small date (`Mon 3 Sep`) at the 6 o'clock position, redrawn once a second. Time from NTP over WiFi with the POSIX TZ string `TIMEZONE_TZ` in `config.h` (default Europe/London), and the Dial's BM8563 RTC is synced from NTP and read at boot so the clock is right before WiFi is up. When time is unknown (fresh device, no WiFi, empty RTC) the face shows `--:--`.
 - Data cards (later) refresh on their own interval and show a small stale marker when the last fetch failed.
+
+## 4.9 Flights card (added 2026-09-04, approved)
+
+Shows the aircraft overhead, nearest first, with airline logo, route, altitude and ground speed. Data is fetched directly by the Dial over HTTPS from the network task; nothing goes through Home Assistant.
+
+- **Sources (all keyless, verified 2026-09-04):**
+  - Aircraft: `https://opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{nm}` → `aircraft[]` with `hex, flight, t, desc, alt_baro, gs, track, lat, lon`. (airplanes.live requires emailing for access; not used.)
+  - Route: `https://hexdb.io/api/v1/route/icao/{callsign}` → `{"route":"VABB-EGLL"}` (ICAO airport codes).
+  - Airport: `https://hexdb.io/api/v1/airport/icao/{ICAO}` → `{"iata":"LHR","airport":"Heathrow Airport","country_code":"GB"}`.
+  - Operator: `https://hexdb.io/api/v1/aircraft/{hex}` → `{"RegisteredOwners":"Virgin Atlantic Airways","OperatorFlagCode":"VIR"}`.
+  - Logo: `https://pics.avs.io/120/48/{IATA}.png` (needs the IATA airline code; firmware table maps ICAO→IATA for common airlines; text fallback otherwise). Logos cached in the Dial's LittleFS partition, downloaded once per airline.
+- **Config** (`config.h`): `HOME_LAT`, `HOME_LON`, `FLIGHTS_RADIUS_MI` (default 3; converted to nautical miles for the query).
+- **Refresh:** every 20 s while the Flights card is showing; no fetches otherwise. Enrichment (route/airports/operator/logo) is fetched once per callsign/code and cached in RAM for the session; at most one HTTPS request in flight at a time; 5 s timeouts; bodies capped at 16 KB. TLS uses `setInsecure()` (public read-only data; accepted trade-off, documented).
+- **Card:** logo (120x48) at the top, else operator name in `Font2`; `callsign · type` under it; route large in the middle as `LHR → JFK` (IATA; `????` when unknown); rows `12,000 ft · 450 kt` and `3.1 mi NE · 2/5`. Tap cycles to the next aircraft (nearest first, up to 6). Stale marker (small grey dot at the top) when the last fetch failed; `no aircraft nearby` when the list is empty; `waiting for WiFi` when offline.
+- **Threading:** `FlightsService` runs on the network task and publishes a `FlightsSnapshot` through a mutex-guarded store; `DialUi` (loop task) only reads snapshots and decodes the current logo PNG once per airline into a small sprite.
