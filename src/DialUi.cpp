@@ -109,12 +109,14 @@ constexpr int32_t kFlightsFallbackY     = 40;  // operatorName/callsign when the
 constexpr int32_t kFlightsCallsignY     = 76;  // "callsign - type"
 constexpr int32_t kFlightsRouteY        = 112; // "LHR -> JFK" / "route unknown"
 constexpr int32_t kFlightsAltY          = 150; // "12,000 ft - 450 kt"
-constexpr int32_t kFlightsDistY         = 170; // "3.1 mi NE - 2/5"
-constexpr int32_t kFlightsHintY         = 214; // "tap: next"
+constexpr int32_t kFlightsDistY         = 170; // "3.1 mi NE"
+constexpr int32_t kFlightsHintY         = 214; // page dots row (one per aircraft, up to 6)
 constexpr int32_t kFlightsEmptyCaptionY = 150; // "within N mi" under "no aircraft nearby"
 constexpr int32_t kFlightsStaleDotX     = 120;
 constexpr int32_t kFlightsStaleDotY     = 14;
 constexpr int32_t kFlightsStaleDotR     = 3;
+constexpr int32_t kFlightsDotR          = 3;  // page dot radius
+constexpr int32_t kFlightsDotSpacing    = 12; // centre-to-centre spacing between page dots
 
 // Lights card layout (Plan 6, spec 4.10) on the same 240x240 canvas: the
 // title sits above the centred value/state, the caption just under it, and
@@ -1391,15 +1393,31 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     gfx.setTextColor(col(Col::TEXT), col(Col::BG));
     gfx.drawString(altSpeedBuf, kCentreX, kFlightsAltY, &fonts::Font2);
 
-    // Distance/compass/index: "3.1 mi NE - 2/5".
+    // Distance/compass: "3.1 mi NE" (no index suffix — the page dots below
+    // show position in the list instead).
     char distBuf[32];
-    snprintf(distBuf, sizeof(distBuf), "%.1f mi %s - %d/%d", static_cast<double>(ac.distMi),
-             Geo::compass8(static_cast<float>(ac.bearing)), idx + 1, m_flightsSnap.count);
+    snprintf(distBuf, sizeof(distBuf), "%.1f mi %s", static_cast<double>(ac.distMi),
+             Geo::compass8(static_cast<float>(ac.bearing)));
     gfx.setTextColor(col(Col::TEXT), col(Col::BG));
     gfx.drawString(distBuf, kCentreX, kFlightsDistY, &fonts::Font2);
 
-    gfx.setTextColor(col(Col::DIM), col(Col::BG));
-    gfx.drawString("tap: next", kCentreX, kFlightsHintY, &fonts::Font2);
+    // Page dots: one per aircraft (up to 6, the list is never larger),
+    // centred on kFlightsHintY — filled for the one currently shown, hollow
+    // outlines for the rest. Replaces the old "tap: next" hint text.
+    const int32_t dotsW = static_cast<int32_t>(m_flightsSnap.count - 1) * kFlightsDotSpacing;
+    const int32_t firstDotX = kCentreX - dotsW / 2;
+    for (uint8_t i = 0; i < m_flightsSnap.count; ++i)
+    {
+        const int32_t dotX = firstDotX + static_cast<int32_t>(i) * kFlightsDotSpacing;
+        if (i == idx)
+        {
+            gfx.fillCircle(dotX, kFlightsHintY, kFlightsDotR, col(Col::TEXT));
+        }
+        else
+        {
+            gfx.drawCircle(dotX, kFlightsHintY, kFlightsDotR, col(Col::DIM));
+        }
+    }
 }
 
 // I4: see m_logoFailed's comment in DialUi.h. `iata` is compared with
