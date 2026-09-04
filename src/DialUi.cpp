@@ -266,6 +266,7 @@ void DialUi::begin()
         {
             m_canvas.setPaletteColor(i, kPaletteRgb888[i]);
         }
+        m_canvas.setPaletteColor(static_cast<uint8_t>(Col::TRANSPARENT), 0x000000u);
     }
     log_i("DialUi: free heap after sprite = %u bytes", (unsigned)ESP.getFreeHeap());
 
@@ -790,26 +791,42 @@ void DialUi::render(uint32_t nowMs)
         // Explicit destination: m_canvas has no parent bound at construction
         // (see the m_canvas declaration in DialUi.h for why), so pushSprite()
         // needs to be told where to push rather than relying on one.
-        m_canvas.pushSprite(&M5Dial.Display, 0, 0);
+        if (m_logoToDraw[0] != '\0')
+        {
+            // drawFlights() filled the logo rectangle with the TRANSPARENT
+            // index, so this push leaves whatever is on the display there —
+            // the full-colour logo decoded earlier — untouched. No flicker.
+            m_canvas.pushSprite(&M5Dial.Display, 0, 0, static_cast<uint32_t>(Col::TRANSPARENT));
+        }
+        else
+        {
+            m_canvas.pushSprite(&M5Dial.Display, 0, 0);
+            m_logoOnScreen[0] = '\0'; // opaque push wiped any logo
+        }
     }
     else
     {
         draw(M5Dial.Display, nowMs);
+        m_logoOnScreen[0] = '\0'; // direct draw repaints everything each frame
     }
-    // Airline logo in full colour, drawn over the pushed frame (the palette
-    // canvas would posterise it). Frames only redraw on a key change, so this
-    // decode runs rarely. Failures are remembered per session (text fallback).
-    if (m_logoToDraw[0] != '\0')
+    // Airline logo in full colour, drawn straight onto the display (the palette
+    // canvas would posterise it), and only when the airline changed.
+    if (m_logoToDraw[0] != '\0' && strncmp(m_logoToDraw, m_logoOnScreen, 2) != 0)
     {
         char path[24];
         snprintf(path, sizeof(path), "/logos/%s.png", m_logoToDraw);
-        if (!M5Dial.Display.drawPngFile(LittleFS, path, kFlightsLogoX, kFlightsLogoY))
+        if (M5Dial.Display.drawPngFile(LittleFS, path, kFlightsLogoX, kFlightsLogoY))
+        {
+            strncpy(m_logoOnScreen, m_logoToDraw, 2);
+            m_logoOnScreen[2] = '\0';
+        }
+        else
         {
             log_w("DialUi: logo %s decode failed (drawPngFile), using text fallback for this session", m_logoToDraw);
             markLogoDecodeFailed(m_logoToDraw);
+            m_logoOnScreen[0] = '\0';
             m_lastFrame.flightHash ^= 0x5A5A; // force a redraw so the text fallback appears
         }
-        m_logoToDraw[0] = '\0';
     }
 }
 
@@ -1044,6 +1061,10 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     {
         strncpy(m_logoToDraw, ac.airlineIata, 2);
         m_logoToDraw[2] = '\0';
+        // Reserve the logo rectangle: on the canvas the TRANSPARENT index keeps
+        // the display's logo pixels through the push (see render()).
+        gfx.fillRect(kFlightsLogoX, kFlightsLogoY, 120, 48,
+                     m_useCanvas ? static_cast<uint32_t>(Col::TRANSPARENT) : col(Col::BG));
     }
     else
     {

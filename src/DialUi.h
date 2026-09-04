@@ -77,6 +77,7 @@ private:
                     // so TEXT's paused shade is DIM itself, not DIM_DIM)
         SPEED_DIM,  // paused-dim shade of SPEED
         PENDING_DIM,// paused-dim shade of PENDING
+        TRANSPARENT = 15, // canvas-only: skipped by pushSprite(transp) so the display keeps what is under it (the full-colour logo)
     };
     // Returns the value to pass as a "colour" to any LovyanGFX draw call on
     // gfx: the raw palette index (0-15) while drawing into the 4bpp
@@ -247,6 +248,10 @@ private:
     // the frame is pushed (the palette canvas would posterise them). Set by
     // drawFlights() for the current aircraft, consumed by render().
     char m_logoToDraw[3] = {0};
+    // IATA of the logo currently painted on the display (empty = none). The
+    // logo is only re-decoded when this differs from m_logoToDraw; meanwhile
+    // frames are pushed with the logo rectangle transparent so it survives.
+    char m_logoOnScreen[3] = {0};
 
     // I4: small ring of IATA codes whose drawPngFile() decode has already
     // failed once this session (a corrupt/unsupported PNG that
