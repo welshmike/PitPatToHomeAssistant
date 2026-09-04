@@ -154,6 +154,13 @@ private:
     // visible card's settle/idle timers and publishes whatever command
     // tick() hands back.
     void tickLights(uint32_t nowMs);
+    // Looks up the LightCardState for a light screen (LIGHT_OFFICE or
+    // LIGHT_LAMP) — centralises the screen/CardId -> LightKey -> m_lightCards[]
+    // lookup that used to be open-coded at each call site. Undefined which
+    // card is returned for a non-light Screen; every caller only passes one
+    // after checking screen == LIGHT_OFFICE || screen == LIGHT_LAMP.
+    LightCardState& lightCardFor(Screen screen);
+    const LightCardState& lightCardFor(Screen screen) const;
     // Formats `cmd` into a LIGHT_CMD PublishItem and hands it to the net
     // task; the loop task never touches MQTT itself.
     void publishLightCommand(LightsModel::LightKey key, const LightsModel::Command& cmd);
@@ -296,7 +303,11 @@ private:
     static_assert(static_cast<uint8_t>(LightsModel::LightKey::COUNT) == 2,
                   "m_lightCards is indexed by LightKey and sized for exactly two lights");
     static constexpr uint32_t kLightsSnapIntervalMs = 250;
-    LightsModel::LightsSnapshot m_lightsSnap{};
+    // The fresh LightsSnapshot itself is written once by tickLights() (at
+    // most every kLightsSnapIntervalMs) and consumed immediately, in the same
+    // call, to sync() both cards — nothing else reads it, so it's a local in
+    // tickLights() rather than a member; only the "do we have one yet / when
+    // did we last pull one" bookkeeping needs to persist across calls.
     bool m_haveLightsSnap = false;
     uint32_t m_lastLightsSnapMs = 0;
 

@@ -48,7 +48,12 @@ public:
 
     // Handles a tap on button b (from LightButtons::hitTest()).
     //
-    // POWER: ignored unless view().valid; toggles view().on, releases any
+    // POWER: ignored unless view().valid — LightsModel::parseLightState()
+    // only ever sets available=true alongside valid=true (never available
+    // without valid), so the BRIGHT/COLOUR gate below on view().available
+    // already implies view().valid; POWER is the one button that can be live
+    // with valid but !available (the "blind switch-on" case), so it needs
+    // its own, weaker gate. Toggles view().on, releases any
     // engagement (dropping a pending settle without sending it -- the
     // POWER command wins), and returns a POWER command immediately.
     //
@@ -90,6 +95,11 @@ public:
 
     // Local (optimistic) light state to draw from.
     const LightsModel::LightState& view() const { return m_view; }
+
+    // Whether this card offers the COLOUR button (Lamp) or not (Office) —
+    // the same flag passed to the constructor, exposed so callers don't
+    // have to re-derive it from the card's LightKey.
+    bool hasColour() const { return m_hasColour; }
 
     // 0..1 position of the engaged value within its range (brightness when
     // !engaged()): brightnessPct/100, (kelvin-min)/(max-min), or hue/360.

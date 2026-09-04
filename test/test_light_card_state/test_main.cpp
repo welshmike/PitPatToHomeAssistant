@@ -122,6 +122,14 @@ static void test_hitTest_farAway_returnsNone(void)
     TEST_ASSERT_TRUE(Button::NONE == hitTest(0, 0, true));
 }
 
+static void test_hitTest_office_gapBetweenButtons_returnsNone(void)
+{
+    // (120,190) sits midway between Office's POWER (84,190) and BRIGHT
+    // (156,190) centres, 36px from each — outside both buttons' r=21+6=27
+    // hit margin, so this must miss.
+    TEST_ASSERT_TRUE(Button::NONE == hitTest(120, 190, false));
+}
+
 static void test_label_returnsExpectedStrings(void)
 {
     TEST_ASSERT_EQUAL_STRING("Power", label(Button::POWER));
@@ -601,6 +609,7 @@ int main(int argc, char** argv)
     RUN_TEST(test_hitTest_office_centresHit);
     RUN_TEST(test_hitTest_office_colourNeverReturned);
     RUN_TEST(test_hitTest_farAway_returnsNone);
+    RUN_TEST(test_hitTest_office_gapBetweenButtons_returnsNone);
     RUN_TEST(test_label_returnsExpectedStrings);
 
     RUN_TEST(test_tapPower_fromOff_setsOnAndReturnsPowerOnCommand);

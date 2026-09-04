@@ -331,6 +331,16 @@ void DialUi::tick(uint32_t nowMs)
     {
         tickLights(nowMs);
     }
+    else
+    {
+        // Some other screen (CONNECTING/STARTING/RUNNING/SELECTOR/another
+        // card) has taken over: drop any engagement on both light cards so a
+        // pending settle can't fire a stale command long after the card left
+        // the screen. releaseLightCards() is cheap and a no-op when nothing
+        // is engaged/settling, so paying for it on every non-light tick is
+        // fine.
+        releaseLightCards();
+    }
 
     if (nowMs - m_lastRenderMs < kRenderIntervalMs)
     {
@@ -425,9 +435,8 @@ void DialUi::handleInput(uint32_t nowMs)
             const LightsModel::LightKey lightKey = (screen == Screen::LIGHT_LAMP)
                                                        ? LightsModel::LightKey::LAMP
                                                        : LightsModel::LightKey::OFFICE;
-            LightCardState& card = m_lightCards[static_cast<uint8_t>(lightKey)];
-            const bool hasColour = (lightKey == LightsModel::LightKey::LAMP);
-            const Button b = hitTest(ev.tapX, ev.tapY, hasColour);
+            LightCardState& card = lightCardFor(screen);
+            const Button b = hitTest(ev.tapX, ev.tapY, card.hasColour());
             if (b != Button::NONE)
             {
                 // LightCardState silently ignores a tap it can't act on
@@ -564,10 +573,7 @@ void DialUi::handleInput(uint32_t nowMs)
                 LightCardState* engagedLight = nullptr;
                 if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
                 {
-                    LightCardState& card =
-                        m_lightCards[static_cast<uint8_t>(screen == Screen::LIGHT_LAMP
-                                                              ? LightsModel::LightKey::LAMP
-                                                              : LightsModel::LightKey::OFFICE)];
+                    LightCardState& card = lightCardFor(screen);
                     if (card.engaged() != LightCardState::Engaged::NONE)
                     {
                         engagedLight = &card;
@@ -665,19 +671,24 @@ void DialUi::tickLights(uint32_t nowMs)
     if (!m_haveLightsSnap || (nowMs - m_lastLightsSnapMs) >= kLightsSnapIntervalMs)
     {
         m_lastLightsSnapMs = nowMs;
-        m_lightsSnap = m_lights.snapshot();
+        const LightsModel::LightsSnapshot snap = m_lights.snapshot();
         m_haveLightsSnap = true;
-        m_lightCards[static_cast<uint8_t>(LightsModel::LightKey::OFFICE)].sync(m_lightsSnap.office);
-        m_lightCards[static_cast<uint8_t>(LightsModel::LightKey::LAMP)].sync(m_lightsSnap.lamp);
+        m_lightCards[static_cast<uint8_t>(LightsModel::LightKey::OFFICE)].sync(snap.office);
+        m_lightCards[static_cast<uint8_t>(LightsModel::LightKey::LAMP)].sync(snap.lamp);
     }
 
     // Only the visible card can be engaged (handleInput() releases a card as
     // the ring leaves it), so only the visible card's settle/idle timers need
     // pumping — and tick() is a no-op on a card that isn't engaged anyway.
-    const LightsModel::LightKey key = (m_cards.current() == CardId::LIGHT_LAMP)
+    // tickLights() only runs while tick() has already established the screen
+    // is a light card, so m_cards.current() and that screen agree.
+    const Screen lightScreen = (m_cards.current() == CardId::LIGHT_LAMP)
+                                   ? Screen::LIGHT_LAMP
+                                   : Screen::LIGHT_OFFICE;
+    const LightsModel::LightKey key = (lightScreen == Screen::LIGHT_LAMP)
                                           ? LightsModel::LightKey::LAMP
                                           : LightsModel::LightKey::OFFICE;
-    const LightsModel::Command cmd = m_lightCards[static_cast<uint8_t>(key)].tick(nowMs);
+    const LightsModel::Command cmd = lightCardFor(lightScreen).tick(nowMs);
     if (cmd.type != LightsModel::Command::Type::NONE)
     {
         publishLightCommand(key, cmd);
@@ -706,6 +717,22 @@ void DialUi::releaseLightCards()
     {
         m_lightCards[i].release();
     }
+}
+
+LightCardState& DialUi::lightCardFor(Screen screen)
+{
+    const LightsModel::LightKey key = (screen == Screen::LIGHT_LAMP)
+                                          ? LightsModel::LightKey::LAMP
+                                          : LightsModel::LightKey::OFFICE;
+    return m_lightCards[static_cast<uint8_t>(key)];
+}
+
+const LightCardState& DialUi::lightCardFor(Screen screen) const
+{
+    const LightsModel::LightKey key = (screen == Screen::LIGHT_LAMP)
+                                          ? LightsModel::LightKey::LAMP
+                                          : LightsModel::LightKey::OFFICE;
+    return m_lightCards[static_cast<uint8_t>(key)];
 }
 
 void DialUi::playStopBeep(uint32_t nowMs, bool accepted)
@@ -918,7 +945,7 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
         const LightsModel::LightKey lk = (lightScreen == Screen::LIGHT_LAMP)
                                              ? LightsModel::LightKey::LAMP
                                              : LightsModel::LightKey::OFFICE;
-        const LightCardState& card = m_lightCards[static_cast<uint8_t>(lk)];
+        const LightCardState& card = lightCardFor(lightScreen);
         const LightsModel::LightState& v = card.view();
         uint32_t h = 2166136261u;
         const uint32_t fields[10] = {
@@ -1410,8 +1437,8 @@ void DialUi::markLogoDecodeFailed(const char* iata)
 // a caption for the colour field, and the Power/Bright(/Colour) buttons.
 void DialUi::drawLight(LovyanGFX& gfx, LightsModel::LightKey key)
 {
-    const bool hasColour = (key == LightsModel::LightKey::LAMP);
     const LightCardState& card = m_lightCards[static_cast<uint8_t>(key)];
+    const bool hasColour = card.hasColour();
     const LightsModel::LightState& v = card.view();
     const LightCardState::Engaged engaged = card.engaged();
 
@@ -1533,9 +1560,14 @@ void DialUi::drawLightButtons(LovyanGFX& gfx, const LightCardState& card, bool h
         switch (b)
         {
         case Button::POWER:
-            // Power is the one control that stays live with no usable state:
-            // a blind switch-on is allowed (LightCardState::tapButton()).
-            isActive = mqttUp;
+            // Power stays live through "no data" (available == false) — a
+            // blind switch-on is allowed (LightCardState::tapButton()) — but
+            // LightCardState::tapButton(POWER) still refuses when !v.valid
+            // (no retained state has parsed at all yet), so the button must
+            // not be drawn active before that. v.valid is strictly weaker
+            // than the BRIGHT/COLOUR gate below (haveData == valid &&
+            // available), so this can't light up more than they do.
+            isActive = mqttUp && v.valid;
             break;
         case Button::BRIGHT:
             isEngaged = (engaged == LightCardState::Engaged::BRIGHT);
