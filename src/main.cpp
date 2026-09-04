@@ -219,6 +219,18 @@ void loop()
 {
   // reset watchdog, important to be called once each loop.
   esp_task_wdt_reset();
+  {
+    // Heap diagnostics every 15 s: free/min-free heap plus BLE link state.
+    static uint32_t s_lastHeapLog = 0;
+    const uint32_t nowDiag = millis();
+    if ((uint32_t)(nowDiag - s_lastHeapLog) >= 15000)
+    {
+      s_lastHeapLog = nowDiag;
+      log_i("Heap: free=%u minFree=%u largestBlock=%u ble=%d",
+            (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
+            (unsigned)ESP.getMaxAllocHeap(), (int)treadmill.isConnected());
+    }
+  }
 
   const uint32_t now = millis();
 
