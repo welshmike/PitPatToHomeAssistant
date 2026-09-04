@@ -266,7 +266,8 @@ any not-yet-sent change) the moment the card ring scrolls away, the side button 
 belt/connection screen takes over. Switching straight from one control to another (`Bright` while
 colour is engaged, or `Colour` while brightness is) sends the change you had made rather than
 dropping it. After a command goes out the card keeps showing the value it just sent for up to 1.5
-seconds, so the reading doesn't flick back to HA's old state while the echo is still in flight. With nothing engaged, the knob scrolls the card ring exactly
+seconds, so the reading doesn't flick back to HA's old state while the echo is still in flight.
+With nothing engaged, the knob scrolls the card ring exactly
 like the other desk cards.
 
 The card shows `waiting for HA` (dimmed) while MQTT itself is down, or `no data` (dimmed) once

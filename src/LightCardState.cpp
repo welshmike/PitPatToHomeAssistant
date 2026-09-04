@@ -132,6 +132,10 @@ void LightCardState::sync(const LightsModel::LightState& s, uint32_t nowMs)
     // newer local value is the one about to be sent.
     if (m_settling)
     {
+        // The pending command carries "state":"ON", so keep the optimistic
+        // on too -- otherwise a still-live POWER-off hold (Power then Bright
+        // within 1.5 s) would paint OFF while the user is dialling.
+        merged.on = m_view.on;
         switch (m_engaged)
         {
         case Engaged::BRIGHT:

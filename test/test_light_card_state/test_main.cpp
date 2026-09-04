@@ -579,6 +579,26 @@ static void test_confirmHold_power_staleEchoBeforeDeadline_keepsLocalOn(void)
     TEST_ASSERT_TRUE(card.view().on);
 }
 
+static void test_confirmHold_powerOffThenBrightEdit_keepsOptimisticOn(void)
+{
+    LightCardState card(true);
+    LightsModel::LightState on = colourState();
+    on.on = true;
+    on.brightnessPct = 40;
+    card.sync(on, 1000);
+    card.tapButton(LightButtons::Button::POWER, 1000); // off, hold armed
+    TEST_ASSERT_FALSE(card.view().on);
+
+    card.tapButton(LightButtons::Button::BRIGHT, 1100);
+    card.detents(1, 1200); // optimistic on, 45 %
+    TEST_ASSERT_TRUE(card.view().on);
+
+    card.sync(on, 1250); // HA echo still says on/40 -- irrelevant, but the
+                         // POWER-off hold must not clobber the edit's on
+    TEST_ASSERT_TRUE(card.view().on);
+    TEST_ASSERT_EQUAL_UINT8(45, card.view().brightnessPct);
+}
+
 static void test_confirmHold_power_staleEchoAfterDeadline_adoptsHa(void)
 {
     LightCardState card(true);
@@ -901,6 +921,7 @@ int main(int argc, char** argv)
     RUN_TEST(test_confirmHold_power_staleEchoAfterDeadline_adoptsHa);
     RUN_TEST(test_confirmHold_power_matchingEchoEndsHoldEarly);
     RUN_TEST(test_confirmHold_bright_keepsSentPctUntilEchoed);
+    RUN_TEST(test_confirmHold_powerOffThenBrightEdit_keepsOptimisticOn);
     RUN_TEST(test_confirmHold_temp_kelvinWithinToleranceConfirms);
     RUN_TEST(test_confirmHold_temp_kelvinOutsideToleranceKeepsLocal);
     RUN_TEST(test_confirmHold_hue_withinToleranceConfirms);
