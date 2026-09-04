@@ -13,6 +13,7 @@
 
 #if HAS_DIAL_UI
 #include "FlightsService.h"
+#include "LightsService.h"
 #endif
 
 class NetManager;
@@ -62,6 +63,11 @@ public:
     // only through the loop-task-safe methods documented on the class
     // itself.
     FlightsService &flights() { return m_flights; }
+
+    // Dial only (Plan 6). LightsService::onStateMessage() only ever runs
+    // here (see NetTask::onMqttMessage()); the loop task talks to it only
+    // through the loop-task-safe snapshot().
+    LightsService &lights() { return m_lights; }
 #endif
 
 private:
@@ -87,6 +93,7 @@ private:
 
 #if HAS_DIAL_UI
     FlightsService m_flights;
+    LightsService  m_lights;
 #endif
 };
 

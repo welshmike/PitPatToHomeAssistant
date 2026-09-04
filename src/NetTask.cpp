@@ -222,6 +222,16 @@ void NetTask::drainPublishQueue()
         case PubType::FULL_RESYNC:
             fullResync();
             break;
+        case PubType::LIGHT_CMD:
+#if HAS_DIAL_UI
+        {
+            char topic[48];
+            LightsService::setTopic(static_cast<LightsModel::LightKey>(item.lightKey), topic, sizeof(topic));
+            m_net.mqtt().publish(topic, item.lightJson); // not retained — this is a command, not state
+            log_i("NetTask: LIGHT_CMD publish [%s] %s", topic, item.lightJson);
+        }
+#endif
+            break;
         }
     }
 }
@@ -248,6 +258,24 @@ void NetTask::onMqttConnected()
 
     client.subscribe(HOMEASSISTANT_STATUS_TOPIC);
     client.subscribe(HOMEASSISTANT_STATUS_TOPIC_ALT);
+
+#if HAS_DIAL_UI
+    // Lights card (Plan 6): subscribe both lights' retained state topics,
+    // then ask HA to re-publish them (they're retained, so a fresh
+    // subscribe alone would normally be enough — the explicit refresh
+    // covers a broker that doesn't have a retained message yet, e.g. right
+    // after the HA automation itself restarts). Grouped here with the other
+    // subscribes, ahead of fullResync()'s treadmill-config publish/delay,
+    // so the refresh trigger goes out as early as possible on reconnect.
+    {
+        char topic[48];
+        LightsService::stateTopic(LightsModel::LightKey::OFFICE, topic, sizeof(topic));
+        client.subscribe(topic, 0);
+        LightsService::stateTopic(LightsModel::LightKey::LAMP, topic, sizeof(topic));
+        client.subscribe(topic, 0);
+        client.publish(LightsService::kRefreshTopic, "1");
+    }
+#endif
 
     fullResync();
 }
@@ -284,6 +312,17 @@ void NetTask::onMqttMessage(char *topic, uint8_t *payload, unsigned int length)
         Serial.print((char)payload[i]);
     }
     Serial.println();
+
+#if HAS_DIAL_UI
+    {
+        LightsModel::LightKey lightKey;
+        if (LightsModel::keyFromTopic(topic, lightKey))
+        {
+            m_lights.onStateMessage(topic, payload, length);
+            return;
+        }
+    }
+#endif
 
     Command cmd;
     char buf[32];

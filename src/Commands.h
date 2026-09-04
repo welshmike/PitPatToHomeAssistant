@@ -67,6 +67,7 @@ enum class PubType : uint8_t
     START_SPEED,
     CALIB_COUNT,
     FULL_RESYNC,
+    LIGHT_CMD,
 };
 
 struct PublishItem
@@ -77,4 +78,6 @@ struct PublishItem
     uint16_t      u16  = 0;     // IDLE_MINS / PAUSE_MINS
     uint8_t       u8   = 0;     // CALIB_COUNT
     float         f    = 0;     // START_SPEED
+    uint8_t       lightKey  = 0;     // LIGHT_CMD: LightsModel::LightKey
+    char          lightJson[96] = {0}; // LIGHT_CMD: formatted command JSON
 };
