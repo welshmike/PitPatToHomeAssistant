@@ -13,6 +13,11 @@
 #include "TimeService.h"
 #include "FlightsService.h"
 #include "FlightsModel.h"
+#include "LightsService.h"
+#include "LightsModel.h"
+#include "LightCardState.h"
+#include "LightButtons.h"
+#include "NetTask.h"
 
 // Loop-task ISnapshotObserver that renders treadmill/net state to the Dial's
 // round 240x240 display and drives the controller from the encoder, touch
@@ -24,11 +29,13 @@ class DialUi : public ISnapshotObserver
 public:
     // timeService backs the clock card (spec 4.8) — kept as a reference, not
     // a copy, so the clock always reads the live wall clock TimeService.tick()
-    // is updating in main.cpp's loop(). flights backs the Flights card (spec
-    // 4.9) — also a reference to NetTask's own FlightsService member; safe
-    // to bind before NetTask::begin() runs (see NetTask::flights()).
+    // is updating in main.cpp's loop(). net backs the Flights card (spec 4.9)
+    // and the two Lights cards (Plan 6): m_flights/m_lights are bound to
+    // NetTask's own FlightsService/LightsService members here, which is safe
+    // before NetTask::begin() runs (see NetTask::flights()/lights()), and
+    // m_net itself is only used to enqueue outgoing light commands.
     DialUi(TreadmillController& controller, const TimeService& timeService,
-           FlightsService& flights);
+           NetTask& net);
 
     // Must run FIRST in setup() on the Dial — M5Unified owns display/I2C/
     // Serial init via M5Dial.begin(). Creates the render canvas (4bpp
@@ -95,6 +102,14 @@ private:
     void drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs);
     // Flights card (spec 4.9): nearest aircraft, logo/route/altitude/speed.
     void drawFlights(LovyanGFX& gfx);
+    // Lights cards (Plan 6, spec 4.10): title, value ring, brightness/colour
+    // readout and the two/three on-screen buttons for one HA light.
+    void drawLight(LovyanGFX& gfx, LightsModel::LightKey key);
+    // The Power/Bright/Colour circles for drawLight(): one filled PENDING
+    // circle for the engaged control, DIM outlines for the ones that can be
+    // tapped, DIM_DIM outlines for the ones that can't.
+    void drawLightButtons(LovyanGFX& gfx, const LightCardState& card, bool hasColour,
+                          bool mqttUp);
     // Start-speed picker (spec 4.7), opened by a tap on Disconnected.
     void drawSelector(LovyanGFX& gfx);
     // Centre speed overlay (target speed in Font7 amber + "mph" caption, and
@@ -122,7 +137,8 @@ private:
     // clear. `paused` is passed in rather than recomputed so callers that
     // already have it (draw(), handleInput()) don't pay for isPausedState()
     // twice in the same tick.
-    enum class Screen : uint8_t { DISCONNECTED, CLOCK, FLIGHTS, CONNECTING, STARTING, RUNNING, SELECTOR };
+    enum class Screen : uint8_t { DISCONNECTED, CLOCK, FLIGHTS, CONNECTING, STARTING, RUNNING,
+                                  SELECTOR, LIGHT_OFFICE, LIGHT_LAMP };
     Screen currentScreen(bool paused) const;
 
     void handleInput(uint32_t nowMs);
@@ -132,6 +148,21 @@ private:
     // aircraft count, and tells FlightsService which airline logo the net
     // task should be fetching for the currently-selected aircraft.
     void tickFlights(uint32_t nowMs);
+    // Lights card housekeeping (Plan 6), called from tick() every call while
+    // the screen is a light card: pulls a fresh LightsSnapshot at most every
+    // kLightsSnapIntervalMs and sync()s BOTH cards from it, then polls the
+    // visible card's settle/idle timers and publishes whatever command
+    // tick() hands back.
+    void tickLights(uint32_t nowMs);
+    // Formats `cmd` into a LIGHT_CMD PublishItem and hands it to the net
+    // task; the loop task never touches MQTT itself.
+    void publishLightCommand(LightsModel::LightKey key, const LightsModel::Command& cmd);
+    // Drops any engagement on both light cards, silently (a pending settle is
+    // discarded, not sent). Called whenever the card ring leaves a light card
+    // — by a knob scroll or the side button's home gesture — so a card left
+    // mid-edit doesn't come back engaged, and no command fires later for an
+    // edit the user walked away from.
+    void releaseLightCards();
     void applyBrightness();
     // Plays the accepted/refused tone pair for a stop-or-cancel gesture
     // (Connecting-screen cancel, hold-to-stop, side button). No-op when
@@ -189,6 +220,16 @@ private:
         bool     flightOffline  = false;
         uint16_t flightHash     = 0;
 
+        // Lights cards (Plan 6): lightHash is a 16-bit FNV-1a over
+        // everything drawLight() reads off the *visible* card (key, valid,
+        // available, on, brightnessPct, kelvin, hue, engaged, settling,
+        // supportsColor) — same idiom as flightHash above; 0 while no light
+        // card is showing. lightMqttUp gates the "waiting for HA" state,
+        // which netStatus already covers, but is cheap and keeps the
+        // dependency explicit.
+        uint16_t lightHash      = 0;
+        bool     lightMqttUp    = false;
+
         bool operator==(const FrameKey& o) const
         {
             return status == o.status && screen == o.screen && paused == o.paused &&
@@ -205,7 +246,8 @@ private:
                    cardId == o.cardId && clockSec == o.clockSec &&
                    flightIdx == o.flightIdx && flightCount == o.flightCount &&
                    flightStale == o.flightStale && flightOffline == o.flightOffline &&
-                   flightHash == o.flightHash;
+                   flightHash == o.flightHash &&
+                   lightHash == o.lightHash && lightMqttUp == o.lightMqttUp;
         }
     };
     FrameKey buildFrameKey(uint32_t nowMs) const;
@@ -243,6 +285,20 @@ private:
     // only calls it again when the wanted airline actually changes rather
     // than every call while screen == FLIGHTS.
     char m_lastWantedIata[3] = {0};
+
+    // Lights cards (Plan 6). m_lights is NetTask's own LightsService member
+    // (loop-task-safe through snapshot() alone); m_net is only ever used for
+    // enqueuePublish() of a LIGHT_CMD item. m_lightCards is indexed by
+    // LightsModel::LightKey: [OFFICE] has no colour button, [LAMP] does.
+    NetTask& m_net;
+    LightsService& m_lights;
+    LightCardState m_lightCards[2];
+    static_assert(static_cast<uint8_t>(LightsModel::LightKey::COUNT) == 2,
+                  "m_lightCards is indexed by LightKey and sized for exactly two lights");
+    static constexpr uint32_t kLightsSnapIntervalMs = 250;
+    LightsModel::LightsSnapshot m_lightsSnap{};
+    bool m_haveLightsSnap = false;
+    uint32_t m_lastLightsSnapMs = 0;
 
     // Airline logos are decoded from LittleFS straight onto the display after
     // the frame is pushed (the palette canvas would posterise them). Set by

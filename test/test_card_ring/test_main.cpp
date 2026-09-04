@@ -15,25 +15,34 @@ static void test_startsAtClock(void)
 }
 
 // ---------------------------------------------------------------------------
-// next() / prev() with wraparound (ring order: TREADMILL -> CLOCK -> FLIGHTS)
+// next() / prev() with wraparound (ring order: TREADMILL -> CLOCK -> FLIGHTS
+// -> LIGHT_OFFICE -> LIGHT_LAMP)
 // ---------------------------------------------------------------------------
 
-static void test_next_advancesThroughAllThreeCards_thenWraps(void)
+static void test_next_advancesThroughAllCards_thenWraps(void)
 {
     CardRing ring; // starts at CLOCK
     ring.next();
     TEST_ASSERT_TRUE(CardId::FLIGHTS == ring.current());
+    ring.next();
+    TEST_ASSERT_TRUE(CardId::LIGHT_OFFICE == ring.current());
+    ring.next();
+    TEST_ASSERT_TRUE(CardId::LIGHT_LAMP == ring.current());
     ring.next();
     TEST_ASSERT_TRUE(CardId::TREADMILL == ring.current());
     ring.next();
     TEST_ASSERT_TRUE(CardId::CLOCK == ring.current());
 }
 
-static void test_prev_wrapsBackwardThroughAllThreeCards(void)
+static void test_prev_wrapsBackwardThroughAllCards(void)
 {
     CardRing ring; // starts at CLOCK
     ring.prev();
     TEST_ASSERT_TRUE(CardId::TREADMILL == ring.current());
+    ring.prev();
+    TEST_ASSERT_TRUE(CardId::LIGHT_LAMP == ring.current());
+    ring.prev();
+    TEST_ASSERT_TRUE(CardId::LIGHT_OFFICE == ring.current());
     ring.prev();
     TEST_ASSERT_TRUE(CardId::FLIGHTS == ring.current());
     ring.prev();
@@ -53,6 +62,9 @@ static void test_set_movesDirectlyToGivenCard(void)
     ring.set(CardId::FLIGHTS);
     TEST_ASSERT_TRUE(CardId::FLIGHTS == ring.current());
 
+    ring.set(CardId::LIGHT_LAMP);
+    TEST_ASSERT_TRUE(CardId::LIGHT_LAMP == ring.current());
+
     ring.set(CardId::CLOCK);
     TEST_ASSERT_TRUE(CardId::CLOCK == ring.current());
 }
@@ -62,8 +74,8 @@ int main(int argc, char **argv)
     UNITY_BEGIN();
 
     RUN_TEST(test_startsAtClock);
-    RUN_TEST(test_next_advancesThroughAllThreeCards_thenWraps);
-    RUN_TEST(test_prev_wrapsBackwardThroughAllThreeCards);
+    RUN_TEST(test_next_advancesThroughAllCards_thenWraps);
+    RUN_TEST(test_prev_wrapsBackwardThroughAllCards);
     RUN_TEST(test_set_movesDirectlyToGivenCard);
 
     return UNITY_END();

@@ -116,6 +116,20 @@ constexpr int32_t kFlightsStaleDotX     = 120;
 constexpr int32_t kFlightsStaleDotY     = 14;
 constexpr int32_t kFlightsStaleDotR     = 3;
 
+// Lights card layout (Plan 6, spec 4.10) on the same 240x240 canvas: the
+// title sits above the centred value/state, the caption just under it, and
+// the on-screen buttons come from LightButtons::geom() (which is sized to
+// clear the value ring's 108-118 track). The big value reuses the ring
+// centre rather than kCentreY so it sits inside the ring, not above it.
+constexpr int32_t kLightTitleY   = 40;
+constexpr int32_t kLightCaptionY = 160;
+// Gap between the Font7 brightness digits and the Font4 "%" drawn beside
+// them: Font7 is a 7-segment font whose only glyphs are space, 0-9, ':',
+// '.' and '-' (see Font7srle.h), so a '%' inside a Font7 string would print
+// as a blank 12px cell. The digits and the percent sign are therefore drawn
+// as two strings in two fonts, together centred on kRingCx.
+constexpr int32_t kLightPctGap   = 4;
+
 // Speed ring geometry, centred on the 240x240 canvas.
 constexpr int32_t kRingCx    = 120;
 constexpr int32_t kRingCy    = 120;
@@ -194,8 +208,12 @@ void formatThousands(int value, char* out, size_t n)
 } // namespace
 
 DialUi::DialUi(TreadmillController& controller, const TimeService& timeService,
-               FlightsService& flights)
-    : m_controller(controller), m_time(timeService), m_flights(flights)
+               NetTask& net)
+    : m_controller(controller), m_time(timeService), m_flights(net.flights()),
+      m_net(net), m_lights(net.lights()),
+      // Office has no colour control; the Lamp does (Plan 6). Indexed by
+      // LightsModel::LightKey, so the order here is OFFICE then LAMP.
+      m_lightCards{LightCardState(false), LightCardState(true)}
 {
 }
 
@@ -306,6 +324,14 @@ void DialUi::tick(uint32_t nowMs)
         tickFlights(nowMs);
     }
 
+    // Lights cards (Plan 6): same shape as the flights housekeeping above —
+    // pull HA state at most every kLightsSnapIntervalMs and let the visible
+    // card's settle/idle timers run.
+    if (screenNow == Screen::LIGHT_OFFICE || screenNow == Screen::LIGHT_LAMP)
+    {
+        tickLights(nowMs);
+    }
+
     if (nowMs - m_lastRenderMs < kRenderIntervalMs)
     {
         return;
@@ -391,6 +417,34 @@ void DialUi::handleInput(uint32_t nowMs)
             m_flightIdx = static_cast<uint8_t>((m_flightIdx + 1) % (count > 0 ? count : 1));
             playAcceptBeep(true);
         }
+        else if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
+        {
+            // Lights card (Plan 6): only the on-screen buttons are live —
+            // a tap on bare card background is a no-op with no beep, the
+            // same as the Clock card's tap.
+            const LightsModel::LightKey lightKey = (screen == Screen::LIGHT_LAMP)
+                                                       ? LightsModel::LightKey::LAMP
+                                                       : LightsModel::LightKey::OFFICE;
+            LightCardState& card = m_lightCards[static_cast<uint8_t>(lightKey)];
+            const bool hasColour = (lightKey == LightsModel::LightKey::LAMP);
+            const Button b = hitTest(ev.tapX, ev.tapY, hasColour);
+            if (b != Button::NONE)
+            {
+                // LightCardState silently ignores a tap it can't act on
+                // (no data yet, colour on a light that has none), and
+                // returns a command only for POWER or a flushed settle —
+                // so "did something" is an engagement change or a command.
+                const LightCardState::Engaged engagedBefore = card.engaged();
+                const LightsModel::Command cmd = card.tapButton(b, nowMs);
+                const bool acted = (card.engaged() != engagedBefore) ||
+                                   (cmd.type != LightsModel::Command::Type::NONE);
+                playAcceptBeep(acted);
+                if (cmd.type != LightsModel::Command::Type::NONE)
+                {
+                    publishLightCommand(lightKey, cmd);
+                }
+            }
+        }
         else
         {
             // The controller notifies observers (including this one, via
@@ -430,10 +484,11 @@ void DialUi::handleInput(uint32_t nowMs)
             const bool accepted = (m_snapshot.status != statusBefore);
             playAcceptBeep(accepted);
         }
-        else if (screen == Screen::CLOCK || screen == Screen::FLIGHTS)
+        else if (screen == Screen::CLOCK || screen == Screen::FLIGHTS ||
+                 screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
         {
-            // Neither desk card owns a value to skip/confirm — hold is a
-            // no-op, no beep (spec 4.8, spec 4.9).
+            // None of the desk cards owns a value to skip/confirm — hold is a
+            // no-op, no beep (spec 4.8, spec 4.9, Plan 6).
         }
         else
         {
@@ -464,6 +519,9 @@ void DialUi::handleInput(uint32_t nowMs)
             {
                 m_selector.close();
             }
+            // Leaving whatever card was showing: a light card parked
+            // mid-edit must not come back engaged (Plan 6).
+            releaseLightCards();
             m_cards.set(CardId::TREADMILL);
             playAcceptBeep(true);
         }
@@ -496,20 +554,48 @@ void DialUi::handleInput(uint32_t nowMs)
                 m_speedOverlayUntilMs = nowMs + DIAL_SPEED_OVERLAY_MS;
             }
             else if (screen == Screen::DISCONNECTED || screen == Screen::CLOCK ||
-                     screen == Screen::FLIGHTS)
+                     screen == Screen::FLIGHTS || screen == Screen::LIGHT_OFFICE ||
+                     screen == Screen::LIGHT_LAMP)
             {
-                if (ev.detents > 0)
+                // On a light card with a control engaged the knob adjusts
+                // that control rather than scrolling the ring (Plan 6); the
+                // command follows 300 ms after the last detent, from
+                // tickLights().
+                LightCardState* engagedLight = nullptr;
+                if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
                 {
-                    for (int i = 0; i < ev.detents; ++i)
+                    LightCardState& card =
+                        m_lightCards[static_cast<uint8_t>(screen == Screen::LIGHT_LAMP
+                                                              ? LightsModel::LightKey::LAMP
+                                                              : LightsModel::LightKey::OFFICE)];
+                    if (card.engaged() != LightCardState::Engaged::NONE)
                     {
-                        m_cards.next();
+                        engagedLight = &card;
                     }
+                }
+
+                if (engagedLight != nullptr)
+                {
+                    engagedLight->detents(ev.detents, nowMs);
                 }
                 else
                 {
-                    for (int i = 0; i < -ev.detents; ++i)
+                    // The ring is about to move: drop any engagement first so
+                    // a card left mid-edit doesn't come back engaged.
+                    releaseLightCards();
+                    if (ev.detents > 0)
                     {
-                        m_cards.prev();
+                        for (int i = 0; i < ev.detents; ++i)
+                        {
+                            m_cards.next();
+                        }
+                    }
+                    else
+                    {
+                        for (int i = 0; i < -ev.detents; ++i)
+                        {
+                            m_cards.prev();
+                        }
                     }
                 }
             }
@@ -567,6 +653,58 @@ void DialUi::tickFlights(uint32_t nowMs)
         m_flights.setWantedLogo(iata);
         strncpy(m_lastWantedIata, iata, 2);
         m_lastWantedIata[2] = '\0';
+    }
+}
+
+void DialUi::tickLights(uint32_t nowMs)
+{
+    // Same rhythm as tickFlights(): snapshot() is a Guarded copy — cheap,
+    // but no reason to pay for it on every loop() iteration. Both cards are
+    // sync()ed from each fresh snapshot (not just the visible one) so the
+    // other card is already current the moment the ring reaches it.
+    if (!m_haveLightsSnap || (nowMs - m_lastLightsSnapMs) >= kLightsSnapIntervalMs)
+    {
+        m_lastLightsSnapMs = nowMs;
+        m_lightsSnap = m_lights.snapshot();
+        m_haveLightsSnap = true;
+        m_lightCards[static_cast<uint8_t>(LightsModel::LightKey::OFFICE)].sync(m_lightsSnap.office);
+        m_lightCards[static_cast<uint8_t>(LightsModel::LightKey::LAMP)].sync(m_lightsSnap.lamp);
+    }
+
+    // Only the visible card can be engaged (handleInput() releases a card as
+    // the ring leaves it), so only the visible card's settle/idle timers need
+    // pumping — and tick() is a no-op on a card that isn't engaged anyway.
+    const LightsModel::LightKey key = (m_cards.current() == CardId::LIGHT_LAMP)
+                                          ? LightsModel::LightKey::LAMP
+                                          : LightsModel::LightKey::OFFICE;
+    const LightsModel::Command cmd = m_lightCards[static_cast<uint8_t>(key)].tick(nowMs);
+    if (cmd.type != LightsModel::Command::Type::NONE)
+    {
+        publishLightCommand(key, cmd);
+    }
+}
+
+void DialUi::publishLightCommand(LightsModel::LightKey key, const LightsModel::Command& cmd)
+{
+    PublishItem item;
+    item.type     = PubType::LIGHT_CMD;
+    item.lightKey = static_cast<uint8_t>(key);
+    const size_t n = LightsModel::formatCommand(cmd, item.lightJson, sizeof(item.lightJson));
+    if (n == 0)
+    {
+        log_w("DialUi: light %s command type %d did not format, dropped",
+              LightsModel::keyName(key), (int)cmd.type);
+        return;
+    }
+    log_i("DialUi: light %s -> %s", LightsModel::keyName(key), item.lightJson);
+    m_net.enqueuePublish(item);
+}
+
+void DialUi::releaseLightCards()
+{
+    for (uint8_t i = 0; i < static_cast<uint8_t>(LightsModel::LightKey::COUNT); ++i)
+    {
+        m_lightCards[i].release();
     }
 }
 
@@ -681,13 +819,18 @@ DialUi::Screen DialUi::currentScreen(bool paused) const
     }
     // Belt idle and no selector open: show whichever card the ring is
     // parked on (spec 4.8). TREADMILL is the existing Disconnected screen;
-    // CLOCK is the clock card; FLIGHTS is the flights card (spec 4.9).
+    // CLOCK is the clock card; FLIGHTS is the flights card (spec 4.9);
+    // LIGHT_OFFICE/LIGHT_LAMP are the two HA lights cards (Plan 6).
     switch (m_cards.current())
     {
     case CardId::TREADMILL:
         return Screen::DISCONNECTED;
     case CardId::FLIGHTS:
         return Screen::FLIGHTS;
+    case CardId::LIGHT_OFFICE:
+        return Screen::LIGHT_OFFICE;
+    case CardId::LIGHT_LAMP:
+        return Screen::LIGHT_LAMP;
     case CardId::CLOCK:
     default:
         return Screen::CLOCK;
@@ -762,6 +905,47 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
     else
     {
         key.flightHash = 0;
+    }
+
+    // Lights cards (Plan 6): one FNV-1a over everything drawLight() reads off
+    // the card that's actually showing — the drawn value, the engaged/settling
+    // highlight and the button enable states all live in there. 0 when no
+    // light card is showing, so the other screens never redraw on light state.
+    key.lightMqttUp = (m_netStatus == NetStatus::MQTT_UP);
+    const Screen lightScreen = static_cast<Screen>(key.screen);
+    if (lightScreen == Screen::LIGHT_OFFICE || lightScreen == Screen::LIGHT_LAMP)
+    {
+        const LightsModel::LightKey lk = (lightScreen == Screen::LIGHT_LAMP)
+                                             ? LightsModel::LightKey::LAMP
+                                             : LightsModel::LightKey::OFFICE;
+        const LightCardState& card = m_lightCards[static_cast<uint8_t>(lk)];
+        const LightsModel::LightState& v = card.view();
+        uint32_t h = 2166136261u;
+        const uint32_t fields[10] = {
+            static_cast<uint32_t>(lk),
+            static_cast<uint32_t>(v.valid),
+            static_cast<uint32_t>(v.available),
+            static_cast<uint32_t>(v.on),
+            static_cast<uint32_t>(v.brightnessPct),
+            static_cast<uint32_t>(v.kelvin),
+            static_cast<uint32_t>(static_cast<int>(v.hue)),
+            static_cast<uint32_t>(card.engaged()),
+            static_cast<uint32_t>(card.settling()),
+            static_cast<uint32_t>(v.supportsColor),
+        };
+        for (uint32_t f : fields)
+        {
+            h ^= f;
+            h *= 16777619u;
+        }
+        // mode picks the caption (kelvin vs hue), so it belongs in the hash too.
+        h ^= static_cast<uint32_t>(v.mode);
+        h *= 16777619u;
+        key.lightHash = static_cast<uint16_t>(h ^ (h >> 16));
+    }
+    else
+    {
+        key.lightHash = 0;
     }
 
     return key;
@@ -918,7 +1102,8 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     // running (clean walking screen) and on desk cards such as the Clock and
     // Flights (spec 4.8, spec 4.9).
     const bool showDots = !(screen == Screen::RUNNING && !paused) &&
-                          screen != Screen::CLOCK && screen != Screen::FLIGHTS;
+                          screen != Screen::CLOCK && screen != Screen::FLIGHTS &&
+                          screen != Screen::LIGHT_OFFICE && screen != Screen::LIGHT_LAMP;
     if (showDots)
     {
         drawStatusDots(gfx);
@@ -942,6 +1127,12 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
         break;
     case Screen::FLIGHTS:
         drawFlights(gfx);
+        break;
+    case Screen::LIGHT_OFFICE:
+        drawLight(gfx, LightsModel::LightKey::OFFICE);
+        break;
+    case Screen::LIGHT_LAMP:
+        drawLight(gfx, LightsModel::LightKey::LAMP);
         break;
     case Screen::DISCONNECTED:
     default:
@@ -1211,6 +1402,178 @@ void DialUi::markLogoDecodeFailed(const char* iata)
     if (m_logoFailedCount < kLogoFailedSize)
     {
         m_logoFailedCount++;
+    }
+}
+
+// Lights card (Plan 6, spec 4.10). One HA light: title, the value ring
+// reused from the speed/selector screens, a centred value or state string,
+// a caption for the colour field, and the Power/Bright(/Colour) buttons.
+void DialUi::drawLight(LovyanGFX& gfx, LightsModel::LightKey key)
+{
+    const bool hasColour = (key == LightsModel::LightKey::LAMP);
+    const LightCardState& card = m_lightCards[static_cast<uint8_t>(key)];
+    const LightsModel::LightState& v = card.view();
+    const LightCardState::Engaged engaged = card.engaged();
+
+    gfx.setTextColor(col(Col::TEXT), col(Col::BG));
+    gfx.drawString(hasColour ? "Lamp" : "Office", kRingCx, kLightTitleY, &fonts::Font4);
+
+    // MQTT is the only path HA light state arrives on, so without it there is
+    // nothing to show and nothing worth ringing.
+    const bool mqttUp   = (m_netStatus == NetStatus::MQTT_UP);
+    const bool haveData = v.valid && v.available;
+
+    if (mqttUp && haveData)
+    {
+        // Same two-arc idiom as drawSelector(): DIM track, then the value arc
+        // from the same start angle. Amber while a control is engaged (the
+        // knob is live and a command is coming), cyan otherwise.
+        gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
+                    kRingStartDeg + kRingSweepDeg, col(Col::DIM));
+        const float sweep = card.ringFraction() * kRingSweepDeg;
+        if (sweep > 0.0f)
+        {
+            gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
+                        kRingStartDeg + sweep,
+                        col(engaged != LightCardState::Engaged::NONE ? Col::PENDING : Col::SPEED));
+        }
+    }
+
+    if (!mqttUp)
+    {
+        gfx.setTextColor(col(Col::DIM), col(Col::BG));
+        gfx.drawString("waiting for HA", kRingCx, kRingCy, &fonts::Font4);
+    }
+    else if (!haveData)
+    {
+        // No retained state yet (or HA reports the light unavailable). Power
+        // stays live: LightCardState allows a blind switch-on once the state
+        // topic has at least parsed.
+        gfx.setTextColor(col(Col::DIM), col(Col::BG));
+        gfx.drawString("no data", kRingCx, kRingCy, &fonts::Font4);
+    }
+    else
+    {
+        if (v.on)
+        {
+            // Font7 has no '%' glyph (see kLightPctGap), so the digits and
+            // the percent sign are two strings centred together.
+            char pctBuf[8];
+            snprintf(pctBuf, sizeof(pctBuf), "%u", (unsigned)v.brightnessPct);
+            const int32_t digitsW = gfx.textWidth(pctBuf, &fonts::Font7);
+            const int32_t signW   = gfx.textWidth("%", &fonts::Font4);
+            const int32_t left    = kRingCx - (digitsW + kLightPctGap + signW) / 2;
+
+            gfx.setTextColor(
+                col(engaged == LightCardState::Engaged::BRIGHT ? Col::PENDING : Col::TEXT),
+                col(Col::BG));
+            gfx.setTextDatum(middle_left);
+            gfx.drawString(pctBuf, left, kRingCy, &fonts::Font7);
+            gfx.drawString("%", left + digitsW + kLightPctGap, kRingCy, &fonts::Font4);
+            gfx.setTextDatum(middle_center);
+        }
+        else
+        {
+            gfx.setTextColor(col(Col::DIM), col(Col::BG));
+            gfx.drawString("OFF", kRingCx, kRingCy, &fonts::Font4);
+        }
+
+        // Colour caption: kelvin unless HA is reporting the light in hue/sat
+        // mode. Amber while that field is the engaged one.
+        char caption[16];
+        Col captionCol = Col::DIM;
+        if (v.mode == LightsModel::ColorMode::HS)
+        {
+            snprintf(caption, sizeof(caption), "hue %d", static_cast<int>(v.hue));
+            if (engaged == LightCardState::Engaged::HUE)
+            {
+                captionCol = Col::PENDING;
+            }
+        }
+        else
+        {
+            if (v.kelvin == 0)
+            {
+                snprintf(caption, sizeof(caption), "--K");
+            }
+            else
+            {
+                snprintf(caption, sizeof(caption), "%uK", (unsigned)v.kelvin);
+            }
+            if (engaged == LightCardState::Engaged::TEMP)
+            {
+                captionCol = Col::PENDING;
+            }
+        }
+        gfx.setTextColor(col(captionCol), col(Col::BG));
+        gfx.drawString(caption, kRingCx, kLightCaptionY, &fonts::Font2);
+    }
+
+    drawLightButtons(gfx, card, hasColour, mqttUp);
+}
+
+void DialUi::drawLightButtons(LovyanGFX& gfx, const LightCardState& card, bool hasColour,
+                              bool mqttUp)
+{
+    const LightsModel::LightState& v = card.view();
+    const LightCardState::Engaged engaged = card.engaged();
+    const bool haveData = v.valid && v.available;
+
+    const Button buttons[3] = {Button::POWER, Button::BRIGHT, Button::COLOUR};
+    for (Button b : buttons)
+    {
+        if (b == Button::COLOUR && !hasColour)
+        {
+            continue;
+        }
+
+        // Engaged wins over active: it's the one control the knob is driving.
+        bool isEngaged = false;
+        bool isActive  = false;
+        switch (b)
+        {
+        case Button::POWER:
+            // Power is the one control that stays live with no usable state:
+            // a blind switch-on is allowed (LightCardState::tapButton()).
+            isActive = mqttUp;
+            break;
+        case Button::BRIGHT:
+            isEngaged = (engaged == LightCardState::Engaged::BRIGHT);
+            isActive  = mqttUp && haveData;
+            break;
+        case Button::COLOUR:
+        default:
+            isEngaged = (engaged == LightCardState::Engaged::TEMP ||
+                         engaged == LightCardState::Engaged::HUE);
+            isActive  = mqttUp && haveData && v.supportsColor;
+            break;
+        }
+
+        const Geom g = geom(b, hasColour);
+        Col labelCol;
+        Col labelBg = Col::BG;
+        if (isEngaged)
+        {
+            gfx.fillCircle(g.cx, g.cy, g.r, col(Col::PENDING));
+            // Text background must be the fill, not the screen background, or
+            // each glyph's background rect punches a black box in the circle.
+            labelCol = Col::BG;
+            labelBg  = Col::PENDING;
+        }
+        else if (isActive)
+        {
+            gfx.drawCircle(g.cx, g.cy, g.r, col(Col::DIM));
+            labelCol = Col::TEXT;
+        }
+        else
+        {
+            gfx.drawCircle(g.cx, g.cy, g.r, col(Col::DIM_DIM));
+            labelCol = Col::DIM_DIM;
+        }
+        // Label inside the circle: below it would fall off the round display
+        // for the lowest button (cy + r + 12 = 229 > 226).
+        gfx.setTextColor(col(labelCol), col(labelBg));
+        gfx.drawString(label(b), g.cx, g.cy, &fonts::Font2);
     }
 }
 

@@ -95,8 +95,14 @@ public:
     // !engaged()): brightnessPct/100, (kelvin-min)/(max-min), or hue/360.
     float ringFraction() const;
 
-private:
+    // Drops engagement immediately and silently: any pending settle is
+    // discarded rather than emitted (unlike a release *tap*, which flushes
+    // it). DialUi calls this when the card ring scrolls off this card so a
+    // card left mid-edit doesn't come back engaged, and doesn't fire a
+    // command minutes later for an edit the user walked away from.
     void release();
+
+private:
     LightsModel::Command buildSettleCommand() const;
 
     bool m_hasColour;

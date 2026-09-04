@@ -51,13 +51,13 @@ static void test_geom_lamp_returnsSpecCentres(void)
     Geom power = geom(Button::POWER, true);
     Geom bright = geom(Button::BRIGHT, true);
     Geom colour = geom(Button::COLOUR, true);
-    TEST_ASSERT_EQUAL_INT(56, power.cx);
-    TEST_ASSERT_EQUAL_INT(186, power.cy);
-    TEST_ASSERT_EQUAL_INT(22, power.r);
+    TEST_ASSERT_EQUAL_INT(60, power.cx);
+    TEST_ASSERT_EQUAL_INT(178, power.cy);
+    TEST_ASSERT_EQUAL_INT(21, power.r);
     TEST_ASSERT_EQUAL_INT(120, bright.cx);
-    TEST_ASSERT_EQUAL_INT(206, bright.cy);
-    TEST_ASSERT_EQUAL_INT(184, colour.cx);
-    TEST_ASSERT_EQUAL_INT(186, colour.cy);
+    TEST_ASSERT_EQUAL_INT(196, bright.cy);
+    TEST_ASSERT_EQUAL_INT(180, colour.cx);
+    TEST_ASSERT_EQUAL_INT(178, colour.cy);
 }
 
 static void test_geom_office_returnsSpecCentres(void)
@@ -65,9 +65,9 @@ static void test_geom_office_returnsSpecCentres(void)
     Geom power = geom(Button::POWER, false);
     Geom bright = geom(Button::BRIGHT, false);
     TEST_ASSERT_EQUAL_INT(84, power.cx);
-    TEST_ASSERT_EQUAL_INT(200, power.cy);
+    TEST_ASSERT_EQUAL_INT(190, power.cy);
     TEST_ASSERT_EQUAL_INT(156, bright.cx);
-    TEST_ASSERT_EQUAL_INT(200, bright.cy);
+    TEST_ASSERT_EQUAL_INT(190, bright.cy);
 }
 
 static void test_geom_office_colourIsZero(void)
@@ -80,33 +80,41 @@ static void test_geom_office_colourIsZero(void)
 
 static void test_hitTest_lamp_centreHitsEachButton(void)
 {
-    TEST_ASSERT_TRUE(Button::POWER == hitTest(56, 186, true));
-    TEST_ASSERT_TRUE(Button::BRIGHT == hitTest(120, 206, true));
-    TEST_ASSERT_TRUE(Button::COLOUR == hitTest(184, 186, true));
+    TEST_ASSERT_TRUE(Button::POWER == hitTest(60, 178, true));
+    TEST_ASSERT_TRUE(Button::BRIGHT == hitTest(120, 196, true));
+    TEST_ASSERT_TRUE(Button::COLOUR == hitTest(180, 178, true));
 }
 
 static void test_hitTest_lamp_edgeOfMarginHits(void)
 {
-    // r=22, margin=6 -> limit 28. Exactly on the limit still hits.
-    TEST_ASSERT_TRUE(Button::POWER == hitTest(56 + 28, 186, true));
+    // r=21, margin=6 -> limit 27. Exactly on the limit still hits.
+    TEST_ASSERT_TRUE(Button::POWER == hitTest(60 + 27, 178, true));
 }
 
 static void test_hitTest_lamp_justPastMarginMisses(void)
 {
-    TEST_ASSERT_TRUE(Button::NONE == hitTest(56 + 29, 186, true));
+    TEST_ASSERT_TRUE(Button::NONE == hitTest(60 + 28, 178, true));
 }
 
 static void test_hitTest_office_centresHit(void)
 {
-    TEST_ASSERT_TRUE(Button::POWER == hitTest(84, 200, false));
-    TEST_ASSERT_TRUE(Button::BRIGHT == hitTest(156, 200, false));
+    TEST_ASSERT_TRUE(Button::POWER == hitTest(84, 190, false));
+    TEST_ASSERT_TRUE(Button::BRIGHT == hitTest(156, 190, false));
 }
 
 static void test_hitTest_office_colourNeverReturned(void)
 {
-    // Where the Lamp's COLOUR button would be (184,186) is empty space on
-    // Office; hitTest must not claim it as COLOUR (or anything else).
-    TEST_ASSERT_TRUE(Button::NONE == hitTest(184, 186, false));
+    // The Lamp's COLOUR centre (180,178) now falls inside the Office BRIGHT
+    // button's 27px hit margin, so probe the invariant itself instead of one
+    // point: COLOUR is never returned for the Office layout, anywhere on the
+    // 240x240 display.
+    for (int y = 0; y < 240; y += 2)
+    {
+        for (int x = 0; x < 240; x += 2)
+        {
+            TEST_ASSERT_TRUE(Button::COLOUR != hitTest(x, y, false));
+        }
+    }
 }
 
 static void test_hitTest_farAway_returnsNone(void)
@@ -558,6 +566,28 @@ static void test_ringFraction_kelvinMidRange_isHalf(void)
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.5f, card.ringFraction());
 }
 
+// ---------------------------------------------------------------------------
+// LightCardState: explicit release() (DialUi calls this when the card ring
+// scrolls off the card)
+// ---------------------------------------------------------------------------
+
+static void test_release_dropsEngagementAndPendingSettleSilently(void)
+{
+    LightCardState card(true);
+    card.sync(colourState());
+    card.tapButton(Button::BRIGHT, 1000);
+    card.detents(1, 1000); // arms a settle for 1300
+    TEST_ASSERT_TRUE(card.settling());
+
+    card.release();
+    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
+    TEST_ASSERT_FALSE(card.settling());
+
+    // The dropped settle never fires afterwards.
+    LightsModel::Command cmd = card.tick(1300);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == cmd.type);
+}
+
 int main(int argc, char** argv)
 {
     UNITY_BEGIN();
@@ -611,6 +641,8 @@ int main(int argc, char** argv)
     RUN_TEST(test_sync_duringSettle_adoptsOtherFields);
     RUN_TEST(test_sync_afterSettled_adoptsEngagedFieldToo);
     RUN_TEST(test_sync_duringSettle_reclampsKelvinToNewBounds);
+
+    RUN_TEST(test_release_dropsEngagementAndPendingSettleSilently);
 
     RUN_TEST(test_ringFraction_brightness50_isHalf);
     RUN_TEST(test_ringFraction_kelvinMidRange_isHalf);

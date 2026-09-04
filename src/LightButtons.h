@@ -18,19 +18,25 @@ struct Geom
 
 // Button centre + radius for the given layout. Returns a zero geom
 // (cx=cy=r=0) for COLOUR when !hasColour, or for NONE.
+//
+// Geometry note (2026-09-04): the value ring DialUi draws on these cards
+// occupies radius 108-118 around (120, 120), so every button must fit inside
+// radius 108 or it collides with the ring track. With r=21 the furthest
+// corner is the Lamp's POWER/COLOUR pair at ~83 + 21 = ~104 from the centre,
+// and the Office pair at ~79 + 21 = ~100 — both clear of the track.
 inline Geom geom(Button b, bool hasColour)
 {
-    constexpr int kRadius = 22;
+    constexpr int kRadius = 21;
     if (hasColour)
     {
         switch (b)
         {
         case Button::POWER:
-            return Geom{56, 186, kRadius};
+            return Geom{60, 178, kRadius};
         case Button::BRIGHT:
-            return Geom{120, 206, kRadius};
+            return Geom{120, 196, kRadius};
         case Button::COLOUR:
-            return Geom{184, 186, kRadius};
+            return Geom{180, 178, kRadius};
         default:
             return Geom{0, 0, 0};
         }
@@ -39,9 +45,9 @@ inline Geom geom(Button b, bool hasColour)
     switch (b)
     {
     case Button::POWER:
-        return Geom{84, 200, kRadius};
+        return Geom{84, 190, kRadius};
     case Button::BRIGHT:
-        return Geom{156, 200, kRadius};
+        return Geom{156, 190, kRadius};
     default:
         return Geom{0, 0, 0};
     }

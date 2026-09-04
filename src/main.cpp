@@ -48,10 +48,11 @@ PublishQueueObserver g_publishObserver(netTask, treadmill);
 TimeService timeService;
 
 #if HAS_DIAL_UI
-// netTask.flights() returns a reference to NetTask's own FlightsService
-// member — safe to bind here, before netTask.begin() runs in setup() below
-// (see NetTask::flights() and FlightsService's class comment).
-DialUi dialUi(controller, timeService, netTask.flights());
+// DialUi binds netTask.flights()/netTask.lights() (references to NetTask's
+// own service members — safe here, before netTask.begin() runs in setup()
+// below; see NetTask::flights()/lights() and FlightsService's class comment)
+// and keeps netTask itself only to enqueue outgoing light commands.
+DialUi dialUi(controller, timeService, netTask);
 #endif
 
 // Last network state pushed to the views; the display will read this too.
