@@ -9,6 +9,9 @@
 // Office (!hasColour): POWER / BRIGHT only; COLOUR is never geometry'd or
 // hit-tested for it.
 
+namespace LightButtons
+{
+
 enum class Button : uint8_t { NONE, POWER, BRIGHT, COLOUR };
 
 struct Geom
@@ -94,3 +97,5 @@ inline const char* label(Button b)
         return "";
     }
 }
+
+} // namespace LightButtons

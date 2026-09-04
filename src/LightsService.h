@@ -31,8 +31,9 @@ public:
     static void setTopic(LightsModel::LightKey key, char *buf, size_t cap);
 
     // True if `topic` is either light's state topic. Just keyFromTopic()
-    // with the matched key discarded — a convenience for callers (e.g. the
-    // UI, Task 4) that only need the yes/no answer.
+    // with the matched key discarded, for callers that only need the yes/no
+    // answer — NetTask::onMqttMessage() routing an inbound message here
+    // rather than deriving (and throwing away) a key of its own.
     static bool isStateTopic(const char *topic);
 
     // Net-task only: called from NetTask::onMqttMessage() once `topic` is

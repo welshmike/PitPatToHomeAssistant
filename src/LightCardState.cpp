@@ -161,16 +161,16 @@ void LightCardState::release()
     m_settling = false;
 }
 
-LightsModel::Command LightCardState::tapButton(Button b, uint32_t nowMs)
+LightsModel::Command LightCardState::tapButton(LightButtons::Button b, uint32_t nowMs)
 {
     LightsModel::Command cmd; // Type::NONE
 
     switch (b)
     {
-    case Button::NONE:
+    case LightButtons::Button::NONE:
         break;
 
-    case Button::POWER:
+    case LightButtons::Button::POWER:
         if (!m_view.valid)
         {
             break;
@@ -182,7 +182,7 @@ LightsModel::Command LightCardState::tapButton(Button b, uint32_t nowMs)
         cmd.on = m_view.on;
         break;
 
-    case Button::BRIGHT:
+    case LightButtons::Button::BRIGHT:
     {
         if (!m_view.available)
         {
@@ -206,7 +206,7 @@ LightsModel::Command LightCardState::tapButton(Button b, uint32_t nowMs)
         break;
     }
 
-    case Button::COLOUR:
+    case LightButtons::Button::COLOUR:
     {
         bool colourSupported = m_hasColour && m_view.supportsColor;
         if (!colourSupported || !m_view.available)

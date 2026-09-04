@@ -304,6 +304,8 @@ static void test_formatCommand_none_returnsZeroAndUntouchedIsFine(void)
     size_t n = LightsModel::formatCommand(c, buf, sizeof(buf));
 
     TEST_ASSERT_EQUAL_UINT(0, n);
+    // Nothing written: the caller's buffer is left exactly as it was.
+    TEST_ASSERT_EQUAL_HEX8('\1', buf[0]);
 }
 
 static void test_formatCommand_overflow_returnsZero(void)

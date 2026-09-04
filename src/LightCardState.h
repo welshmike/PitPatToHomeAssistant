@@ -103,7 +103,7 @@ public:
     // silently.
     //
     // Any tap that isn't ignored refreshes the idle timer.
-    LightsModel::Command tapButton(Button b, uint32_t nowMs);
+    LightsModel::Command tapButton(LightButtons::Button b, uint32_t nowMs);
 
     // Adjusts the engaged field by n detents (BRIGHT +-5 clamped 1-100;
     // TEMP +-100 clamped to [minKelvin, maxKelvin]; HUE +-10 wrapping

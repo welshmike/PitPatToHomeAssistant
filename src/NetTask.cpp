@@ -151,9 +151,12 @@ bool NetTask::enqueuePublish(const PublishItem &item)
     {
         return false;
     }
-    // A dropped snapshot is superseded by the next one; a dropped setting echo
-    // would leave HA showing a stale value, so those are worth a short wait.
-    const TickType_t wait = (item.type == PubType::SNAPSHOT) ? 0 : pdMS_TO_TICKS(50);
+    // A dropped snapshot is superseded by the next one, and a dropped light
+    // command is retryable by hand (tap or turn again) — neither is worth
+    // blocking the caller's task for. A dropped setting echo would leave HA
+    // showing a stale value, so those get a short wait.
+    const TickType_t wait =
+        (item.type == PubType::SNAPSHOT || item.type == PubType::LIGHT_CMD) ? 0 : pdMS_TO_TICKS(50);
     if (xQueueSend(m_pubQ, &item, wait) != pdTRUE)
     {
         log_w("Publish queue full — dropped item type %u", (unsigned)item.type);
@@ -314,13 +317,12 @@ void NetTask::onMqttMessage(char *topic, uint8_t *payload, unsigned int length)
     Serial.println();
 
 #if HAS_DIAL_UI
+    // Only the yes/no question here — onStateMessage() derives the key it
+    // needs itself, so there's no second copy of it to keep in step.
+    if (LightsService::isStateTopic(topic))
     {
-        LightsModel::LightKey lightKey;
-        if (LightsModel::keyFromTopic(topic, lightKey))
-        {
-            m_lights.onStateMessage(topic, payload, length);
-            return;
-        }
+        m_lights.onStateMessage(topic, payload, length);
+        return;
     }
 #endif
 

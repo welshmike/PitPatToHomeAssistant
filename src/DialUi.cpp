@@ -438,12 +438,13 @@ void DialUi::handleInput(uint32_t nowMs)
                                                        ? LightsModel::LightKey::LAMP
                                                        : LightsModel::LightKey::OFFICE;
             LightCardState& card = lightCardFor(screen);
-            const Button b = hitTest(ev.tapX, ev.tapY, card.hasColour());
+            const LightButtons::Button b =
+                LightButtons::hitTest(ev.tapX, ev.tapY, card.hasColour());
             // MQTT down ("waiting for HA") means every button is drawn inert
             // (drawLightButtons() gates all three on mqttUp), and there is no
             // path for a command to reach HA anyway — so a hit on one is a
             // no-op with no beep, exactly like a tap on bare background.
-            if (b != Button::NONE && m_netStatus == NetStatus::MQTT_UP)
+            if (b != LightButtons::Button::NONE && m_netStatus == NetStatus::MQTT_UP)
             {
                 // LightCardState silently ignores a tap it can't act on
                 // (no data yet, colour on a light that has none), and
@@ -1568,10 +1569,12 @@ void DialUi::drawLightButtons(LovyanGFX& gfx, const LightCardState& card, bool h
     const LightCardState::Engaged engaged = card.engaged();
     const bool haveData = v.valid && v.available;
 
-    const Button buttons[3] = {Button::POWER, Button::BRIGHT, Button::COLOUR};
-    for (Button b : buttons)
+    const LightButtons::Button buttons[3] = {LightButtons::Button::POWER,
+                                            LightButtons::Button::BRIGHT,
+                                            LightButtons::Button::COLOUR};
+    for (LightButtons::Button b : buttons)
     {
-        if (b == Button::COLOUR && !hasColour)
+        if (b == LightButtons::Button::COLOUR && !hasColour)
         {
             continue;
         }
@@ -1581,7 +1584,7 @@ void DialUi::drawLightButtons(LovyanGFX& gfx, const LightCardState& card, bool h
         bool isActive  = false;
         switch (b)
         {
-        case Button::POWER:
+        case LightButtons::Button::POWER:
             // Power stays live through "no data" (available == false) — a
             // blind switch-on is allowed (LightCardState::tapButton()) — but
             // LightCardState::tapButton(POWER) still refuses when !v.valid
@@ -1591,11 +1594,11 @@ void DialUi::drawLightButtons(LovyanGFX& gfx, const LightCardState& card, bool h
             // available), so this can't light up more than they do.
             isActive = mqttUp && v.valid;
             break;
-        case Button::BRIGHT:
+        case LightButtons::Button::BRIGHT:
             isEngaged = (engaged == LightCardState::Engaged::BRIGHT);
             isActive  = mqttUp && haveData;
             break;
-        case Button::COLOUR:
+        case LightButtons::Button::COLOUR:
         default:
             isEngaged = (engaged == LightCardState::Engaged::TEMP ||
                          engaged == LightCardState::Engaged::HUE);
@@ -1603,7 +1606,7 @@ void DialUi::drawLightButtons(LovyanGFX& gfx, const LightCardState& card, bool h
             break;
         }
 
-        const Geom g = geom(b, hasColour);
+        const LightButtons::Geom g = LightButtons::geom(b, hasColour);
         Col labelCol;
         Col labelBg = Col::BG;
         if (isEngaged)
@@ -1627,7 +1630,7 @@ void DialUi::drawLightButtons(LovyanGFX& gfx, const LightCardState& card, bool h
         // Label inside the circle: below it would fall off the round display
         // for the lowest button (cy + r + 12 = 229 > 226).
         gfx.setTextColor(col(labelCol), col(labelBg));
-        gfx.drawString(label(b), g.cx, g.cy, &fonts::Font2);
+        gfx.drawString(LightButtons::label(b), g.cx, g.cy, &fonts::Font2);
     }
 }
 
