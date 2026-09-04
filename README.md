@@ -56,6 +56,9 @@ Get an app like **nRF Connect** – this app allows you to view Bluetooth connec
 * On the Dial, `config.h` also has `TIMEZONE_TZ` for the Clock card — a POSIX TZ string, defaulting
   to `Europe/London` (`GMT0BST,M3.5.0/1,M10.5.0`). Set it to your own timezone's POSIX TZ string if
   you're not in the UK; it's not needed on the DevKit build.
+* `config.h` also has `HOME_LAT`, `HOME_LON` and `FLIGHTS_RADIUS_MI` for the Flights card — see
+  [Desk mode](#desk-mode) below for what they do and their default values; not needed on the
+  DevKit build.
 > **Note:** `src/config.h` is listed in `.gitignore` and will never be committed. Never commit your real credentials.
 * Connect the ESP32 with a USB cable (you might have to hold **RST** and **BOOT** while plugging it in)
 * Compile and flash the project via **PlatformIO → Upload and Monitor**, or from the CLI:
@@ -183,12 +186,12 @@ blocked while the belt is still active).
 
 ### Desk mode
 
-Away from the belt, the Dial is a small desk gadget: cards sit in a ring — Treadmill, Clock, with
-more (Calendar, Flights, Lights, Music) coming in later sub-projects. While the belt is idle and no
-selector is open, the knob scrolls the ring one card per detent, in either direction, and the side
-button always jumps back to the Treadmill card (still an emergency stop when the belt is actually
-running). Connecting/Starting/Running/Paused screens override whichever card is showing, exactly as
-today, and the ring picks back up on the last card once the belt returns to idle.
+Away from the belt, the Dial is a small desk gadget: cards sit in a ring — Treadmill, Clock,
+Flights, with more (Calendar, Lights, Music) coming in later sub-projects. While the belt is idle
+and no selector is open, the knob scrolls the ring one card per detent, in either direction, and
+the side button always jumps back to the Treadmill card (still an emergency stop when the belt is
+actually running). Connecting/Starting/Running/Paused screens override whichever card is showing,
+exactly as today, and the ring picks back up on the last card once the belt returns to idle.
 
 **The Dial boots into the Clock card**, not Disconnected — there is no idle return to a "home"
 card, so the Treadmill card is reached explicitly via the side button. The Clock is an analogue
@@ -199,6 +202,40 @@ onboard BM8563 RTC — synced from NTP once it succeeds, and read back at boot �
 correctly immediately after a power cycle even with no WiFi available. Before either source has a
 time (a fresh device, no WiFi yet, an unset RTC), the face shows tick marks with no hands and
 `--:--` instead of a time.
+
+**Flights** shows the aircraft overhead, nearest first, up to 6 at a time. Each one gets its
+airline logo (or the operator name as text when there's no logo) at the top, `callsign - type`
+below it (e.g. `BAW117 - A320`), the route large in the middle as IATA airport codes
+(`LHR -> JFK`, or `route unknown` before it's been enriched), then altitude and ground speed
+(`12,000 ft - 450 kt`) and distance, compass bearing and its position in the list
+(`3.1 mi NE - 2/5`). Separators render as a plain `-`/`->` rather than real dashes/arrows, since
+the Dial's built-in bitmap fonts are ASCII-only. Tapping the screen cycles to the next aircraft.
+
+Three keyless public data services are queried directly from the Dial over HTTPS — nothing goes
+through Home Assistant: [adsb.fi](https://adsb.fi) for nearby aircraft, [hexdb.io](https://hexdb.io)
+for route/airport/operator lookups, and [pics.avs.io](https://pics.avs.io) for airline logos. The
+Dial talks to all three with certificate checking disabled (`WiFiClientSecure::setInsecure()`) —
+an accepted trade-off given the data is public and read-only. Logos are cached under `/logos` in
+the Dial's onboard flash (LittleFS) after their first download, so repeat views of a known airline
+don't re-fetch the image. The card only fetches while it's actually showing: aircraft data
+refreshes every 20 seconds while visible, and nothing is fetched while another card or the
+Treadmill screen is on top.
+
+Add three lines to `config.h` to set your location — the example below is central London:
+```cpp
+#define HOME_LAT           51.5074
+#define HOME_LON           -0.1278
+#define FLIGHTS_RADIUS_MI  3
+```
+`HOME_LAT`/`HOME_LON` are decimal degrees (positive north/east, negative south/west) — a postcode
+centroid is close enough. `FLIGHTS_RADIUS_MI` is the search radius in statute miles. If these are
+omitted, `FlightsService.h` falls back to the same central-London default shown above and (on the
+Dial build only) emits a compile-time warning so the fallback doesn't go unnoticed.
+
+If the last fetch failed, a small grey dot appears near the top of the card while the previously
+known aircraft (if any) keep showing; if WiFi itself is down the card shows "waiting for WiFi"
+instead; and when the radius is genuinely quiet (typically overnight) it shows "no aircraft
+nearby" with the configured radius underneath.
 
 ### One device at a time
 
