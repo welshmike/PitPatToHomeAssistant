@@ -187,11 +187,12 @@ blocked while the belt is still active).
 ### Desk mode
 
 Away from the belt, the Dial is a small desk gadget: cards sit in a ring — Treadmill, Clock,
-Flights, with more (Calendar, Lights, Music) coming in later sub-projects. While the belt is idle
-and no selector is open, the knob scrolls the ring one card per detent, in either direction, and
-the side button always jumps back to the Treadmill card (still an emergency stop when the belt is
-actually running). Connecting/Starting/Running/Paused screens override whichever card is showing,
-exactly as today, and the ring picks back up on the last card once the belt returns to idle.
+Flights, Office (light), Lamp (light), with more (Calendar, Music) coming in later sub-projects.
+While the belt is idle and no selector is open, the knob scrolls the ring one card per detent, in
+either direction, and the side button always jumps back to the Treadmill card (still an emergency
+stop when the belt is actually running). Connecting/Starting/Running/Paused screens override
+whichever card is showing, exactly as today, and the ring picks back up on the last card once the
+belt returns to idle.
 
 **The Dial boots into the Clock card**, not Disconnected — there is no idle return to a "home"
 card, so the Treadmill card is reached explicitly via the side button. The Clock is an analogue
@@ -207,9 +208,11 @@ time (a fresh device, no WiFi yet, an unset RTC), the face shows tick marks with
 airline logo (or the operator name as text when there's no logo) at the top, `callsign - type`
 below it (e.g. `BAW117 - A320`), the route large in the middle as IATA airport codes
 (`LHR -> JFK`, or `route unknown` before it's been enriched), then altitude and ground speed
-(`12,000 ft - 450 kt`) and distance, compass bearing and its position in the list
-(`3.1 mi NE - 2/5`). Separators render as a plain `-`/`->` rather than real dashes/arrows, since
-the Dial's built-in bitmap fonts are ASCII-only. Tapping the screen cycles to the next aircraft.
+(`12,000 ft - 450 kt`) and distance and compass bearing (`3.1 mi NE`). Separators render as a
+plain `-`/`->` rather than real dashes/arrows, since the Dial's built-in bitmap fonts are
+ASCII-only. Below that, a row of small page dots — one per aircraft, filled for the one currently
+shown — shows position in the list instead of a text index. Tapping the screen cycles to the next
+aircraft.
 
 Three keyless public data services are queried directly from the Dial over HTTPS — nothing goes
 through Home Assistant: [adsb.fi](https://adsb.fi) for nearby aircraft, [hexdb.io](https://hexdb.io)
@@ -236,6 +239,41 @@ If the last fetch failed, a small grey dot appears near the top of the card whil
 known aircraft (if any) keep showing; if WiFi itself is down the card shows "waiting for WiFi"
 instead; and when the radius is genuinely quiet (typically overnight) it shows "no aircraft
 nearby" with the configured radius underneath.
+
+**Lights** are two cards, **Office** and **Lamp**, each controlling one Home Assistant light over
+MQTT — nothing goes through HA's REST/WebSocket API, only plain topics (see below). Each card
+shows the light's title, its brightness large in the middle when on (`65%`) or `OFF` dimmed when
+off, a caption underneath for colour temperature (`2700K`) or hue (`hue 210`), and a value ring
+around the edge in the same style as the speed ring. Three small on-screen buttons along the
+bottom replace the belt cards' tap/hold gestures:
+
+* **Power** toggles the light on/off immediately — it stays live even before any brightness/colour
+  data has arrived (a "blind" switch-on), as long as at least one state message has been seen
+  since boot
+* **Bright** engages brightness: once engaged (the button fills amber) the knob adjusts it ±5% per
+  detent, clamped 1–100%; tapping **Bright** again releases it, sending immediately whatever change
+  hadn't yet settled
+* **Colour** (Lamp only — Office is colour-temperature-only): first tap engages colour temperature
+  or hue (whichever HA currently reports), second tap switches to the other, third tap releases the
+  same way **Bright**'s second tap does. Knob: ±100 K per detent clamped to the light's own
+  min/max kelvin (2000–6535 K for the Lamp), or ±10° per detent wrapping 0–360° for hue
+
+While a value is engaged, rotating the knob adjusts it instead of scrolling the card ring; a
+command is sent once, 300 ms after the last detent, the same debounce the treadmill's own speed
+control uses — spinning several clicks quickly still only produces one MQTT publish. Engagement
+also releases itself automatically after 10 seconds with no tap or detent, and silently (dropping
+any not-yet-sent change) the moment the card ring scrolls away, the side button homes, or a
+belt/connection screen takes over. With nothing engaged, the knob scrolls the card ring exactly
+like the other desk cards.
+
+The card shows `waiting for HA` (dimmed) while MQTT itself is down, or `no data` (dimmed) once
+MQTT is up but no retained state has arrived yet for that light (or HA reports it `unavailable`) —
+`Power` is still tappable in both of those states once a first message has parsed, everything else
+is inert. Topics: commands go out on `pacekeeper-dial/light/{office|lamp}/set`, retained state
+comes back on `pacekeeper-dial/light/{office|lamp}/state`, and the Dial asks for a fresh snapshot
+on `pacekeeper-dial/light/refresh` once after each MQTT (re)connect. The two Home Assistant
+automations that apply commands and mirror state are documented, with their full YAML, in
+[`doc/HA_LIGHTS_AUTOMATIONS.md`](doc/HA_LIGHTS_AUTOMATIONS.md).
 
 ### One device at a time
 
