@@ -64,8 +64,8 @@ constexpr int32_t kFlightsDistY         = 170; // "3.1 mi NE - 2/5"
 constexpr int32_t kFlightsHintY         = 214; // "tap: next"
 constexpr int32_t kFlightsEmptyCaptionY = 150; // "within N mi" under "no aircraft nearby"
 constexpr int32_t kFlightsStaleDotX     = 120;
-constexpr int32_t kFlightsStaleDotY     = 8;
-constexpr int32_t kFlightsStaleDotR     = 6;
+constexpr int32_t kFlightsStaleDotY     = 14;
+constexpr int32_t kFlightsStaleDotR     = 3;
 
 // Speed ring geometry, centred on the 240x240 canvas.
 constexpr int32_t kRingCx    = 120;
