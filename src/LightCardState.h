@@ -18,9 +18,12 @@
 // field (view()) and arm a 300ms settle deadline; tick() fires exactly one
 // command 300ms after the *last* detent. HA state (sync()) is adopted in
 // full except for the engaged field while a settle is pending, so the
-// user's in-flight edit isn't clobbered by a stale HA echo. A 10s idle
-// timer (reset by any tap or detent) silently releases engagement if the
-// user walks away mid-edit.
+// user's in-flight edit isn't clobbered by a stale HA echo. Once a command
+// has actually gone out, the fields it carried are held against sync() for
+// up to CONFIRM_HOLD_MS, so the optimistic value doesn't snap back to HA's
+// pre-command state in the gap before HA echoes. A 10s idle timer (reset by
+// any tap or detent) silently releases engagement if the user walks away
+// mid-edit.
 class LightCardState
 {
 public:
@@ -28,6 +31,14 @@ public:
 
     static constexpr uint32_t SETTLE_MS = 300;
     static constexpr uint32_t IDLE_RELEASE_MS = 10000;
+    // How long an emitted command's fields survive a contradicting sync()
+    // while waiting for HA to echo the change back.
+    static constexpr uint32_t CONFIRM_HOLD_MS = 1500;
+    // HA quantises colour temperature onto its own mired grid and rounds hue,
+    // so an echo only has to land near the value we sent to count as
+    // confirmation.
+    static constexpr int CONFIRM_KELVIN_TOL = 50;
+    static constexpr float CONFIRM_HUE_TOL = 2.0f;
     static constexpr int BRIGHT_STEP = 5;
     static constexpr int KELVIN_STEP = 100;
     static constexpr int HUE_STEP = 10;
@@ -37,14 +48,30 @@ public:
     // reports supportsColor via sync().
     explicit LightCardState(bool hasColour);
 
-    // Adopts HA's light state into view(). While settling() (a detent-driven
-    // command is pending), keeps only the locally-edited engaged field
-    // (brightnessPct for BRIGHT, kelvin for TEMP, hue+sat for HUE) and
-    // adopts everything else, including `on`. When TEMP is the field being
-    // kept, the retained kelvin is re-clamped into the freshly-adopted
-    // [minKelvin, maxKelvin] in case sync() narrowed the bulb's range.
-    // Otherwise adopts everything.
-    void sync(const LightsModel::LightState& s);
+    // Adopts HA's light state into view(), subject to two overlapping
+    // protections:
+    //
+    // 1. While settling() (a detent-driven command is pending), keeps the
+    //    locally-edited engaged field (brightnessPct for BRIGHT, kelvin for
+    //    TEMP, hue+sat for HUE) and adopts everything else. When TEMP is the
+    //    field being kept, the retained kelvin is re-clamped into the
+    //    freshly-adopted [minKelvin, maxKelvin] in case sync() narrowed the
+    //    bulb's range.
+    //
+    // 2. While awaiting confirmation of a command that has already gone out
+    //    (see CONFIRM_HOLD_MS), keeps that command's own fields: `on` for
+    //    POWER; brightnessPct (and `on`, which BRIGHT/TEMP/HUE commands all
+    //    set) for BRIGHT; kelvin for TEMP; hue+sat for HUE. Without this the
+    //    next sync() -- DialUi re-syncs every 250 ms -- would snap the view
+    //    back to HA's pre-command state until HA's echo arrives. The hold
+    //    ends early the moment `s` carries the value that was sent (exactly
+    //    for on/pct, within CONFIRM_KELVIN_TOL / CONFIRM_HUE_TOL for
+    //    kelvin/hue), and otherwise at the CONFIRM_HOLD_MS deadline, after
+    //    which HA wins again -- so a change made elsewhere (wall switch, HA
+    //    UI) still lands, just a beat later.
+    //
+    // Everything not protected by either is adopted as-is.
+    void sync(const LightsModel::LightState& s, uint32_t nowMs);
 
     // Handles a tap on button b (from LightButtons::hitTest()).
     //
@@ -58,18 +85,22 @@ public:
     // POWER command wins), and returns a POWER command immediately.
     //
     // BRIGHT: ignored unless view().available; toggles engagement between
-    // NONE and BRIGHT. Engaging never returns a command (detents + tick()
-    // produce the BRIGHT command). Releasing (re-tap while engaged) flushes
-    // a pending settle: if settling(), returns the same command tick()
-    // would have emitted (via buildSettleCommand()) instead of dropping it;
-    // otherwise returns NONE.
+    // NONE and BRIGHT (and takes engagement over from TEMP/HUE). Any tap
+    // that ends the current engagement -- releasing BRIGHT, or taking over
+    // from TEMP/HUE -- flushes a pending settle: if settling(), returns the
+    // same command tick() would have emitted for the *old* field (via
+    // buildSettleCommand()) instead of dropping it; otherwise returns NONE.
+    // Engaging from NONE never returns a command (detents + tick() produce
+    // the BRIGHT command).
     //
     // COLOUR: ignored unless hasColour && view().supportsColor &&
     // view().available. Cycles NONE -> (TEMP if view().mode != HS, else
     // HUE) -> HUE -> NONE (third tap releases). Entering HUE with no usable
-    // saturation from HA (sat <= 0) seeds it to 100. Engaging (first/second
-    // tap) never returns a command. Releasing (third tap, from HUE) flushes
-    // a pending settle the same way BRIGHT's release does.
+    // saturation from HA (sat <= 0) seeds it to 100. Every tap that leaves
+    // an engaged control -- the TEMP -> HUE switch as well as the third-tap
+    // release -- flushes a pending settle for the old field the same way
+    // BRIGHT's release does; only leaving the card (release()) drops one
+    // silently.
     //
     // Any tap that isn't ignored refreshes the idle timer.
     LightsModel::Command tapButton(Button b, uint32_t nowMs);
@@ -77,7 +108,8 @@ public:
     // Adjusts the engaged field by n detents (BRIGHT +-5 clamped 1-100;
     // TEMP +-100 clamped to [minKelvin, maxKelvin]; HUE +-10 wrapping
     // 0-360), sets view().on = true, and (re)arms the 300ms settle deadline
-    // from nowMs. Refreshes the idle timer. No-op while !engaged().
+    // from nowMs. Refreshes the idle timer. No-op while !engaged(), or when
+    // n == 0 (no detent, nothing to settle).
     void detents(int n, uint32_t nowMs);
 
     // Polls the settle and idle timers. If a settle is due (>=300ms since
@@ -115,10 +147,22 @@ public:
 private:
     LightsModel::Command buildSettleCommand() const;
 
+    // Starts (or replaces) the awaiting-confirmation hold for a command that
+    // has just been handed to the caller. No-op for a NONE command.
+    void beginConfirmHold(const LightsModel::Command& cmd, uint32_t nowMs);
+
+    // True if `s` carries the values m_confirmHold sent, within the per-field
+    // tolerance. False when no hold is active.
+    bool confirmedBy(const LightsModel::LightState& s) const;
+
     bool m_hasColour;
     LightsModel::LightState m_view;
     Engaged m_engaged = Engaged::NONE;
     bool m_settling = false;
     uint32_t m_lastInput = 0;  // last tap/detent while engaged; drives the idle timer
     uint32_t m_lastDetent = 0; // last detent; drives the settle deadline
+    // The command whose echo we're waiting for (type NONE == no hold), and
+    // when it went out.
+    LightsModel::Command m_confirmHold;
+    uint32_t m_confirmHoldStart = 0;
 };

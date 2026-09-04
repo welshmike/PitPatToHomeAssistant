@@ -675,8 +675,8 @@ void DialUi::tickLights(uint32_t nowMs)
         m_lastLightsSnapMs = nowMs;
         const LightsModel::LightsSnapshot snap = m_lights.snapshot();
         m_haveLightsSnap = true;
-        m_lightCards[static_cast<uint8_t>(LightsModel::LightKey::OFFICE)].sync(snap.office);
-        m_lightCards[static_cast<uint8_t>(LightsModel::LightKey::LAMP)].sync(snap.lamp);
+        m_lightCards[static_cast<uint8_t>(LightsModel::LightKey::OFFICE)].sync(snap.office, nowMs);
+        m_lightCards[static_cast<uint8_t>(LightsModel::LightKey::LAMP)].sync(snap.lamp, nowMs);
     }
 
     // Only the visible card can be engaged (handleInput() releases a card as

@@ -44,35 +44,114 @@ LightCardState::LightCardState(bool hasColour) : m_hasColour(hasColour)
 {
 }
 
-void LightCardState::sync(const LightsModel::LightState& s)
+bool LightCardState::confirmedBy(const LightsModel::LightState& s) const
 {
-    if (!m_settling)
+    switch (m_confirmHold.type)
+    {
+    case LightsModel::Command::Type::POWER:
+        return s.on == m_confirmHold.on;
+    case LightsModel::Command::Type::BRIGHT:
+        return s.brightnessPct == m_confirmHold.pct;
+    case LightsModel::Command::Type::TEMP:
+    {
+        const int d = static_cast<int>(s.kelvin) - static_cast<int>(m_confirmHold.kelvin);
+        return (d < 0 ? -d : d) <= CONFIRM_KELVIN_TOL;
+    }
+    case LightsModel::Command::Type::HUE:
+    {
+        float d = fabsf(s.hue - m_confirmHold.hue);
+        if (d > 180.0f)
+        {
+            d = 360.0f - d; // shortest way round the circle: 359 vs 1 is 2 degrees
+        }
+        return d <= CONFIRM_HUE_TOL;
+    }
+    case LightsModel::Command::Type::NONE:
+    default:
+        return false;
+    }
+}
+
+void LightCardState::beginConfirmHold(const LightsModel::Command& cmd, uint32_t nowMs)
+{
+    if (cmd.type == LightsModel::Command::Type::NONE)
+    {
+        return;
+    }
+    // One hold at a time: a newer command supersedes whatever was in flight.
+    m_confirmHold = cmd;
+    m_confirmHoldStart = nowMs;
+}
+
+void LightCardState::sync(const LightsModel::LightState& s, uint32_t nowMs)
+{
+    // Drop the awaiting-confirmation hold as soon as HA echoes what was sent,
+    // or once the deadline passes (HA never echoed -- command lost, or the
+    // light refused it -- so stop lying about it).
+    if (m_confirmHold.type != LightsModel::Command::Type::NONE &&
+        (confirmedBy(s) || elapsedAtLeast(nowMs, m_confirmHoldStart, CONFIRM_HOLD_MS)))
+    {
+        m_confirmHold.type = LightsModel::Command::Type::NONE;
+    }
+
+    if (!m_settling && m_confirmHold.type == LightsModel::Command::Type::NONE)
     {
         m_view = s;
         return;
     }
 
-    // Settling: adopt everything from HA except the field the user is
-    // currently editing, so the pending edit survives a stale HA echo.
     LightsModel::LightState merged = s;
-    switch (m_engaged)
+
+    // Awaiting confirmation: keep the fields the in-flight command carried.
+    // BRIGHT/TEMP/HUE commands all set state:ON, so `on` is one of them.
+    switch (m_confirmHold.type)
     {
-    case Engaged::BRIGHT:
-        merged.brightnessPct = m_view.brightnessPct;
+    case LightsModel::Command::Type::POWER:
+        merged.on = m_confirmHold.on;
         break;
-    case Engaged::TEMP:
-        // Re-clamp into the freshly-adopted [minKelvin, maxKelvin] in case
-        // sync() narrowed the bulb's range out from under the pending edit.
+    case LightsModel::Command::Type::BRIGHT:
+        merged.on = m_confirmHold.on;
+        merged.brightnessPct = m_confirmHold.pct;
+        break;
+    case LightsModel::Command::Type::TEMP:
+        merged.on = m_confirmHold.on;
         merged.kelvin = static_cast<uint16_t>(
-            clampInt(m_view.kelvin, merged.minKelvin, merged.maxKelvin));
+            clampInt(m_confirmHold.kelvin, merged.minKelvin, merged.maxKelvin));
         break;
-    case Engaged::HUE:
-        merged.hue = m_view.hue;
-        merged.sat = m_view.sat;
+    case LightsModel::Command::Type::HUE:
+        merged.on = m_confirmHold.on;
+        merged.hue = m_confirmHold.hue;
+        merged.sat = m_confirmHold.sat;
         break;
-    case Engaged::NONE:
+    case LightsModel::Command::Type::NONE:
         break;
     }
+
+    // Settling: keep the field the user is editing right now, so the pending
+    // edit survives a stale HA echo. This wins over the hold above -- the
+    // newer local value is the one about to be sent.
+    if (m_settling)
+    {
+        switch (m_engaged)
+        {
+        case Engaged::BRIGHT:
+            merged.brightnessPct = m_view.brightnessPct;
+            break;
+        case Engaged::TEMP:
+            // Re-clamp into the freshly-adopted [minKelvin, maxKelvin] in case
+            // sync() narrowed the bulb's range out from under the pending edit.
+            merged.kelvin = static_cast<uint16_t>(
+                clampInt(m_view.kelvin, merged.minKelvin, merged.maxKelvin));
+            break;
+        case Engaged::HUE:
+            merged.hue = m_view.hue;
+            merged.sat = m_view.sat;
+            break;
+        case Engaged::NONE:
+            break;
+        }
+    }
+
     m_view = merged;
 }
 
@@ -104,25 +183,28 @@ LightsModel::Command LightCardState::tapButton(Button b, uint32_t nowMs)
         break;
 
     case Button::BRIGHT:
+    {
         if (!m_view.available)
         {
             break;
         }
         m_lastInput = nowMs;
-        if (m_engaged == Engaged::BRIGHT)
+        // Leaving a control -- releasing BRIGHT, or taking engagement over
+        // from TEMP/HUE -- flushes that control's pending settle rather than
+        // dropping it. m_settling is only ever set while engaged, so this
+        // always describes the *old* field.
+        if (m_settling)
         {
-            if (m_settling)
-            {
-                cmd = buildSettleCommand();
-            }
-            release();
+            cmd = buildSettleCommand();
         }
-        else
+        const bool wasBright = (m_engaged == Engaged::BRIGHT);
+        release();
+        if (!wasBright)
         {
-            release();
             m_engaged = Engaged::BRIGHT;
         }
         break;
+    }
 
     case Button::COLOUR:
     {
@@ -132,22 +214,20 @@ LightsModel::Command LightCardState::tapButton(Button b, uint32_t nowMs)
             break;
         }
         m_lastInput = nowMs;
-        if (m_engaged == Engaged::TEMP)
+        // TEMP -> HUE flushes TEMP's pending settle exactly as the third-tap
+        // release flushes HUE's; only release() drops one silently.
+        if (m_settling)
         {
-            release();
+            cmd = buildSettleCommand();
+        }
+        const Engaged before = m_engaged;
+        release();
+        if (before == Engaged::TEMP)
+        {
             m_engaged = Engaged::HUE;
         }
-        else if (m_engaged == Engaged::HUE)
+        else if (before != Engaged::HUE) // HUE: third tap, stay released
         {
-            if (m_settling)
-            {
-                cmd = buildSettleCommand();
-            }
-            release();
-        }
-        else
-        {
-            release();
             m_engaged = (m_view.mode != LightsModel::ColorMode::HS) ? Engaged::TEMP : Engaged::HUE;
         }
         if (m_engaged == Engaged::HUE && m_view.sat <= 0.0f)
@@ -158,12 +238,15 @@ LightsModel::Command LightCardState::tapButton(Button b, uint32_t nowMs)
     }
     }
 
+    beginConfirmHold(cmd, nowMs);
     return cmd;
 }
 
 void LightCardState::detents(int n, uint32_t nowMs)
 {
-    if (m_engaged == Engaged::NONE)
+    // n == 0 is no movement at all: nothing to change, and nothing worth
+    // arming a settle (or an idle refresh) for.
+    if (m_engaged == Engaged::NONE || n == 0)
     {
         return;
     }
@@ -243,6 +326,7 @@ LightsModel::Command LightCardState::tick(uint32_t nowMs)
     {
         cmd = buildSettleCommand();
         m_settling = false;
+        beginConfirmHold(cmd, nowMs);
         return cmd;
     }
 
