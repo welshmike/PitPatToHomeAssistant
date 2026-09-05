@@ -275,3 +275,6 @@ city name, HA-truncated to 12 chars, `""` if unknown), and the Flights card draw
 `Font2` line (`"London -> New York"`, or just the one known city, or nothing) beneath the IATA route
 line, parsed by the same `FlightsModel::parseDialFlights` (fields `fromCity`/`toCity`; absent keys —
 older payloads — parse as empty, same as any other missing string field).
+
+
+**Amended 2026-09-05 (airline-only filter):** `input_boolean.pacekeeper_dial_airline_flights_only` (default on) is read by the publish automation; when on, aircraft with no airline IATA code are omitted from the payload, and toggling it republishes at once. Radius reduced to 4000 m the same day. Purely HA-side; no firmware change.

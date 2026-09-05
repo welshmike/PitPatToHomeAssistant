@@ -219,6 +219,10 @@ aircraft leaves range — unless you've scrolled or pressed the side button in t
 cancels the automatic return. This is the `Flights Auto-show` switch in Home Assistant (default
 on); turn it off there to keep Flights purely knob-scrolled, like any other card.
 
+A second Home Assistant toggle, `PaceKeeper Dial airline flights only` (default on), hides
+aircraft with no airline code — private planes, flying schools, most helicopters — so the card
+only shows scheduled flights. Turn it off in HA to see everything within the radius.
+
 All of the actual flight-tracking work — proximity, distance/bearing, route and operator lookup,
 airline logos — now happens in **Home Assistant**, not on the Dial. The Dial only subscribes to
 one retained MQTT topic and renders whatever Home Assistant last published; the only network call

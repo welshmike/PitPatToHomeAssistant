@@ -85,6 +85,18 @@ Flightradar24 integration's `flightradar24_entry` event as the original spec dra
 also means airlines already overhead at HA startup get their logos fetched immediately, not only
 newly-arriving ones.
 
+### `input_boolean.pacekeeper_dial_airline_flights_only` helper (added 2026-09-05)
+
+A toggle for the publish automation: when **on** (the default as configured), aircraft with no
+airline IATA code — private, general-aviation and most helicopters — are left out of the payload,
+so the Dial only shows airline flights. Turn it **off** to see everything the integration reports.
+Toggling it republishes immediately (it is a trigger of the publish automation), so the Dial
+follows within a second.
+
+**Via the UI:** Settings → Devices & Services → Helpers → Add Helper → Toggle, name it
+`PaceKeeper Dial airline flights only` (entity ID `input_boolean.pacekeeper_dial_airline_flights_only`),
+icon `mdi:airplane-check`. Add it to any dashboard as a normal toggle.
+
 ## MQTT contract
 
 | Direction | Topic | Payload | Notes |
@@ -133,12 +145,17 @@ alias: 'PaceKeeper Dial: flights publish'
 description: Publishes the aircraft currently over the house (from the Flightradar24 integration)
   as one retained compact JSON on pacekeeper-dial/flights/state for the PaceKeeper Dial's
   Flights card. Nearest first, max 6. Distance (statute miles) and bearing are computed here
-  so the Dial does no maths.
+  so the Dial does no maths. When input_boolean.pacekeeper_dial_airline_flights_only is on,
+  aircraft without an airline IATA code (private/GA) are left out.
 triggers:
   - trigger: state
     entity_id: sensor.flightradar24_current_in_area
     id: changed
     note: 'No to/from: attribute-only updates (positions) fire too.'
+  - trigger: state
+    entity_id: input_boolean.pacekeeper_dial_airline_flights_only
+    id: filter
+    note: Republish immediately when the filter is toggled.
   - trigger: homeassistant
     event: start
     id: start
@@ -157,11 +174,13 @@ max: 3
 variables:
   lat0: 51.566645
   lon0: 0.005586
+  airline_only: >-
+    {{ is_state('input_boolean.pacekeeper_dial_airline_flights_only', 'on') }}
   flights: >-
     {{ state_attr('sensor.flightradar24_current_in_area', 'flights') | default([], true) }}
   payload: >-
     {% set ns = namespace(items=[]) %}{% for f in flights if f.latitude is number and f.longitude
-    is number %}{% set la0 = lat0 * pi / 180 %}{% set la1 = f.latitude * pi / 180 %}{% set
+    is number and (not airline_only or (f.airline_iata or '') | length == 2) %}{% set la0 = lat0 * pi / 180 %}{% set la1 = f.latitude * pi / 180 %}{% set
     dlat = la1 - la0 %}{% set dlon = (f.longitude - lon0) * pi / 180 %}{% set a = sin(dlat
     / 2) ** 2 + cos(la0) * cos(la1) * sin(dlon / 2) ** 2 %}{% set dist_mi = 3958.8 * 2 * atan2(sqrt(a),
     sqrt(1 - a)) %}{% set y = sin(dlon) * cos(la1) %}{% set x = cos(la0) * sin(la1) - sin(la0)
@@ -243,11 +262,13 @@ originally sketched) means an airline already overhead when HA starts gets its l
 the newest ~80 codes, comfortably inside the helper's 255-character maximum, without ever needing
 to prune by hand.
 
-## Changing radius, position or scan interval
+## Changing radius, position, scan interval or the airline-only filter
 
-All three now live in the Flightradar24 integration's own options, not in the Dial's `config.h`:
-Settings → Devices & Services → Flightradar24 → **Configure**. Nothing on the Dial or in either
-automation needs to change — both read whatever the integration currently reports.
+Radius, position and scan interval live in the Flightradar24 integration's own options, not in the
+Dial's `config.h`: Settings → Devices & Services → Flightradar24 → **Configure** (radius set to
+4000 m on 2026-09-05, down from 5000 m, to cut the number of light aircraft). The airline-only
+filter is the `input_boolean.pacekeeper_dial_airline_flights_only` toggle described above. Nothing
+on the Dial or in either automation needs to change — both read whatever HA currently reports.
 
 ## Adding a dashboard card
 
