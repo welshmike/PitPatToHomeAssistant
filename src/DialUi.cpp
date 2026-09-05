@@ -1146,7 +1146,13 @@ void DialUi::render(uint32_t nowMs)
                     dbgSprite = tmp.createSprite(120, 48) ? 1 : 0;
                     if (dbgSprite == 1)
                     {
+                        // Airline logos from pics.avs.io are transparent PNGs
+                        // drawn for light backgrounds (dark marks, thin
+                        // strokes), so they vanish or look ragged straight on
+                        // black. Paint them on a white rounded badge instead;
+                        // the badge corners stay black to blend with the card.
                         tmp.fillSprite(TFT_BLACK);
+                        tmp.fillRoundRect(0, 0, 120, 48, 8, TFT_WHITE);
                         pngOk = tmp.drawPng(png, fsz, 0, 0);
                         if (pngOk) tmp.pushSprite(&M5Dial.Display, kFlightsLogoX, kFlightsLogoY);
                         // LovyanGFX keeps its ~45 KB pngle workspace allocated
