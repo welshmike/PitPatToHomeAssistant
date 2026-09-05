@@ -1153,10 +1153,10 @@ void DialUi::render(uint32_t nowMs)
                         // the badge corners stay black to blend with the card.
                         tmp.fillSprite(TFT_BLACK);
                         tmp.fillRoundRect(0, 0, 120, 48, 8, TFT_WHITE);
-                        // Scale the 120x48 PNG to 85 % (102x41) and centre it so
-                        // the badge keeps ~9 px of white either side and ~3 px
+                        // Scale the 120x48 PNG to 90 % (108x43) and centre it so
+                        // the badge keeps ~6 px of white either side and ~2 px
                         // top/bottom instead of the artwork touching the edges.
-                        pngOk = tmp.drawPng(png, fsz, 9, 3, 102, 41, 0, 0, 0.85f, 0.85f);
+                        pngOk = tmp.drawPng(png, fsz, 6, 2, 108, 43, 0, 0, 0.9f, 0.9f);
                         if (pngOk) tmp.pushSprite(&M5Dial.Display, kFlightsLogoX, kFlightsLogoY);
                         // LovyanGFX keeps its ~45 KB pngle workspace allocated
                         // for reuse; release it or every decode leaks it.
