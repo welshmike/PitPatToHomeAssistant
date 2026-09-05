@@ -30,6 +30,9 @@
 // to exactly the line below if this is omitted, so existing config.h files
 // keep building — only add it if HA is not on the MQTT broker's host or
 // does not use the default 8123 port.
+// Host should be an IP literal, not a hostname: WiFiClient::connect()'s DNS
+// lookup (if any) is not bounded by kLogoTimeoutMs, so a hostname that fails
+// to resolve promptly can stall well past the connect timeout.
 #define FLIGHTS_LOGO_BASE_URL "http://" MQTT_SERVER ":8123/local"
 
 

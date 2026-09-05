@@ -375,7 +375,7 @@ void FlightsService::tickLogo(uint32_t nowMs)
         log_w("FlightsService: logo %s download failed (status=%d)", wanted.v, status);
         return; // transient — retried next tick, not marked missing
     }
-    if (strncmp(m_lastContentType, "image/png", 9) != 0)
+    if (strncasecmp(m_lastContentType, "image/png", 9) != 0)
     {
         log_w("FlightsService: logo %s unexpected content-type '%s', discarding", wanted.v, m_lastContentType);
         return;
@@ -486,7 +486,13 @@ int FlightsService::fetchLogo(const char *iata, size_t &len)
     uint16_t port = 80;
     if (!splitBaseUrl(FLIGHTS_LOGO_BASE_URL, host, sizeof(host), port, basePath, sizeof(basePath)))
     {
-        log_e("FlightsService: FLIGHTS_LOGO_BASE_URL '%s' is not a plain http:// URL", FLIGHTS_LOGO_BASE_URL);
+        // Malformed macro is a boot-time config mistake, not a transient
+        // condition — log it once rather than on every tickLogo() retry.
+        if (!m_baseUrlLogged)
+        {
+            m_baseUrlLogged = true;
+            log_e("FlightsService: FLIGHTS_LOGO_BASE_URL '%s' is not a plain http:// URL", FLIGHTS_LOGO_BASE_URL);
+        }
         return -1;
     }
 
@@ -612,6 +618,15 @@ int FlightsService::fetchLogo(const char *iata, size_t &len)
         }
     }
     client.stop();
+
+    if (contentLength > 0 && total < (size_t)contentLength)
+    {
+        // Connection closed early, or the 3 s deadline hit, before the
+        // full advertised body arrived: treat as transient (retried by
+        // tickLogo()) rather than caching a partial PNG.
+        log_w("FlightsService: logo %s body truncated (%u/%ld bytes)", iata, (unsigned)total, contentLength);
+        return -1;
+    }
 
     if (contentLength < 0 && total >= kHttpBufCap)
     {

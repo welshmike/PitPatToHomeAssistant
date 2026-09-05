@@ -173,6 +173,13 @@ private:
     // visible in the log without repeating every tick.
     bool m_logoStackLogged = false;
 
+    // One-shot latch for the "FLIGHTS_LOGO_BASE_URL is not a plain http://
+    // URL" log_e in fetchLogo(): a malformed macro is a boot-time config
+    // mistake, not a transient condition, so it's logged once rather than
+    // on every tickLogo() retry (every kLogoRetryMs, for as long as a logo
+    // is wanted).
+    bool m_baseUrlLogged = false;
+
     // Net task only: rate limit for the transient-failure logo retry path.
     // tickLogo() runs on every net-task pass (~10 ms), so without this a
     // logo HA can't serve for a non-404 reason — a 500, a wrong
@@ -182,6 +189,9 @@ private:
     // path; a change of wanted airline resets it, so cycling through
     // aircraft still fetches immediately. Takes over from the old 1.5 s
     // inter-request spacing guard, which existed for TLS/radio sharing.
+    // The gate is keyed on m_lastLogoAttemptIata alone — it only suppresses
+    // repeat attempts for the *same* IATA within the window; it has no
+    // memory of any other airline's attempt history.
     static constexpr uint32_t kLogoRetryMs = 5000;
     uint32_t m_lastLogoAttemptMs      = 0;
     bool     m_logoAttempted          = false;
