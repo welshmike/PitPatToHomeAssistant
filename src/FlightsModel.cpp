@@ -81,6 +81,67 @@ int readIntRounded(JsonVariant v)
 
 } // namespace
 
+bool parseDialFlights(const char* json, size_t len, FlightsSnapshot& out)
+{
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, json, len);
+    if (err)
+    {
+        return false;
+    }
+
+    JsonVariant acVar = doc["ac"];
+    if (!acVar.is<JsonArray>())
+    {
+        return false;
+    }
+    JsonArray arr = acVar.as<JsonArray>();
+
+    size_t i = 0;
+    for (JsonObject obj : arr)
+    {
+        if (i >= 6)
+        {
+            break;
+        }
+
+        Aircraft& a = out.ac[i];
+        memset(&a, 0, sizeof(a));
+
+        trimCopy(obj["cs"] | "", a.callsign, sizeof(a.callsign));
+        trimCopy(obj["fl"] | "", a.flightNumber, sizeof(a.flightNumber));
+        safeCopy(obj["ty"] | "", a.type, sizeof(a.type));
+        safeCopy(obj["al"] | "", a.airlineIata, sizeof(a.airlineIata));
+        safeCopy(obj["an"] | "", a.operatorName, sizeof(a.operatorName));
+        safeCopy(obj["fr"] | "", a.fromIata, sizeof(a.fromIata));
+        safeCopy(obj["to"] | "", a.toIata, sizeof(a.toIata));
+
+        a.altFt = readIntRounded(obj["alt"]);
+        a.gsKt = readIntRounded(obj["gs"]);
+        a.distMi = obj["di"] | 0.0f;
+
+        int bearing = static_cast<int>(lround(obj["br"] | 0.0)) % 360;
+        if (bearing < 0)
+        {
+            bearing += 360;
+        }
+        a.bearing = bearing;
+
+        a.onGround = obj["gnd"].as<bool>();
+
+        // hex/lat/lon/track: no ADS-B position data reaches the Dial any
+        // more, HA does that math. Left zeroed by the memset above.
+        a.routeKnown = true;
+        a.operatorKnown = true;
+
+        i++;
+    }
+
+    out.count = static_cast<uint8_t>(i);
+    return true;
+}
+
+// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
 bool parseAdsbFi(const char* json, size_t len, float homeLat, float homeLon, FlightsSnapshot& out)
 {
     JsonDocument doc;
@@ -194,6 +255,7 @@ bool parseAdsbFi(const char* json, size_t len, float homeLat, float homeLon, Fli
     return true;
 }
 
+// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
 bool parseHexdbRoute(const char* json, size_t len, char from[5], char to[5])
 {
     JsonDocument doc;
@@ -229,6 +291,7 @@ bool parseHexdbRoute(const char* json, size_t len, char from[5], char to[5])
     return true;
 }
 
+// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
 bool parseHexdbAirport(const char* json, size_t len, char iata[5])
 {
     JsonDocument doc;
@@ -248,6 +311,7 @@ bool parseHexdbAirport(const char* json, size_t len, char iata[5])
     return true;
 }
 
+// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
 bool parseHexdbAircraft(const char* json, size_t len, char operatorIcao[4], char operatorName[32])
 {
     JsonDocument doc;

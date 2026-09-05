@@ -31,6 +31,7 @@ float normaliseDeg(float deg)
 }
 } // namespace
 
+// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
 float distanceMiles(float lat1, float lon1, float lat2, float lon2)
 {
     const float phi1 = toRadians(lat1);
@@ -47,6 +48,7 @@ float distanceMiles(float lat1, float lon1, float lat2, float lon2)
     return kEarthRadiusMiles * c;
 }
 
+// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
 float bearingDeg(float lat1, float lon1, float lat2, float lon2)
 {
     const float phi1 = toRadians(lat1);

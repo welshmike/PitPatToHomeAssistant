@@ -7,6 +7,7 @@
 namespace AirlineCodes
 {
 
+// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
 // Looks up the IATA airline code for an ICAO airline designator. `icao` may
 // be a bare 3-letter ICAO code or a full flight callsign (e.g. "BAW117") —
 // only the first three letters are used. Matching is case-insensitive.

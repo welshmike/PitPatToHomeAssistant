@@ -6,10 +6,7 @@ directory, embedding each as a C++ raw string literal. Run from the repo root:
 import pathlib
 
 FIXTURES = [
-    ("kFixtureAdsbFiLondon", "adsbfi_point_london_2026-09-04.json"),
-    ("kFixtureHexdbRouteVIR359", "hexdb_route_VIR359.json"),
-    ("kFixtureHexdbAirportEGLL", "hexdb_airport_EGLL.json"),
-    ("kFixtureHexdbAircraft407131", "hexdb_aircraft_407131.json"),
+    ("kFixtureDialFlights", "dial_flights.json"),
     ("kFixtureHaLightOffice", "ha_light_office_2026-09-04.json"),
     ("kFixtureHaLightLamp", "ha_light_lamp_2026-09-04.json"),
 ]

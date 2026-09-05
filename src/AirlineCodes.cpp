@@ -90,6 +90,7 @@ constexpr size_t kTableSize = sizeof(kTable) / sizeof(kTable[0]);
 
 } // namespace
 
+// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
 const char* iataFromIcao(const char* icao)
 {
     if (icao == nullptr)

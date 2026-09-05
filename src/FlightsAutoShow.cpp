@@ -1,0 +1,48 @@
+#include "FlightsAutoShow.h"
+
+void FlightsAutoShow::setEnabled(bool enabled)
+{
+    m_enabled = enabled;
+    // Forget any in-progress episode; re-enabling later needs its own fresh
+    // 0->>0 edge (tracked below via m_prevCount, which keeps updating even
+    // while disabled).
+    m_autoShown = false;
+}
+
+FlightsAutoShow::Action FlightsAutoShow::update(uint8_t aircraftCount, CardId currentCard, bool beltIdle)
+{
+    if (!m_enabled)
+    {
+        m_prevCount = aircraftCount;
+        return Action::NONE;
+    }
+
+    if (m_autoShown && currentCard != CardId::CLOCK && currentCard != CardId::FLIGHTS)
+    {
+        // The user left by some other means (e.g. the belt started and the
+        // screen jumped to Treadmill): the episode is over, silently.
+        m_autoShown = false;
+    }
+
+    Action action = Action::NONE;
+
+    if (!m_autoShown && beltIdle && currentCard == CardId::CLOCK && m_prevCount == 0 && aircraftCount > 0)
+    {
+        m_autoShown = true;
+        action = Action::SHOW_FLIGHTS;
+    }
+    else if (m_autoShown && aircraftCount == 0 && currentCard == CardId::FLIGHTS)
+    {
+        m_autoShown = false;
+        action = Action::RETURN_TO_CLOCK;
+    }
+
+    m_prevCount = aircraftCount;
+    return action;
+}
+
+void FlightsAutoShow::noteManualNavigation()
+{
+    // User took over; don't auto-return later.
+    m_autoShown = false;
+}

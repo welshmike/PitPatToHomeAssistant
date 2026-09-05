@@ -6,11 +6,13 @@
 namespace Geo
 {
 
+// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
 // Great-circle distance between two WGS-84 points, in statute miles
 // (haversine formula, Earth radius 3958.8 mi). Returns 0 for identical
 // points.
 float distanceMiles(float lat1, float lon1, float lat2, float lon2);
 
+// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
 // Initial bearing from point 1 to point 2, in degrees clockwise from true
 // north, normalised to [0, 360).
 float bearingDeg(float lat1, float lon1, float lat2, float lon2);
