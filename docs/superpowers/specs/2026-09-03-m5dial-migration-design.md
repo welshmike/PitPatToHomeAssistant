@@ -269,3 +269,9 @@ business now, not a Dial-side config value to name). Verified live 2026-09-05: p
 `{"ts":1788596952,"ac":[{"cs":"BAW84NT","fl":"BA847","ty":"A320","al":"BA","an":"British Airways","fr":"WAW","to":"LHR","alt":5850,"gs":269,"di":0.8,"br":246,"gnd":0}]}`
 (167 B for one aircraft); logos served at `http://<HA>:8123/local/logos/VS.png` (3501 B) and
 `.../2L.png` (4475 B).
+
+**Amended 2026-09-05 (city names):** the publish automation now also sends `fc`/`tc` (origin/destination
+city name, HA-truncated to 12 chars, `""` if unknown), and the Flights card draws them as a small
+`Font2` line (`"London -> New York"`, or just the one known city, or nothing) beneath the IATA route
+line, parsed by the same `FlightsModel::parseDialFlights` (fields `fromCity`/`toCity`; absent keys —
+older payloads — parse as empty, same as any other missing string field).

@@ -25,6 +25,7 @@ struct Aircraft
     float distMi;             // great-circle distance from home, statute miles
     int bearing;               // bearing from home to aircraft, degrees [0,359]
     char fromIata[5], toIata[5]; // route endpoints (IATA once enriched); empty until known
+    char fromCity[13], toCity[13]; // route endpoint city names, HA-truncated to 12 chars; empty until known
     char airlineIata[3];          // 2-letter IATA airline code for the logo; empty until known
     char operatorName[32];         // operator/airline display name; empty until known
     bool routeKnown, operatorKnown; // whether enrichment has filled in the above
@@ -44,12 +45,15 @@ struct FlightsSnapshot
 
 // Parses HA's retained `pacekeeper-dial/flights/state` payload (spec 4.11):
 // `{"ts":<epoch s>,"ac":[{"cs":"BAW123","fl":"BA123","ty":"A320","al":"BA",
-// "an":"British Airways","fr":"LHR","to":"JFK","alt":12000,"gs":450,
-// "di":2.3,"br":135,"gnd":0}, ...]}`, nearest first, already computed by HA.
+// "an":"British Airways","fr":"LHR","to":"JFK","fc":"London","tc":"New York",
+// "alt":12000,"gs":450,"di":2.3,"br":135,"gnd":0}, ...]}`, nearest first,
+// already computed by HA.
 // Per aircraft: callsign<-cs, type<-ty, airlineIata<-al, operatorName<-an,
-// fromIata<-fr, toIata<-to, altFt<-alt, gsKt<-gs, distMi<-di, bearing<-br
-// (normalised to [0,359]), onGround<-gnd, flightNumber<-fl. Missing string
-// fields become "", missing numeric fields become 0.
+// fromIata<-fr, toIata<-to, fromCity<-fc, toCity<-tc, altFt<-alt, gsKt<-gs,
+// distMi<-di, bearing<-br (normalised to [0,359]), onGround<-gnd,
+// flightNumber<-fl. Missing string fields become "" (fc/tc included, for
+// payloads from before the city keys existed), missing numeric fields
+// become 0.
 // routeKnown/operatorKnown are always set true (HA already knows both, or
 // reports "" if it doesn't); hex is always "" and lat/lon/track are always
 // 0 (the Dial no longer has raw ADS-B position data). Caps at 6 aircraft

@@ -108,8 +108,9 @@ constexpr int32_t kFlightsLogoY         = 16;  // sprite is 48 tall -> bottom at
 constexpr int32_t kFlightsFallbackY     = 40;  // operatorName/callsign when there's no logo
 constexpr int32_t kFlightsCallsignY     = 76;  // "callsign - type"
 constexpr int32_t kFlightsRouteY        = 112; // "LHR -> JFK" / "route unknown"
-constexpr int32_t kFlightsAltY          = 150; // "12,000 ft - 450 kt"
-constexpr int32_t kFlightsDistY         = 170; // "3.1 mi NE"
+constexpr int32_t kFlightsCityY         = 134; // "London -> New York" (fc/tc), when known
+constexpr int32_t kFlightsAltY          = 152; // "12,000 ft - 450 kt"
+constexpr int32_t kFlightsDistY         = 172; // "3.1 mi NE"
 constexpr int32_t kFlightsHintY         = 214; // page dots row (one per aircraft, up to 6)
 constexpr int32_t kFlightsEmptyCaptionY = 150; // "within N mi" under "no aircraft nearby"
 constexpr int32_t kFlightsStaleDotX     = 120;
@@ -1446,6 +1447,28 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     {
         gfx.setTextColor(col(Col::DIM), col(Col::BG));
         gfx.drawString("route unknown", kCentreX, kFlightsRouteY, &fonts::Font2);
+    }
+
+    // City names, small, under the route line: "London -> New York" when
+    // both ends are known, just the known one when only one is, nothing
+    // when HA hasn't got either yet (fc/tc, spec 4.11 amendment).
+    if (ac.fromCity[0] != '\0' || ac.toCity[0] != '\0')
+    {
+        char cityBuf[12 + 4 + 12 + 1];
+        if (ac.fromCity[0] != '\0' && ac.toCity[0] != '\0')
+        {
+            snprintf(cityBuf, sizeof(cityBuf), "%s -> %s", ac.fromCity, ac.toCity);
+        }
+        else if (ac.fromCity[0] != '\0')
+        {
+            snprintf(cityBuf, sizeof(cityBuf), "%s", ac.fromCity);
+        }
+        else
+        {
+            snprintf(cityBuf, sizeof(cityBuf), "%s", ac.toCity);
+        }
+        gfx.setTextColor(col(Col::DIM), col(Col::BG));
+        gfx.drawString(cityBuf, kCentreX, kFlightsCityY, &fonts::Font2);
     }
 
     // Altitude/speed: "12,000 ft - 450 kt".

@@ -207,8 +207,9 @@ time (a fresh device, no WiFi yet, an unset RTC), the face shows tick marks with
 **Flights** shows the aircraft overhead, nearest first, up to 6 at a time. Each one gets its
 airline logo (or the operator name as text when there's no logo) at the top, `callsign - type`
 below it (e.g. `BAW117 - A320`), the route large in the middle as IATA airport codes
-(`LHR -> JFK`, or `route unknown` before it's been enriched), then altitude and ground speed
-(`12,000 ft - 450 kt`) and distance and compass bearing (`3.1 mi NE`). Separators render as a
+(`LHR -> JFK`, or `route unknown` before it's been enriched), a small line of the origin/destination
+city names underneath when Home Assistant knows them (`London -> New York`), then altitude and
+ground speed (`12,000 ft - 450 kt`) and distance and compass bearing (`3.1 mi NE`). Separators render as a
 plain `-`/`->` rather than real dashes/arrows, since the Dial's built-in bitmap fonts are
 ASCII-only. Below that, a row of small page dots — one per aircraft, filled for the one currently
 shown — shows position in the list instead of a text index. Tapping the screen cycles to the next

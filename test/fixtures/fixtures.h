@@ -4,7 +4,7 @@
 // directory. Regenerate with: python3 test/fixtures/generate_fixtures_h.py
 // Do not hand-edit; edit the source .json fixture and regenerate instead.
 
-static const char kFixtureDialFlights[] = R"json({"ts":1725500000,"ac":[{"cs":"BAW123","fl":"BA123","ty":"A320","al":"BA","an":"British Airways","fr":"LHR","to":"JFK","alt":12000,"gs":450,"di":2.3,"br":135,"gnd":0},{"cs":"RYR45D","fl":"FR45D","ty":"B738","al":"","an":"","fr":"","to":"","alt":8000,"gs":320,"di":4.7,"br":270,"gnd":0},{"cs":"GABCD","fl":"","ty":"C172","al":"","an":"Private","fr":"","to":"","alt":0,"gs":0,"di":0.5,"br":10,"gnd":1}]}
+static const char kFixtureDialFlights[] = R"json({"ts":1725500000,"ac":[{"cs":"BAW123","fl":"BA123","ty":"A320","al":"BA","an":"British Airways","fr":"LHR","to":"JFK","fc":"London","tc":"New York","alt":12000,"gs":450,"di":2.3,"br":135,"gnd":0},{"cs":"RYR45D","fl":"FR45D","ty":"B738","al":"","an":"","fr":"","to":"","fc":"","tc":"","alt":8000,"gs":320,"di":4.7,"br":270,"gnd":0},{"cs":"GABCD","fl":"","ty":"C172","al":"","an":"Private","fr":"","to":"","fc":"","tc":"","alt":0,"gs":0,"di":0.5,"br":10,"gnd":1}]}
 )json";
 
 static const char kFixtureHaLightOffice[] = R"json({"state":"off","brightness_pct":0,"color_mode":null,"color_temp_kelvin":null,"hs_color":null,"min_kelvin":2202,"max_kelvin":4000,"supports_color":false})json";

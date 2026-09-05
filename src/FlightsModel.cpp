@@ -102,6 +102,8 @@ bool parseDialFlights(const char* json, size_t len, FlightsSnapshot& out)
         safeCopy(obj["an"] | "", a.operatorName, sizeof(a.operatorName));
         safeCopy(obj["fr"] | "", a.fromIata, sizeof(a.fromIata));
         safeCopy(obj["to"] | "", a.toIata, sizeof(a.toIata));
+        safeCopy(obj["fc"] | "", a.fromCity, sizeof(a.fromCity));
+        safeCopy(obj["tc"] | "", a.toCity, sizeof(a.toCity));
 
         a.altFt = readIntRounded(obj["alt"]);
         a.gsKt = readIntRounded(obj["gs"]);

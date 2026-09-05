@@ -8,8 +8,8 @@ void tearDown(void) {}
 
 // kFixtureDialFlights (test/fixtures/dial_flights.json): a hand-written HA
 // payload matching the spec 4.11 contract, 3 aircraft in payload order:
-//   [0] BAW123 - full route/airline/operator known, airborne
-//   [1] RYR45D - empty fr/to/al/an (route/airline not yet known to HA)
+//   [0] BAW123 - full route/airline/operator/city known, airborne
+//   [1] RYR45D - empty fr/to/al/an/fc/tc (route/airline not yet known to HA)
 //   [2] GABCD  - on ground (gnd:1), no flight number
 
 static void test_parseDialFlights_fixture_parsesThreeInPayloadOrder(void)
@@ -42,6 +42,8 @@ static void test_parseDialFlights_fixture_firstEntryAllFields(void)
     TEST_ASSERT_EQUAL_STRING("British Airways", a.operatorName);
     TEST_ASSERT_EQUAL_STRING("LHR", a.fromIata);
     TEST_ASSERT_EQUAL_STRING("JFK", a.toIata);
+    TEST_ASSERT_EQUAL_STRING("London", a.fromCity);
+    TEST_ASSERT_EQUAL_STRING("New York", a.toCity);
     TEST_ASSERT_EQUAL_INT(12000, a.altFt);
     TEST_ASSERT_EQUAL_INT(450, a.gsKt);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.3f, a.distMi);
@@ -69,6 +71,8 @@ static void test_parseDialFlights_fixture_emptyStringsPreserved(void)
     TEST_ASSERT_EQUAL_STRING("", a.operatorName);
     TEST_ASSERT_EQUAL_STRING("", a.fromIata);
     TEST_ASSERT_EQUAL_STRING("", a.toIata);
+    TEST_ASSERT_EQUAL_STRING("", a.fromCity);
+    TEST_ASSERT_EQUAL_STRING("", a.toCity);
     TEST_ASSERT_TRUE(a.routeKnown);
     TEST_ASSERT_TRUE(a.operatorKnown);
 }
@@ -85,6 +89,31 @@ static void test_parseDialFlights_fixture_gndMapsToOnGround(void)
     TEST_ASSERT_FALSE(snap.ac[1].onGround);
     TEST_ASSERT_TRUE(snap.ac[2].onGround);
     TEST_ASSERT_EQUAL_STRING("", snap.ac[2].flightNumber); // "fl":"" on the ground entry
+}
+
+// Payloads published before HA gained the fc/tc keys (backward compatibility):
+// no "fc"/"tc" in the JSON at all should still parse cleanly, with the new
+// city fields left empty rather than causing a parse failure.
+static void test_parseDialFlights_noCityKeys_parsesWithEmptyCities(void)
+{
+    static const char* kJson =
+        "{\"ts\":1,\"ac\":["
+        "{\"cs\":\"BAW123\",\"fl\":\"BA123\",\"ty\":\"A320\",\"al\":\"BA\","
+        "\"an\":\"British Airways\",\"fr\":\"LHR\",\"to\":\"JFK\","
+        "\"alt\":12000,\"gs\":450,\"di\":2.3,\"br\":135,\"gnd\":0}"
+        "]}";
+
+    FlightsModel::FlightsSnapshot snap;
+    memset(&snap, 0, sizeof(snap));
+
+    bool ok = FlightsModel::parseDialFlights(kJson, strlen(kJson), snap);
+
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL_UINT8(1, snap.count);
+    TEST_ASSERT_EQUAL_STRING("LHR", snap.ac[0].fromIata);
+    TEST_ASSERT_EQUAL_STRING("JFK", snap.ac[0].toIata);
+    TEST_ASSERT_EQUAL_STRING("", snap.ac[0].fromCity);
+    TEST_ASSERT_EQUAL_STRING("", snap.ac[0].toCity);
 }
 
 static void test_parseDialFlights_sevenEntries_capsAtSix(void)
@@ -152,6 +181,7 @@ int main(int argc, char** argv)
     RUN_TEST(test_parseDialFlights_fixture_firstEntryAllFields);
     RUN_TEST(test_parseDialFlights_fixture_emptyStringsPreserved);
     RUN_TEST(test_parseDialFlights_fixture_gndMapsToOnGround);
+    RUN_TEST(test_parseDialFlights_noCityKeys_parsesWithEmptyCities);
     RUN_TEST(test_parseDialFlights_sevenEntries_capsAtSix);
     RUN_TEST(test_parseDialFlights_malformedJson_returnsFalse);
     RUN_TEST(test_parseDialFlights_missingAc_returnsFalse);

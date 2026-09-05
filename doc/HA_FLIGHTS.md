@@ -97,7 +97,7 @@ State payload — nearest first, at most 6 aircraft, compact keys so six aircraf
 800 bytes (`FlightsService`'s MQTT buffer is 2048 bytes):
 
 ```json
-{"ts":1788596952,"ac":[{"cs":"BAW84NT","fl":"BA847","ty":"A320","al":"BA","an":"British Airways","fr":"WAW","to":"LHR","alt":5850,"gs":269,"di":0.8,"br":246,"gnd":0}]}
+{"ts":1788596952,"ac":[{"cs":"BAW84NT","fl":"BA847","ty":"A320","al":"BA","an":"British Airways","fr":"WAW","to":"LHR","fc":"Warsaw","tc":"London","alt":5850,"gs":269,"di":0.8,"br":246,"gnd":0}]}
 ```
 
 | Key | Meaning | Unit |
@@ -111,6 +111,8 @@ State payload — nearest first, at most 6 aircraft, compact keys so six aircraf
 | `an` | Operator/airline display name | string, ≤ 24 chars, `""` if unknown |
 | `fr` | Origin airport | IATA code, ≤ 4 chars, `""` if unknown |
 | `to` | Destination airport | IATA code, ≤ 4 chars, `""` if unknown |
+| `fc` | Origin city name | string, ≤ 12 chars, `""` if unknown |
+| `tc` | Destination city name | string, ≤ 12 chars, `""` if unknown |
 | `alt` | Altitude | feet, `0` if on the ground/unknown |
 | `gs` | Ground speed | knots, `0` if unknown |
 | `di` | Distance from home | statute miles, one decimal place |
@@ -167,7 +169,8 @@ variables:
     = ns.items + [{'cs': (f.callsign or '')[:8], 'fl': (f.flight_number or '')[:8], 'ty':
     (f.aircraft_code or '')[:4], 'al': (f.airline_iata or '')[:2], 'an': (f.airline_short
     or f.airline or '')[:24], 'fr': (f.airport_origin_code_iata or '')[:4], 'to': (f.airport_destination_code_iata
-    or '')[:4], 'alt': (f.altitude or 0) | int, 'gs': (f.ground_speed or 0) | int, 'di': dist_mi
+    or '')[:4], 'fc': (f.airport_origin_city or '')[:12], 'tc': (f.airport_destination_city
+    or '')[:12], 'alt': (f.altitude or 0) | int, 'gs': (f.ground_speed or 0) | int, 'di': dist_mi
     | round(1), 'br': br | round(0) | int, 'gnd': (f.on_ground or 0) | int}] %}{% endfor %}{{
     {'ts': now().timestamp() | int, 'ac': (ns.items | sort(attribute='di'))[:6]} | to_json
     }}
