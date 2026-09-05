@@ -4,12 +4,12 @@
 
 #include <Arduino.h>
 #include <LittleFS.h>
-#include <WiFiClientSecure.h>
-#include <HTTPClient.h>
+#include <WiFi.h>
 #include <string.h>
+#include <strings.h> // strncasecmp
 #include <stdio.h>
+#include <stdlib.h>
 
-#include "AirlineCodes.h"
 #include "NetManager.h"
 
 namespace
@@ -36,29 +36,13 @@ void safeCopy(const char *src, char *dst, size_t dstSize)
     dst[len] = '\0';
 }
 
-constexpr uint32_t kFetchIntervalMs   = 20000;
-constexpr int       kEnrichBudget     = 1; // one background request per tick: keeps WiFi duty cycle low so BLE keeps its radio time (2026-09-04)
-
-// I1: enrichment (hexdb) and logo (pics.avs.io) requests are background
-// work riding along on the net task, which also has to keep servicing
+// Connect deadline, and the deadline for the whole response (status line,
+// headers and body). HA is on the LAN and a logo is a few KB, so 3 s is
+// generous — the point is that the net task also has to keep servicing
 // PubSubClient (MQTT keepalive is 15 s, and NetTask::run() only calls
-// m_net.tick() — which drives PubSubClient::loop() — between tick() calls,
-// never during one). They get short timeouts so one slow/stalled request
-// can't eat the whole budget. The adsb.fi aircraft fetch is the one
-// request tick() always wants to complete (it's already rate-limited to
-// once per kFetchIntervalMs), so it keeps the older, more generous values.
-constexpr uint32_t kAircraftConnectMs  = 5000;
-constexpr uint32_t kAircraftReadMs     = 5000;
-constexpr uint32_t kAircraftDeadlineMs = 6000;
-constexpr uint32_t kEnrichConnectMs    = 2000;
-constexpr uint32_t kEnrichReadMs       = 2000;
-constexpr uint32_t kEnrichDeadlineMs   = 3000;
-
-// I1: once a tick() call has been running longer than this, no further
-// hexdb/logo requests are issued this tick — whatever enrichment/logo work
-// didn't get done carries over to the next tick (nothing here is lost,
-// just deferred). See FlightsService::tickBudgetExceeded().
-constexpr uint32_t kTickWallCapMs = 4000;
+// m_net.tick() between tick() calls, never during one), so a stalled logo
+// request must never be able to hold tick() open.
+constexpr uint32_t kLogoTimeoutMs = 3000;
 
 // C2: PNG signature, checked before a downloaded logo is written to
 // LittleFS and again on the cache-hit path (a file that fails this check —
@@ -68,6 +52,94 @@ constexpr uint8_t kPngSignature[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 
 bool isPngSignature(const uint8_t *data, size_t len)
 {
     return len >= sizeof(kPngSignature) && memcmp(data, kPngSignature, sizeof(kPngSignature)) == 0;
+}
+
+// Splits FLIGHTS_LOGO_BASE_URL ("http://host[:port][/path]") into its host,
+// port (default 80) and path prefix (empty when the URL has none). Returns
+// false for anything that isn't a plain-http URL with a non-empty host and
+// a non-zero port — a typo in config.h then shows up as one log_e rather
+// than a bad socket connect every tick.
+bool splitBaseUrl(const char *url, char *host, size_t hostCap, uint16_t &port, char *path, size_t pathCap)
+{
+    static const char kScheme[] = "http://";
+    if (url == nullptr || strncmp(url, kScheme, sizeof(kScheme) - 1) != 0)
+    {
+        return false;
+    }
+    const char *authority = url + sizeof(kScheme) - 1;
+    const char *slash     = strchr(authority, '/');
+    const char *colon     = strchr(authority, ':');
+    if (colon != nullptr && slash != nullptr && colon > slash)
+    {
+        colon = nullptr; // a ':' inside the path, not a port separator
+    }
+
+    const char  *hostEnd = (colon != nullptr) ? colon : (slash != nullptr ? slash : authority + strlen(authority));
+    const size_t hostLen = static_cast<size_t>(hostEnd - authority);
+    if (hostLen == 0 || hostLen >= hostCap)
+    {
+        return false;
+    }
+    memcpy(host, authority, hostLen);
+    host[hostLen] = '\0';
+
+    port = 80;
+    if (colon != nullptr)
+    {
+        const unsigned long p = strtoul(colon + 1, nullptr, 10);
+        if (p == 0 || p > 65535)
+        {
+            return false;
+        }
+        port = static_cast<uint16_t>(p);
+    }
+
+    safeCopy(slash != nullptr ? slash : "", path, pathCap);
+    return true;
+}
+
+// Reads one CRLF- (or LF-) terminated line into `buf`, dropping the line
+// terminator. Returns false if the deadline passes or the peer closes
+// before a full line arrives. Lines longer than the buffer are truncated,
+// with the rest of the line still consumed, so an unexpectedly long header
+// can't desynchronise the parse.
+bool readLine(WiFiClient &client, char *buf, size_t cap, uint32_t deadlineMs)
+{
+    size_t n = 0;
+    for (;;)
+    {
+        if ((int32_t)(millis() - deadlineMs) >= 0)
+        {
+            return false;
+        }
+        if (client.available() == 0)
+        {
+            if (!client.connected())
+            {
+                return false;
+            }
+            delay(1);
+            continue;
+        }
+        const int c = client.read();
+        if (c < 0)
+        {
+            continue;
+        }
+        if (c == '\n')
+        {
+            if (n > 0 && buf[n - 1] == '\r')
+            {
+                n--;
+            }
+            buf[n] = '\0';
+            return true;
+        }
+        if (n + 1 < cap)
+        {
+            buf[n++] = static_cast<char>(c);
+        }
+    }
 }
 
 } // namespace
@@ -114,12 +186,35 @@ void FlightsService::invalidateLogo(const char *iata)
     }
 }
 
+void FlightsService::onStateMessage(const uint8_t *payload, size_t len, uint32_t nowMs)
+{
+    FlightsModel::FlightsSnapshot working;
+    memset(&working, 0, sizeof(working));
+
+    if (!FlightsModel::parseDialFlights(reinterpret_cast<const char *>(payload), len, working))
+    {
+        // Keep whatever is already on screen: one malformed message (or a
+        // truncated one, if HA ever outgrows the MQTT buffer) shouldn't
+        // blank the card. tick() still ages the old list out via `stale`.
+        log_w("FlightsService: flights payload failed to parse (%u bytes) — keeping previous list", (unsigned)len);
+        return;
+    }
+
+    working.fetchedMs = nowMs;
+    working.stale     = false;
+    working.offline   = false;
+    m_snapshot.write(working);
+
+    m_lastMessageMs = nowMs;
+    m_haveMessage   = true;
+
+    log_i("FlightsService: flights state accepted, %u aircraft, heap=%u",
+          (unsigned)working.count, (unsigned)ESP.getFreeHeap());
+}
+
 void FlightsService::tick(uint32_t nowMs)
 {
-    // I1: start of this tick() call's wall-clock budget — see
-    // tickBudgetExceeded() and kTickWallCapMs.
-    m_tickStartMs = nowMs;
-
+    const bool mqttUp  = m_net.mqttUp();
     const bool wifiUp  = m_net.wifiUp();
     const bool visible = m_visible.load(std::memory_order_relaxed);
 
@@ -127,33 +222,24 @@ void FlightsService::tick(uint32_t nowMs)
     // while not visible) so the free-delay countdown actually elapses.
     manageHttpBuf(nowMs, visible && wifiUp);
 
-    if (!visible || !wifiUp)
+    // Freshness, every tick regardless of visibility: the card is fed
+    // asynchronously now, so "offline" is simply MQTT being down, and
+    // "stale" is HA having gone quiet for kStaleAfterMs with a list still
+    // on screen. Neither flag ever discards aircraft — the last list stays
+    // put, flagged, until HA sends a new one.
+    const bool stale = mqttUp && m_haveMessage && (nowMs - m_lastMessageMs) > kStaleAfterMs;
+    m_snapshot.modify([mqttUp, stale](FlightsModel::FlightsSnapshot &s) {
+        s.offline = !mqttUp;
+        s.stale   = stale;
+    });
+
+    if (!visible || !wifiUp || m_httpBuf == nullptr)
     {
-        // Leave the aircraft list alone (spec 4.9's "waiting for WiFi" state
-        // still shows the card, and a card that's merely off-screen keeps
-        // its last snapshot ready for when it's shown again) — just flag
-        // offline so the UI knows not to trust it as live.
-        m_snapshot.modify([wifiUp](FlightsModel::FlightsSnapshot &s) { s.offline = !wifiUp; });
+        // Not on screen, no WiFi, or malloc() failed this tick under heap
+        // pressure — nothing to do but try again next tick.
         return;
     }
 
-    if (m_httpBuf == nullptr)
-    {
-        // malloc() failed this tick under heap pressure — try again next
-        // tick rather than dereferencing a null buffer.
-        log_w("FlightsService: HTTP buffer unavailable this tick, heap=%u", (unsigned)ESP.getFreeHeap());
-        return;
-    }
-
-    m_snapshot.modify([](FlightsModel::FlightsSnapshot &s) { s.offline = false; });
-
-    if (m_lastFetchMs == 0 || (nowMs - m_lastFetchMs) >= kFetchIntervalMs)
-    {
-        fetchAircraft(nowMs);
-        m_lastFetchMs = nowMs;
-    }
-
-    enrich();
     tickLogo(nowMs);
 }
 
@@ -186,7 +272,7 @@ void FlightsService::manageHttpBuf(uint32_t nowMs, bool wantActive)
     if (m_httpBufIdleSinceMs == 0)
     {
         // Just stopped being wanted (setVisible(false) observed, or WiFi
-        // dropped) — every httpsGet() call runs to completion synchronously
+        // dropped) — every fetchLogo() call runs to completion synchronously
         // inside tick(), so there is never a request in progress here; start
         // the free-delay countdown.
         m_httpBufIdleSinceMs = nowMs;
@@ -202,289 +288,6 @@ void FlightsService::manageHttpBuf(uint32_t nowMs, bool wantActive)
     }
 }
 
-void FlightsService::fetchAircraft(uint32_t nowMs)
-{
-    const double nm = (double)FLIGHTS_RADIUS_MI * 0.868976;
-    char         url[128];
-    snprintf(url, sizeof(url), "https://opendata.adsb.fi/api/v2/lat/%.6f/lon/%.6f/dist/%.1f",
-             (double)HOME_LAT, (double)HOME_LON, nm);
-
-    size_t len    = 0;
-    int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json",
-                              kAircraftConnectMs, kAircraftReadMs, kAircraftDeadlineMs);
-
-    FlightsModel::FlightsSnapshot working;
-    memset(&working, 0, sizeof(working));
-
-    const bool ok = (status == 200) &&
-                    FlightsModel::parseAdsbFi(reinterpret_cast<const char *>(m_httpBuf), len,
-                                               (float)HOME_LAT, (float)HOME_LON, working);
-
-    if (!ok)
-    {
-        log_w("FlightsService: adsb.fi fetch failed (status=%d) — keeping previous list, heap=%u minFree=%u",
-              status, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
-        m_snapshot.modify([](FlightsModel::FlightsSnapshot &prev) {
-            prev.stale   = true;
-            prev.offline = false;
-        });
-        return;
-    }
-
-    m_snapshot.modify([&](FlightsModel::FlightsSnapshot &prev) {
-        // Carry over enrichment already known for aircraft still present
-        // (matched by hex — callsign/position can be re-sorted, hex is the
-        // stable ICAO 24-bit address), so a 20 s refetch doesn't discard
-        // route/operator/logo work already paid for.
-        for (uint8_t i = 0; i < working.count; i++)
-        {
-            FlightsModel::Aircraft &next = working.ac[i];
-            for (uint8_t j = 0; j < prev.count; j++)
-            {
-                if (strcmp(next.hex, prev.ac[j].hex) == 0)
-                {
-                    const FlightsModel::Aircraft &old = prev.ac[j];
-                    memcpy(next.fromIata, old.fromIata, sizeof(next.fromIata));
-                    memcpy(next.toIata, old.toIata, sizeof(next.toIata));
-                    memcpy(next.airlineIata, old.airlineIata, sizeof(next.airlineIata));
-                    memcpy(next.operatorName, old.operatorName, sizeof(next.operatorName));
-                    next.routeKnown    = old.routeKnown;
-                    next.operatorKnown = old.operatorKnown;
-                    break;
-                }
-            }
-
-            // Free (no network call): resolve the airline IATA from the
-            // callsign prefix directly when we don't already have one.
-            if (next.airlineIata[0] == '\0')
-            {
-                const char *iata = AirlineCodes::iataFromIcao(next.callsign);
-                if (iata != nullptr)
-                {
-                    safeCopy(iata, next.airlineIata, sizeof(next.airlineIata));
-                }
-            }
-        }
-
-        working.fetchedMs = nowMs;
-        working.stale      = false;
-        working.offline     = false;
-        prev = working;
-    });
-
-    log_i("FlightsService: adsb.fi fetch ok, %u aircraft, heap=%u minFree=%u",
-          (unsigned)working.count, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
-
-    // I2: one-shot, first successful fetch only — confirms actual net task
-    // stack headroom on hardware.
-    if (!m_aircraftStackLogged)
-    {
-        m_aircraftStackLogged = true;
-        log_i("FlightsService: net task stack high-water mark %u bytes free",
-              (unsigned)uxTaskGetStackHighWaterMark(nullptr));
-    }
-}
-
-// A lookup result that will not change if we ask again: the server answered
-// (2xx/4xx). Negative results (-1 timeout, -2 over cap, -3 spacing/heap
-// guard) and 5xx are transient and must not be negative-cached.
-static bool isDefinitiveMiss(int status)
-{
-    return status >= 200 && status < 500;
-}
-
-void FlightsService::enrich()
-{
-    FlightsModel::FlightsSnapshot working = m_snapshot.read();
-    if (working.count == 0)
-    {
-        return;
-    }
-
-    int budget = kEnrichBudget;
-    for (uint8_t i = 0; i < working.count && budget > 0; i++)
-    {
-        FlightsModel::Aircraft &a = working.ac[i];
-        if (!a.routeKnown)
-        {
-            budget = enrichRoute(a, budget);
-        }
-        if (a.routeKnown && !a.operatorKnown && budget > 0)
-        {
-            budget = enrichOperator(a, budget);
-        }
-    }
-
-    // Merge back by hex rather than overwrite outright: fetchAircraft() runs
-    // strictly before enrich() within the same tick() call (single-threaded
-    // net task), so `working` and the live snapshot describe the same
-    // aircraft list here — a plain write() is safe and cheaper than a
-    // merge, but writing it explicitly this way keeps the intent clear and
-    // costs nothing extra at this size (<=6 aircraft).
-    m_snapshot.write(working);
-}
-
-int FlightsService::enrichRoute(FlightsModel::Aircraft &a, int budget)
-{
-    char fromIcao[5] = {0};
-    char toIcao[5]   = {0};
-    bool haveRoute   = routeCacheGet(a.callsign, fromIcao, toIcao);
-
-    if (!haveRoute)
-    {
-        // I1: budget<=0 is the per-tick request-count cap (kEnrichBudget);
-        // tickBudgetExceeded() is the wall-clock cap — either stops further
-        // requests, deferring the rest to the next tick().
-        if (budget <= 0 || tickBudgetExceeded())
-        {
-            return budget;
-        }
-        char url[64];
-        snprintf(url, sizeof(url), "https://hexdb.io/api/v1/route/icao/%s", a.callsign);
-        size_t len    = 0;
-        int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json",
-                                  kEnrichConnectMs, kEnrichReadMs, kEnrichDeadlineMs);
-        budget--;
-
-        if (status == 200 &&
-            FlightsModel::parseHexdbRoute(reinterpret_cast<const char *>(m_httpBuf), len, fromIcao, toIcao))
-        {
-            routeCachePut(a.callsign, fromIcao, toIcao);
-            haveRoute = true;
-        }
-        else if (isDefinitiveMiss(status))
-        {
-            // No route on record (404, or a 200 body that is "unknown"/
-            // malformed): remember that as "known empty" so this callsign
-            // isn't retried every tick.
-            a.routeKnown   = true;
-            a.fromIata[0]  = '\0';
-            a.toIata[0]    = '\0';
-            return budget;
-        }
-        else
-        {
-            // Transient (spacing/heap guard -3, timeout -1, 5xx...): leave
-            // routeKnown false so the lookup is retried next tick. Fixes
-            // every aircraft showing "unknown" after the 1.5 s request
-            // spacing was added (2026-09-04): the route request always ran
-            // right after the adsb.fi fetch and was being negative-cached.
-            return budget;
-        }
-    }
-
-    char fromIata[5] = {0};
-    char toIata[5]   = {0};
-    bool haveFrom    = airportCacheGet(fromIcao, fromIata);
-    bool haveTo      = airportCacheGet(toIcao, toIata);
-
-    if (!haveFrom && budget > 0 && !tickBudgetExceeded())
-    {
-        char url[64];
-        snprintf(url, sizeof(url), "https://hexdb.io/api/v1/airport/icao/%s", fromIcao);
-        size_t len    = 0;
-        int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json",
-                                  kEnrichConnectMs, kEnrichReadMs, kEnrichDeadlineMs);
-        budget--;
-        if (status == 200 && FlightsModel::parseHexdbAirport(reinterpret_cast<const char *>(m_httpBuf), len, fromIata))
-        {
-            airportCachePut(fromIcao, fromIata);
-            haveFrom = true;
-        }
-        else if (isDefinitiveMiss(status) && airportFailureBump(fromIcao))
-        {
-            // I1: 2 failed lookups for this ICAO — negative-cache an empty
-            // IATA so it stops consuming the enrichment budget every tick.
-            airportCachePut(fromIcao, "");
-            haveFrom = true;
-            log_i("FlightsService: airport %s IATA unresolved after 2 tries, negative-cached", fromIcao);
-        }
-    }
-
-    if (!haveTo && budget > 0 && !tickBudgetExceeded())
-    {
-        char url[64];
-        snprintf(url, sizeof(url), "https://hexdb.io/api/v1/airport/icao/%s", toIcao);
-        size_t len    = 0;
-        int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json",
-                                  kEnrichConnectMs, kEnrichReadMs, kEnrichDeadlineMs);
-        budget--;
-        if (status == 200 && FlightsModel::parseHexdbAirport(reinterpret_cast<const char *>(m_httpBuf), len, toIata))
-        {
-            airportCachePut(toIcao, toIata);
-            haveTo = true;
-        }
-        else if (isDefinitiveMiss(status) && airportFailureBump(toIcao))
-        {
-            airportCachePut(toIcao, "");
-            haveTo = true;
-            log_i("FlightsService: airport %s IATA unresolved after 2 tries, negative-cached", toIcao);
-        }
-    }
-
-    if (haveFrom && haveTo)
-    {
-        safeCopy(fromIata, a.fromIata, sizeof(a.fromIata));
-        safeCopy(toIata, a.toIata, sizeof(a.toIata));
-        a.routeKnown = true;
-    }
-    // else: route known, one or both IATA lookups still pending — retried
-    // next tick (not marked routeKnown yet), bounded by the same budget.
-
-    return budget;
-}
-
-int FlightsService::enrichOperator(FlightsModel::Aircraft &a, int budget)
-{
-    char operatorIcao[4] = {0};
-    char operatorName[32] = {0};
-    bool have = operatorCacheGet(a.hex, operatorIcao, operatorName);
-
-    if (!have)
-    {
-        if (budget <= 0 || tickBudgetExceeded())
-        {
-            return budget;
-        }
-        char url[48];
-        snprintf(url, sizeof(url), "https://hexdb.io/api/v1/aircraft/%s", a.hex);
-        size_t len    = 0;
-        int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "application/json",
-                                  kEnrichConnectMs, kEnrichReadMs, kEnrichDeadlineMs);
-        budget--;
-
-        if (status == 200 && FlightsModel::parseHexdbAircraft(reinterpret_cast<const char *>(m_httpBuf), len,
-                                                                operatorIcao, operatorName))
-        {
-            operatorCachePut(a.hex, operatorIcao, operatorName);
-            have = true;
-        }
-        else if (isDefinitiveMiss(status))
-        {
-            // No operator on record: mark known so this hex isn't retried
-            // every tick.
-            a.operatorKnown = true;
-            return budget;
-        }
-        else
-        {
-            return budget; // transient — retried next tick
-        }
-    }
-
-    safeCopy(operatorName, a.operatorName, sizeof(a.operatorName));
-    if (a.airlineIata[0] == '\0' && operatorIcao[0] != '\0')
-    {
-        const char *iata = AirlineCodes::iataFromIcao(operatorIcao);
-        if (iata != nullptr)
-        {
-            safeCopy(iata, a.airlineIata, sizeof(a.airlineIata));
-        }
-    }
-    a.operatorKnown = true;
-    return budget;
-}
-
 // M1: the logo itself never comes back to this class any more — it's
 // downloaded (or already cached) straight to /logos/{iata}.png on LittleFS,
 // and DialUi decodes it from there once logoReady() says it's good. This
@@ -492,8 +295,6 @@ int FlightsService::enrichOperator(FlightsModel::Aircraft &a, int budget)
 // record that in m_logoStatus (the small Guarded flag logoReady() reads).
 void FlightsService::tickLogo(uint32_t nowMs)
 {
-    (void)nowMs;
-
     const WantedIata wanted = m_wanted.read();
     if (wanted.v[0] == '\0')
     {
@@ -534,36 +335,36 @@ void FlightsService::tickLogo(uint32_t nowMs)
         LittleFS.remove(path);
     }
 
-    // I1: the wall-clock cap applies here too — a logo download queued
-    // behind a full budget of hexdb requests this tick() just defers to the
-    // next one, same as any other request past the cap.
-    if (tickBudgetExceeded())
+    // Bounded retry: see kLogoRetryMs. The cache-hit path above is
+    // deliberately outside this gate — it costs one LittleFS stat and is
+    // how a freshly-wanted logo goes ready with no network at all.
+    const bool sameAsLastAttempt =
+        strncmp(m_lastLogoAttemptIata, wanted.v, sizeof(m_lastLogoAttemptIata)) == 0;
+    if (m_logoAttempted && sameAsLastAttempt && (nowMs - m_lastLogoAttemptMs) < kLogoRetryMs)
     {
         return;
     }
+    m_logoAttempted     = true;
+    m_lastLogoAttemptMs = nowMs;
+    safeCopy(wanted.v, m_lastLogoAttemptIata, sizeof(m_lastLogoAttemptIata));
 
-    char url[48];
-    snprintf(url, sizeof(url), "https://pics.avs.io/120/48/%s.png", wanted.v);
-    size_t len    = 0;
-    int    status = httpsGet(url, m_httpBuf, kHttpBufCap, len, "image/png",
-                              kEnrichConnectMs, kEnrichReadMs, kEnrichDeadlineMs);
+    size_t    len    = 0;
+    const int status = fetchLogo(wanted.v, len);
 
     if (status == 404)
     {
+        // HA has no www/logos/{IATA}.png for this airline — remembered so
+        // the card doesn't ask again every tick this session.
         markLogoMissing(wanted.v);
         log_i("FlightsService: logo %s not found (404), remembered for this session", wanted.v);
         return;
     }
-    if (status == -3)
-    {
-        return; // heap guard skipped this request — transient, retry next tick
-    }
     if (status == -2)
     {
-        // M2: body exceeded kHttpBufCap. pics.avs.io 120x48 PNGs normally
-        // run ~5-10 KB; an outlier this large is treated as missing for the
-        // rest of this session rather than retried every tick (httpsGet()
-        // already log_w'd the actual length).
+        // M2: body exceeded kHttpBufCap. HA's logo PNGs run 3-5 KB; an
+        // outlier this large is treated as missing for the rest of this
+        // session rather than retried every tick (fetchLogo() already
+        // log_w'd the actual length).
         markLogoMissing(wanted.v);
         log_w("FlightsService: logo %s exceeds %u-byte cap, treating as missing for this session",
               wanted.v, (unsigned)kHttpBufCap);
@@ -611,18 +412,14 @@ void FlightsService::tickLogo(uint32_t nowMs)
     log_i("FlightsService: logo %s downloaded and cached (%u bytes), heap=%u",
           wanted.v, (unsigned)len, (unsigned)ESP.getFreeHeap());
 
-    // I2: one-shot, first successful logo download only.
+    // I2: one-shot, first successful logo download only — confirms actual
+    // net task stack headroom on hardware.
     if (!m_logoStackLogged)
     {
         m_logoStackLogged = true;
         log_i("FlightsService: net task stack high-water mark %u bytes free",
               (unsigned)uxTaskGetStackHighWaterMark(nullptr));
     }
-}
-
-bool FlightsService::tickBudgetExceeded() const
-{
-    return (millis() - m_tickStartMs) >= kTickWallCapMs;
 }
 
 bool FlightsService::logoReady(const char *iata) const
@@ -653,90 +450,7 @@ bool FlightsService::validateLogoFile(const char *path) const
     return got == sizeof(sig) && isPngSignature(sig, got);
 }
 
-// --- caches: simple linear scan + round-robin replacement -----------------
-
-bool FlightsService::routeCacheGet(const char *callsign, char from[5], char to[5]) const
-{
-    for (uint8_t i = 0; i < m_routeCount; i++)
-    {
-        if (strcmp(m_routeCache[i].callsign, callsign) == 0)
-        {
-            safeCopy(m_routeCache[i].from, from, 5);
-            safeCopy(m_routeCache[i].to, to, 5);
-            return true;
-        }
-    }
-    return false;
-}
-
-void FlightsService::routeCachePut(const char *callsign, const char *from, const char *to)
-{
-    RouteEntry &e = m_routeCache[m_routeNext];
-    safeCopy(callsign, e.callsign, sizeof(e.callsign));
-    safeCopy(from, e.from, sizeof(e.from));
-    safeCopy(to, e.to, sizeof(e.to));
-    m_routeNext = (uint8_t)((m_routeNext + 1) % kRouteCacheSize);
-    if (m_routeCount < kRouteCacheSize)
-    {
-        m_routeCount++;
-    }
-}
-
-bool FlightsService::airportCacheGet(const char *icao, char iata[5]) const
-{
-    if (icao[0] == '\0')
-    {
-        return false;
-    }
-    for (uint8_t i = 0; i < m_airportCount; i++)
-    {
-        if (strcmp(m_airportCache[i].icao, icao) == 0)
-        {
-            safeCopy(m_airportCache[i].iata, iata, 5);
-            return true;
-        }
-    }
-    return false;
-}
-
-void FlightsService::airportCachePut(const char *icao, const char *iata)
-{
-    AirportEntry &e = m_airportCache[m_airportNext];
-    safeCopy(icao, e.icao, sizeof(e.icao));
-    safeCopy(iata, e.iata, sizeof(e.iata));
-    m_airportNext = (uint8_t)((m_airportNext + 1) % kAirportCacheSize);
-    if (m_airportCount < kAirportCacheSize)
-    {
-        m_airportCount++;
-    }
-}
-
-bool FlightsService::operatorCacheGet(const char *hex, char operatorIcao[4], char operatorName[32]) const
-{
-    for (uint8_t i = 0; i < m_operatorCount; i++)
-    {
-        if (strcmp(m_operatorCache[i].hex, hex) == 0)
-        {
-            safeCopy(m_operatorCache[i].operatorIcao, operatorIcao, 4);
-            safeCopy(m_operatorCache[i].operatorName, operatorName, 32);
-            return true;
-        }
-    }
-    return false;
-}
-
-void FlightsService::operatorCachePut(const char *hex, const char *operatorIcao, const char *operatorName)
-{
-    OperatorEntry &e = m_operatorCache[m_operatorNext];
-    safeCopy(hex, e.hex, sizeof(e.hex));
-    safeCopy(operatorIcao, e.operatorIcao, sizeof(e.operatorIcao));
-    safeCopy(operatorName, e.operatorName, sizeof(e.operatorName));
-    m_operatorNext = (uint8_t)((m_operatorNext + 1) % kOperatorCacheSize);
-    if (m_operatorCount < kOperatorCacheSize)
-    {
-        m_operatorCount++;
-    }
-}
+// --- negative cache: simple linear scan + round-robin replacement ----------
 
 bool FlightsService::isLogoMissing(const char *iata) const
 {
@@ -760,153 +474,120 @@ void FlightsService::markLogoMissing(const char *iata)
     }
 }
 
-// I1: negative-cache the from/to airport IATA lookup inside enrichRoute()
-// after 2 failures, the same way a missing route/operator is negative-
-// cached after its one attempt — otherwise a persistently-unresolvable
-// ICAO (no IATA on record at hexdb.io) would spend enrichment budget on
-// every single tick forever.
-bool FlightsService::airportFailureBump(const char *icao)
+// --- plain-HTTP logo GET ---------------------------------------------------
+
+int FlightsService::fetchLogo(const char *iata, size_t &len)
 {
-    for (uint8_t i = 0; i < m_airportFailureCount; i++)
+    len                  = 0;
+    m_lastContentType[0] = '\0';
+
+    char     host[64];
+    char     basePath[64];
+    uint16_t port = 80;
+    if (!splitBaseUrl(FLIGHTS_LOGO_BASE_URL, host, sizeof(host), port, basePath, sizeof(basePath)))
     {
-        if (strcmp(m_airportFailures[i].icao, icao) == 0)
-        {
-            m_airportFailures[i].count++;
-            return m_airportFailures[i].count >= 2;
-        }
+        log_e("FlightsService: FLIGHTS_LOGO_BASE_URL '%s' is not a plain http:// URL", FLIGHTS_LOGO_BASE_URL);
+        return -1;
     }
-    AirportFailure &e = m_airportFailures[m_airportFailureNext];
-    safeCopy(icao, e.icao, sizeof(e.icao));
-    e.count = 1;
-    m_airportFailureNext = (uint8_t)((m_airportFailureNext + 1) % kAirportFailureSize);
-    if (m_airportFailureCount < kAirportFailureSize)
+
+    WiFiClient client;
+    if (client.connect(host, port, (int32_t)kLogoTimeoutMs) != 1)
     {
-        m_airportFailureCount++;
-    }
-    return false;
-}
-
-// --- HTTPS helper -----------------------------------------------------------
-
-int FlightsService::httpsGet(const char *url, uint8_t *buf, size_t cap, size_t &len, const char *accept,
-                              uint32_t connectTimeoutMs, uint32_t readTimeoutMs, uint32_t overallDeadlineMs)
-{
-    // Radio sharing: WiFi and BLE share the S3's antenna. Back-to-back TLS
-    // requests starved the belt heartbeat (kicks every ~11 s), so enforce a
-    // minimum gap between any two HTTPS requests.
-    {
-        static uint32_t s_lastRequestMs = 0;
-        const uint32_t now = millis();
-        if (s_lastRequestMs != 0 && (uint32_t)(now - s_lastRequestMs) < 1500)
-        {
-            return -3; // transient: try again next tick
-        }
-        s_lastRequestMs = now;
-    }
-    // Heap guard: a TLS session needs ~45-55 KB transient, mostly as blocks of
-    // 16 KB or less. Skip (rather than starve the WiFi driver's TX buffers,
-    // which stalls every socket write; seen 2026-09-04) when total free heap
-    // is under 60 KB or the largest free block is under 20 KB.
-    {
-        const size_t freeHeap = ESP.getFreeHeap();
-        const size_t largest  = ESP.getMaxAllocHeap();
-        if (freeHeap < 60 * 1024 || largest < 20 * 1024)
-        {
-            log_w("FlightsService: skipping fetch, heap free=%u largest=%u", (unsigned)freeHeap, (unsigned)largest);
-            return -3;
-        }
-    }
-    len                    = 0;
-    m_lastContentType[0]   = '\0';
-
-    WiFiClientSecure client;
-    // I3 (attempted, not possible on this toolchain): the plan was
-    // client.setBufferSizes(4096, 1024) before setInsecure() — responses
-    // here are capped at kHttpBufCap (8 KB) and requests are tiny (a GET
-    // line plus a couple of headers), so mbedTLS's default 16 KB TX/RX
-    // buffers are more than this class ever needs. Checked directly against
-    // the framework-arduinoespressif32 headers this project actually builds
-    // against (package version 3.20017.241212, i.e. arduino-esp32 2.0.17,
-    // pinned via espressif32@6.13.0 in platformio.ini): WiFiClientSecure has
-    // no setBufferSizes() method in this release (see
-    // libraries/WiFiClientSecure/src/WiFiClientSecure.h) — that API was
-    // added in a later arduino-esp32 release. mbedTLS's SSL in/out content
-    // length is fixed at build time in this SDK's prebuilt libmbedtls.a,
-    // with no per-connection Arduino-level override available, so this
-    // item is not achievable without bumping the pinned framework version
-    // (out of scope here — see the final fix report).
-    client.setInsecure(); // public read-only data — no cert to pin (documented trade-off)
-
-    HTTPClient http;
-    http.setConnectTimeout(connectTimeoutMs);
-    http.setTimeout(readTimeoutMs);
-    // I3: forces HTTP/1.0 semantics specifically so the server can't reply
-    // with a chunked Transfer-Encoding — a chunked body carries no
-    // Content-Length, which would defeat the pre-flight size-cap check
-    // below. All three services this class talks to (adsb.fi, hexdb.io,
-    // pics.avs.io) have been checked directly and none returns chunked
-    // responses on the endpoints used here (verified 2026-09-04). If that
-    // ever stopped being true, getSize() below returns -1, the size-cap
-    // check is skipped (nothing to compare against), and the read loop
-    // just stops at `cap` bytes — silently truncating rather than
-    // rejecting — or when the connection closes, whichever comes first.
-    http.useHTTP10(true);
-
-    if (!http.begin(client, url))
-    {
-        log_w("FlightsService: httpsGet begin() failed for %s", url);
-        // I2: begin() failure still leaves resources to release, same as
-        // every other return path below.
-        http.end();
+        log_i("FlightsService: logo connect to %s:%u failed", host, (unsigned)port);
         client.stop();
         return -1;
     }
 
-    const char *headerKeys[] = {"Content-Type"};
-    http.collectHeaders(headerKeys, 1);
-    if (accept != nullptr)
+    // HTTP/1.0 with an explicit "Connection: close": no chunked encoding to
+    // deal with, and the server closes the socket at the end of the body.
+    char request[256];
+    const int reqLen = snprintf(request, sizeof(request),
+                                "GET %s/logos/%s.png HTTP/1.0\r\n"
+                                "Host: %s\r\n"
+                                "Accept: image/png\r\n"
+                                "Connection: close\r\n"
+                                "\r\n",
+                                basePath, iata, host);
+    if (reqLen <= 0 || (size_t)reqLen >= sizeof(request))
     {
-        http.addHeader("Accept", accept);
+        client.stop();
+        log_w("FlightsService: logo request line too long, skipping");
+        return -1;
+    }
+    client.write(reinterpret_cast<const uint8_t *>(request), (size_t)reqLen);
+
+    const uint32_t deadline = millis() + kLogoTimeoutMs;
+
+    char line[128];
+    if (!readLine(client, line, sizeof(line), deadline))
+    {
+        client.stop();
+        log_w("FlightsService: logo %s — no status line before deadline", iata);
+        return -1;
+    }
+    // "HTTP/1.x <code> <reason>"
+    const char *sp = strchr(line, ' ');
+    if (sp == nullptr || strncmp(line, "HTTP/1.", 7) != 0)
+    {
+        client.stop();
+        log_w("FlightsService: logo %s — bad status line '%s'", iata, line);
+        return -1;
+    }
+    const int status = (int)strtol(sp + 1, nullptr, 10);
+
+    long contentLength = -1;
+    for (;;)
+    {
+        if (!readLine(client, line, sizeof(line), deadline))
+        {
+            client.stop();
+            log_w("FlightsService: logo %s — headers truncated (status=%d)", iata, status);
+            return -1;
+        }
+        if (line[0] == '\0')
+        {
+            break; // end of headers
+        }
+        if (strncasecmp(line, "Content-Type:", 13) == 0)
+        {
+            const char *v = line + 13;
+            while (*v == ' ') { v++; }
+            safeCopy(v, m_lastContentType, sizeof(m_lastContentType));
+        }
+        else if (strncasecmp(line, "Content-Length:", 15) == 0)
+        {
+            contentLength = strtol(line + 15, nullptr, 10);
+        }
     }
 
-    const int status = http.GET();
-    if (status <= 0)
+    if (status != 200)
     {
-        log_i("FlightsService: GET %s -> error %d, heap=%u", url, status, (unsigned)ESP.getFreeHeap());
-        http.end();
+        client.stop();
+        log_i("FlightsService: GET %s:%u%s/logos/%s.png -> status %d", host, (unsigned)port, basePath, iata, status);
         return status;
     }
-
-    safeCopy(http.header("Content-Type").c_str(), m_lastContentType, sizeof(m_lastContentType));
-
-    if (status != HTTP_CODE_OK)
+    if (contentLength > (long)kHttpBufCap)
     {
-        log_i("FlightsService: GET %s -> status %d, heap=%u", url, status, (unsigned)ESP.getFreeHeap());
-        http.end();
-        return status;
-    }
-
-    const int contentLength = http.getSize();
-    if (contentLength > 0 && (size_t)contentLength > cap)
-    {
-        log_w("FlightsService: GET %s -> body too large (%d > %u)", url, contentLength, (unsigned)cap);
-        http.end();
+        client.stop();
+        log_w("FlightsService: logo %s body too large (%ld > %u)", iata, contentLength, (unsigned)kHttpBufCap);
         return -2;
     }
 
-    WiFiClient    *stream   = http.getStreamPtr();
-    const uint32_t deadline = millis() + overallDeadlineMs;
-    size_t         total    = 0;
-    while (http.connected() && total < cap)
+    size_t total = 0;
+    while (total < kHttpBufCap)
     {
         if ((int32_t)(millis() - deadline) >= 0)
         {
-            log_w("FlightsService: GET %s -> read deadline exceeded at %u bytes", url, (unsigned)total);
+            log_w("FlightsService: logo %s read deadline exceeded at %u bytes", iata, (unsigned)total);
             break;
         }
-        const size_t avail = stream->available();
-        if (avail == 0)
+        const int avail = client.available();
+        if (avail <= 0)
         {
+            if (!client.connected())
+            {
+                break; // server closed: body complete (HTTP/1.0, Connection: close)
+            }
             if (contentLength > 0 && total >= (size_t)contentLength)
             {
                 break;
@@ -914,12 +595,12 @@ int FlightsService::httpsGet(const char *url, uint8_t *buf, size_t cap, size_t &
             delay(1);
             continue;
         }
-        size_t toRead = avail;
-        if (toRead > cap - total)
+        size_t toRead = (size_t)avail;
+        if (toRead > kHttpBufCap - total)
         {
-            toRead = cap - total;
+            toRead = kHttpBufCap - total;
         }
-        const int got = stream->readBytes(buf + total, toRead);
+        const int got = client.read(m_httpBuf + total, toRead);
         if (got <= 0)
         {
             break;
@@ -930,11 +611,21 @@ int FlightsService::httpsGet(const char *url, uint8_t *buf, size_t cap, size_t &
             break;
         }
     }
-    http.end();
+    client.stop();
+
+    if (contentLength < 0 && total >= kHttpBufCap)
+    {
+        // No Content-Length and we filled the buffer: the body is at least
+        // as big as the cap, so it may well be truncated — treat it as
+        // oversized rather than caching a partial PNG.
+        log_w("FlightsService: logo %s body filled the %u-byte cap with no Content-Length",
+              iata, (unsigned)kHttpBufCap);
+        return -2;
+    }
 
     len = total;
-    log_i("FlightsService: GET %s -> status %d, %u bytes, heap=%u", url, status, (unsigned)len,
-          (unsigned)ESP.getFreeHeap());
+    log_i("FlightsService: GET %s:%u%s/logos/%s.png -> status %d, %u bytes, heap=%u", host, (unsigned)port,
+          basePath, iata, status, (unsigned)len, (unsigned)ESP.getFreeHeap());
     return status;
 }
 

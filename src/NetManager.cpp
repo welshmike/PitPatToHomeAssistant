@@ -16,7 +16,12 @@ constexpr uint32_t kWifiConnectTimeoutMs = 15000;
 // Bounds how long PubSubClient::connect() can block waiting for CONNACK.
 constexpr uint16_t kMqttSocketTimeoutS = 5;
 
-constexpr uint16_t kMqttBufferSize = 1024;
+// 2048 (bumped from 1024 for the Dial's flights topic, spec 4.11):
+// PubSubClient's buffer has to hold a whole inbound message — fixed header,
+// topic and payload — and HA's retained flights JSON runs ~900 bytes for a
+// full six aircraft, close enough to 1 KB with the topic and headers on top
+// that a busy sky would silently drop the message.
+constexpr uint16_t kMqttBufferSize = 2048;
 
 // millis()-rollover-safe "deadline has passed".
 inline bool due(uint32_t nowMs, uint32_t deadlineMs)

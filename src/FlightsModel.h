@@ -58,33 +58,4 @@ struct FlightsSnapshot
 // if the JSON is malformed or `ac` is missing/not an array.
 bool parseDialFlights(const char* json, size_t len, FlightsSnapshot& out);
 
-// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
-// Parses an adsb.fi `/v2/lat/.../lon/.../dist/...` response body. Keeps only
-// aircraft with numeric lat/lon and a non-empty trimmed `flight`, computes
-// distMi/bearing from (homeLat, homeLon) via Geo, sorts ascending by
-// distance, and caps the result at 6 entries. `alt_baro` may be the JSON
-// string "ground" (-> altFt 0); `gs`/`track` may be absent (-> 0). Sets
-// out.count and fills out.ac; leaves fetchedMs/stale/offline untouched.
-// Returns false on malformed/unparseable JSON.
-bool parseAdsbFi(const char* json, size_t len, float homeLat, float homeLon, FlightsSnapshot& out);
-
-// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
-// Parses a hexdb.io `/api/v1/route/icao/{callsign}` response body, e.g.
-// {"route":"VABB-EGLL"}. Splits `route` on '-' into ICAO airport codes.
-// Returns false if `route` is missing, the literal "unknown", or either side
-// is not 3-4 characters long; `from`/`to` are left untouched in that case.
-bool parseHexdbRoute(const char* json, size_t len, char from[5], char to[5]);
-
-// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
-// Parses a hexdb.io `/api/v1/airport/icao/{ICAO}` response body and copies
-// its `iata` field into `iata[5]`. Returns false if `iata` is missing/empty.
-bool parseHexdbAirport(const char* json, size_t len, char iata[5]);
-
-// Plan 7 Task 2 removes this (dead once FlightsService is MQTT-fed)
-// Parses a hexdb.io `/api/v1/aircraft/{hex}` response body and copies
-// `OperatorFlagCode` into `operatorIcao[4]` and `RegisteredOwners` into
-// `operatorName[32]` (truncated safely if longer). Returns false if the
-// JSON is malformed or `RegisteredOwners` is missing/empty.
-bool parseHexdbAircraft(const char* json, size_t len, char operatorIcao[4], char operatorName[32]);
-
 } // namespace FlightsModel

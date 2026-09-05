@@ -9,37 +9,35 @@
 #include "FlightsModel.h"
 #include "Guarded.h"
 
-// HOME_LAT/HOME_LON/FLIGHTS_RADIUS_MI (spec 4.9) come from config.h. These
-// fallbacks keep the build working (and testable) without a config.h edit —
-// central London, 3 mi radius — but flag it on the Dial build so the
-// fallback doesn't go unnoticed on real hardware.
-#ifndef HOME_LAT
-#define HOME_LAT 51.5074
-#if HAS_DIAL_UI
-#warning "HOME_LAT not set in config.h; flights card uses central London"
-#endif
-#endif
-
-#ifndef HOME_LON
-#define HOME_LON -0.1278
-#endif
-
-#ifndef FLIGHTS_RADIUS_MI
-#define FLIGHTS_RADIUS_MI 3
+// Where the airline logos live (spec 4.11). Home Assistant serves its
+// `config/www/` directory at `/local/`, so `<HA>:8123/local/logos/{IATA}.png`
+// is a plain-HTTP file on the LAN — no TLS, no third-party API. Set
+// FLIGHTS_LOGO_BASE_URL in config.h to override; the default assumes HA runs
+// on the same host as the MQTT broker with the default 8123 port.
+#ifndef FLIGHTS_LOGO_BASE_URL
+#define FLIGHTS_LOGO_BASE_URL "http://" MQTT_SERVER ":8123/local"
 #endif
 
 class NetManager;
 
-// Fetches aircraft near HOME_LAT/HOME_LON from adsb.fi, enriches them with
-// route/operator detail from hexdb.io, and caches airline logos in LittleFS
-// — all for the Dial's Flights card (spec 4.9). Every network call happens
-// on the network task (see NetTask.h/.cpp): begin() and tick() must only
-// ever be called from there. The loop task (DialUi) talks to this class
-// only through setVisible(), setWantedLogo(), snapshot() and logoReady(),
-// all of which are safe to call from any task. The logo PNG itself is never
-// resident in this class — it lives only in /logos/{IATA}.png on LittleFS;
-// DialUi decodes it straight from there once logoReady() says the file is
-// present and valid (M1, spec review 2026-09-04).
+// Holds the Dial's view of the aircraft overhead, published by Home
+// Assistant as a retained JSON message on kStateTopic (spec 4.11), and
+// caches the matching airline logos in LittleFS for the Flights card. HA
+// does all the ADS-B work — proximity, distance/bearing, route and operator
+// lookup — so this class never talks to a flight API itself; the only
+// network call left here is a plain-HTTP GET of a logo PNG from HA's own
+// `/local/` directory.
+//
+// Threading, mirroring LightsService: onStateMessage() runs on the network
+// task inside the MQTT receive callback, and begin()/tick() run on the
+// network task too (see NetTask.h/.cpp) — none of the three may be called
+// from the loop task. The loop task (DialUi) talks to this class only
+// through setVisible(), setWantedLogo(), snapshot(), logoReady() and
+// invalidateLogo(), all of which are safe from any task. The logo PNG
+// itself is never resident in this class — it lives only in
+// /logos/{IATA}.png on LittleFS; DialUi decodes it straight from there once
+// logoReady() says the file is present and valid (M1, spec review
+// 2026-09-04).
 //
 // Device-only: this header is portable (no Arduino/ESP32 types), but the
 // whole .cpp is compiled out (empty translation unit) unless HAS_DIAL_UI,
@@ -49,6 +47,16 @@ class NetManager;
 class FlightsService
 {
 public:
+    // HA's retained aircraft payload, parsed by
+    // FlightsModel::parseDialFlights(). Subscribed at QoS 0 on every MQTT
+    // connect (see NetTask::onMqttConnected()).
+    static constexpr const char *kStateTopic = "pacekeeper-dial/flights/state";
+    // Published (a trivial "1" payload) after every MQTT connect so the
+    // HA-side automation re-publishes kStateTopic — same pattern as
+    // LightsService::kRefreshTopic, and for the same reason: the retained
+    // message may not exist yet right after the automation itself restarts.
+    static constexpr const char *kRefreshTopic = "pacekeeper-dial/flights/refresh";
+
     explicit FlightsService(NetManager &net) : m_net(net) {}
 
     // Mounts LittleFS on the `spiffs` partition (format-on-fail) and
@@ -63,8 +71,19 @@ public:
     void setVisible(bool visible);
     void setWantedLogo(const char *iata); // up to 2 chars + NUL; longer is truncated
 
-    // Net task only: drives the 20 s aircraft refresh, hexdb enrichment
-    // (budgeted per call) and the logo download/cache for the wanted IATA.
+    // Net task only: called from NetTask::onMqttMessage() for kStateTopic.
+    // Parses `payload` into a working FlightsSnapshot with
+    // FlightsModel::parseDialFlights(), stamps fetchedMs = nowMs and clears
+    // stale/offline, then publishes it. A payload that fails to parse is
+    // logged at log_w and dropped — the previous list stays on screen
+    // rather than the card blanking on one bad message.
+    void onStateMessage(const uint8_t *payload, size_t len, uint32_t nowMs);
+
+    // Net task only: maintains the freshness flags (offline while MQTT is
+    // down, stale once HA has gone quiet for kStaleAfterMs) and, while the
+    // card is visible, downloads/validates the cached logo for the IATA
+    // setWantedLogo() last named. No aircraft data is fetched here any
+    // more — that all arrives via onStateMessage().
     void tick(uint32_t nowMs);
 
     // loop task: safe from any task. Returns a copy.
@@ -95,69 +114,20 @@ private:
     {
         char v[3] = {0};
     };
-    struct RouteEntry
-    {
-        char callsign[9] = {0};
-        char from[5]     = {0};
-        char to[5]       = {0};
-    };
-    struct AirportEntry
-    {
-        char icao[5] = {0};
-        char iata[5] = {0};
-    };
-    struct OperatorEntry
-    {
-        char hex[7]          = {0};
-        char operatorIcao[4] = {0};
-        char operatorName[32] = {0};
-    };
     struct MissingLogo
     {
         char iata[3] = {0};
     };
-    // I1: per-ICAO failure counter for the airport-IATA lookup used inside
-    // enrichRoute() (hexdb.io /api/v1/airport/icao/{ICAO}). Unlike the
-    // route/operator lookups (which give up and negative-cache after their
-    // one attempt for the tick), a from/to airport can legitimately take a
-    // couple of tries to resolve, so this only gives up — caching an empty
-    // IATA in m_airportCache via airportCachePut(icao, "") — after 2
-    // failures, so a persistently-unresolvable ICAO stops consuming the
-    // enrichment budget every tick.
-    struct AirportFailure
-    {
-        char    icao[5] = {0};
-        uint8_t count    = 0;
-    };
 
-    void fetchAircraft(uint32_t nowMs);
-    void enrich();
-    // Returns the remaining budget. `budget` is the count of hexdb requests
-    // still allowed this tick() call.
-    int  enrichRoute(FlightsModel::Aircraft &a, int budget);
-    int  enrichOperator(FlightsModel::Aircraft &a, int budget);
     void tickLogo(uint32_t nowMs);
-
-    // I1: true once more than kTickWallCapMs has elapsed since this tick()
-    // call began (m_tickStartMs, set at the top of tick()). Checked before
-    // every hexdb/logo request past the first so a slow or stalled request
-    // can't push the whole net task loop iteration past MQTT's 15 s
-    // keepalive — NetTask::run() only calls PubSubClient's loop()
-    // (m_net.tick()) between tick() calls, never during one, so tick()
-    // itself must stay well under that. Aircraft fetch is exempt (it's
-    // gated by its own 20 s interval and already has the tightest deadline
-    // of the four request kinds); this only bounds how many *additional*
-    // enrichment/logo requests a single tick() can chain.
-    bool tickBudgetExceeded() const;
 
     // M2: (de)allocates m_httpBuf. `wantActive` is `visible && wifiUp` as
     // observed by tick(); called unconditionally at the top of every tick()
     // so the 60 s free-delay countdown advances even while the card is
     // off-screen. malloc's on the first tick the card is wanted and frees
     // kHttpBufFreeDelayMs after it stops being wanted (never frees mid-call
-    // — every httpsGet() runs to completion synchronously inside tick(),
-    // so "wantActive" only ever goes false between requests, not during
-    // one).
+    // — every logo GET runs to completion synchronously inside tick(), so
+    // "wantActive" only ever goes false between requests, not during one).
     void manageHttpBuf(uint32_t nowMs, bool wantActive);
 
     // C2: cache-hit validation for /logos/{iata}.png — true iff the file
@@ -165,40 +135,20 @@ private:
     // signature. Does not touch m_httpBuf.
     bool validateLogoFile(const char *path) const;
 
-    // Round-robin caches, resolved before spending a hexdb request.
-    bool routeCacheGet(const char *callsign, char from[5], char to[5]) const;
-    void routeCachePut(const char *callsign, const char *from, const char *to);
-    bool airportCacheGet(const char *icao, char iata[5]) const;
-    void airportCachePut(const char *icao, const char *iata);
-    bool operatorCacheGet(const char *hex, char operatorIcao[4], char operatorName[32]) const;
-    void operatorCachePut(const char *hex, const char *operatorIcao, const char *operatorName);
     bool isLogoMissing(const char *iata) const;
     void markLogoMissing(const char *iata);
-    // I1: bumps the failure count for `icao`, creating the entry on first
-    // failure. Returns true once the count reaches 2 (caller should then
-    // negative-cache the ICAO via airportCachePut(icao, "")).
-    bool airportFailureBump(const char *icao);
 
-    // Private HTTPS GET helper: WiFiClientSecure::setInsecure() (public,
-    // read-only data — no certificate to pin), useHTTP10(true) so
-    // Content-Length is known up front, body read via getStreamPtr() in
-    // chunks capped at `cap` bytes. `accept` sets the Accept request
-    // header. Returns the HTTP status code, or a negative value on a
-    // transport/library error or an oversized body. One request at a time;
-    // net task only. Every call logs status, bytes and ESP.getFreeHeap() at
-    // log_i. The response's Content-Type (if any) is left in
-    // m_lastContentType for callers that need to gate on it (the logo
-    // download does; JSON callers don't).
-    //
-    // I1: `connectTimeoutMs`/`readTimeoutMs` bound HTTPClient's own
-    // connect/read timeouts, and `overallDeadlineMs` bounds the body-read
-    // loop below — all three are per-call now rather than fixed constants,
-    // so every caller can choose how much of the net task's time budget a
-    // given request is allowed to spend (see tick()'s wall-clock cap and
-    // the per-call values fetchAircraft()/enrichRoute()/enrichOperator()/
-    // tickLogo() pass).
-    int httpsGet(const char *url, uint8_t *buf, size_t cap, size_t &len, const char *accept,
-                 uint32_t connectTimeoutMs, uint32_t readTimeoutMs, uint32_t overallDeadlineMs);
+    // Plain-HTTP GET of FLIGHTS_LOGO_BASE_URL "/logos/{iata}.png" into
+    // m_httpBuf (HA serves these off its own `config/www/`, so there is no
+    // TLS and no third party involved any more). Raw WiFiClient rather than
+    // HTTPClient: an HTTP/1.0 request line, three headers and a
+    // status-line/header parse is all this needs, and it keeps the net
+    // task's stack and heap cost to the 8 KB body buffer. Connect and
+    // response deadlines are both kLogoTimeoutMs. Returns the HTTP status
+    // code, or a negative value on a transport error (-1) or a body over
+    // kHttpBufCap (-2). Leaves the response's Content-Type in
+    // m_lastContentType and the body length in `len`. Net task only.
+    int fetchLogo(const char *iata, size_t &len);
 
     NetManager &m_net;
 
@@ -210,29 +160,39 @@ private:
     Guarded<LogoStatus>                    m_logoStatus;
     Guarded<WantedIata>                    m_wanted;
 
-    uint32_t m_lastFetchMs = 0; // 0 = never fetched, forces an immediate fetch
+    // Net task only: when the last kStateTopic message was accepted, and
+    // whether one ever has been. HA republishes on its own schedule, so
+    // silence for longer than this means the data on screen is no longer
+    // trustworthy — but only once there is something to call stale.
+    static constexpr uint32_t kStaleAfterMs = 120000;
+    uint32_t m_lastMessageMs = 0;
+    bool     m_haveMessage   = false;
 
-    // I1: wall-clock start of the current tick() call, used by
-    // tickBudgetExceeded() to bound how many requests a single tick() can
-    // chain (see tick()/tickBudgetExceeded() comments).
-    uint32_t m_tickStartMs = 0;
+    // I2: one-shot stack high-water-mark log after the first successful
+    // logo download, so hardware headroom on the net task's stack is
+    // visible in the log without repeating every tick.
+    bool m_logoStackLogged = false;
 
-    // I2: one-shot stack high-water-mark logs — one after the first
-    // successful aircraft fetch, one after the first successful logo
-    // download — so hardware headroom on the net task's stack is visible
-    // in the log without repeating every tick.
-    bool m_aircraftStackLogged = false;
-    bool m_logoStackLogged     = false;
+    // Net task only: rate limit for the transient-failure logo retry path.
+    // tickLogo() runs on every net-task pass (~10 ms), so without this a
+    // logo HA can't serve for a non-404 reason — a 500, a wrong
+    // content-type, a refused connection — would be re-requested a hundred
+    // times a second. Success and a 404 both stop retrying by other means
+    // (the ready flag and the negative cache), so this only bounds that one
+    // path; a change of wanted airline resets it, so cycling through
+    // aircraft still fetches immediately. Takes over from the old 1.5 s
+    // inter-request spacing guard, which existed for TLS/radio sharing.
+    static constexpr uint32_t kLogoRetryMs = 5000;
+    uint32_t m_lastLogoAttemptMs      = 0;
+    bool     m_logoAttempted          = false;
+    char     m_lastLogoAttemptIata[3] = {0};
 
-    // M2: shared HTTP scratch buffer — one request in flight at a time,
-    // reused for adsb.fi JSON, hexdb JSON and logo PNG bodies alike. Lazily
-    // malloc'ed/freed by manageHttpBuf() (see tick()) rather than a static
-    // member, so it only actually costs heap while the Flights card is
-    // visible and WiFi is up (plus a kHttpBufFreeDelayMs grace window after
-    // that stops being true, so flipping cards doesn't churn malloc/free).
-    // 8 KB (down from the old static 16 KB): adsb.fi JSON for a 3 mi radius
-    // and hexdb.io responses are well under that, and pics.avs.io 120x48
-    // logo PNGs run ~5-10 KB — an outlier over the cap is treated as
+    // M2: HTTP scratch buffer for the logo body. Lazily malloc'ed/freed by
+    // manageHttpBuf() (see tick()) rather than a static member, so it only
+    // actually costs heap while the Flights card is visible and WiFi is up
+    // (plus a kHttpBufFreeDelayMs grace window after that stops being true,
+    // so flipping cards doesn't churn malloc/free). 8 KB: HA's logo PNGs
+    // measure 3-5 KB, and an outlier over the cap is treated as
     // missing-for-session rather than grown into (spec review 2026-09-04).
     static constexpr size_t   kHttpBufCap = 8192;
     static constexpr uint32_t kHttpBufFreeDelayMs = 60000;
@@ -240,29 +200,8 @@ private:
     uint32_t  m_httpBufIdleSinceMs = 0; // 0 = not counting down (active, or already freed)
     char      m_lastContentType[40] = {0};
 
-    static constexpr uint8_t kRouteCacheSize          = 24;
-    static constexpr uint8_t kAirportCacheSize        = 32;
-    static constexpr uint8_t kOperatorCacheSize       = 24;
-    static constexpr uint8_t kMissingLogoSize         = 16;
-    static constexpr uint8_t kAirportFailureSize      = 16;
-
-    RouteEntry    m_routeCache[kRouteCacheSize];
-    uint8_t       m_routeCount = 0;
-    uint8_t       m_routeNext  = 0;
-
-    AirportEntry  m_airportCache[kAirportCacheSize];
-    uint8_t       m_airportCount = 0;
-    uint8_t       m_airportNext  = 0;
-
-    OperatorEntry m_operatorCache[kOperatorCacheSize];
-    uint8_t       m_operatorCount = 0;
-    uint8_t       m_operatorNext  = 0;
-
+    static constexpr uint8_t kMissingLogoSize = 16;
     MissingLogo   m_missingLogos[kMissingLogoSize];
     uint8_t       m_missingCount = 0;
     uint8_t       m_missingNext  = 0;
-
-    AirportFailure m_airportFailures[kAirportFailureSize];
-    uint8_t        m_airportFailureCount = 0;
-    uint8_t        m_airportFailureNext  = 0;
 };

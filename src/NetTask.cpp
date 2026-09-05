@@ -23,11 +23,14 @@ constexpr UBaseType_t kQueueDepth = 8;
 // were the discovery resync (a 255-byte topic buffer plus String/JSON
 // scratch, roughly 3 KB with log formatting) and ArduinoOTA's 1460-byte
 // read buffer during an update, which left ~4.5 KB headroom on 8 KB. On the
-// Dial, FlightsService::tick() now also runs here: WiFiClientSecure/
-// HTTPClient/JsonDocument scratch for a single in-flight HTTPS GET is the
-// new deepest path, and it never overlaps the MQTT/OTA paths above (net
-// task is single-threaded). The one-shot high-water-mark log after the
-// first resync confirms actual headroom on hardware.
+// Dial, FlightsService also runs here: its logo GET is a plain WiFiClient
+// with a heap-allocated body buffer (shallower than the WiFiClientSecure/
+// HTTPClient path it replaced in Plan 7), and its onStateMessage() JSON
+// parse rides on the MQTT receive callback below. Neither overlaps the
+// other (net task is single-threaded). Left at 12 KB rather than trimmed
+// with the TLS stack: the resync/OTA paths are unchanged and the headroom
+// is cheap. The one-shot high-water-mark log after the first resync
+// confirms actual headroom on hardware.
 constexpr uint32_t kStackBytes = 12288;
 
 constexpr UBaseType_t kPriority = 1;
@@ -278,6 +281,13 @@ void NetTask::onMqttConnected()
         client.subscribe(topic, 0);
         client.publish(LightsService::kRefreshTopic, "1");
     }
+
+    // Flights card (spec 4.11): same shape as the lights above — subscribe
+    // HA's retained aircraft topic, then ask the HA-side automation to
+    // re-publish it so the card fills in immediately rather than waiting
+    // for HA's next scheduled update.
+    client.subscribe(FlightsService::kStateTopic, 0);
+    client.publish(FlightsService::kRefreshTopic, "1");
 #endif
 
     fullResync();
@@ -322,6 +332,15 @@ void NetTask::onMqttMessage(char *topic, uint8_t *payload, unsigned int length)
     if (LightsService::isStateTopic(topic))
     {
         m_lights.onStateMessage(topic, payload, length);
+        return;
+    }
+
+    // Flights card (spec 4.11): HA's retained aircraft list. Parsed inline
+    // on this task — FlightsService::onStateMessage() is a bounded JSON
+    // parse into a Guarded snapshot, no network and no queue hop needed.
+    if (strcmp(topic, FlightsService::kStateTopic) == 0)
+    {
+        m_flights.onStateMessage(payload, length, millis());
         return;
     }
 #endif

@@ -1320,10 +1320,10 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     {
         gfx.setTextColor(col(Col::TEXT), col(Col::BG));
         gfx.drawString("no aircraft nearby", kRingCx, kRingCy, &fonts::Font4);
-        char radiusBuf[24];
-        snprintf(radiusBuf, sizeof(radiusBuf), "within %d mi", static_cast<int>(FLIGHTS_RADIUS_MI));
+        // The search radius is Home Assistant's business now (spec 4.11) —
+        // the Dial no longer has FLIGHTS_RADIUS_MI to name here.
         gfx.setTextColor(col(Col::DIM), col(Col::BG));
-        gfx.drawString(radiusBuf, kCentreX, kFlightsEmptyCaptionY, &fonts::Font2);
+        gfx.drawString("none in range", kCentreX, kFlightsEmptyCaptionY, &fonts::Font2);
         return;
     }
 

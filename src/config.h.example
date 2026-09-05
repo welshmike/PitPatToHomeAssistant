@@ -23,17 +23,13 @@
 // building without an edit — only add this line to pick a different zone.
 #define TIMEZONE_TZ "GMT0BST,M3.5.0/1,M10.5.0"
 
-// Home location for the Dial's Flights card (spec 4.9) — the centre point
-// of the adsb.fi "aircraft near me" query. Use decimal degrees (positive
-// north/east, negative south/west), e.g. a UK postcode's centroid. If this
-// is omitted, FlightsService.h falls back to central London and (on the
-// Dial build only) emits a compile-time #warning so the fallback doesn't
-// go unnoticed.
-#define HOME_LAT 51.5074
-#define HOME_LON -0.1278
-
-// Search radius for the Flights card, in statute miles. Converted to
-// nautical miles for the adsb.fi query (nm = mi * 0.868976).
-#define FLIGHTS_RADIUS_MI 3
+// Airline logos for the Dial's Flights card (spec 4.11). Home Assistant
+// serves its `config/www/` directory at `/local/`, so dropping the PNGs in
+// `config/www/logos/{IATA}.png` makes them plain-HTTP files on the LAN and
+// the Dial fetches `<this>/logos/{IATA}.png`. FlightsService.h falls back
+// to exactly the line below if this is omitted, so existing config.h files
+// keep building — only add it if HA is not on the MQTT broker's host or
+// does not use the default 8123 port.
+#define FLIGHTS_LOGO_BASE_URL "http://" MQTT_SERVER ":8123/local"
 
 

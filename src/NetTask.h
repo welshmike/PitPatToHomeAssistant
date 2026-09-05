@@ -58,10 +58,10 @@ public:
     void onMqttMessage(char *topic, uint8_t *payload, unsigned int length);
 
 #if HAS_DIAL_UI
-    // Dial only (spec 4.9). FlightsService::begin()/tick() only ever run
-    // here (see NetTask::begin()/run()); the loop task (DialUi) talks to it
-    // only through the loop-task-safe methods documented on the class
-    // itself.
+    // Dial only (spec 4.9/4.11). FlightsService::begin()/tick()/
+    // onStateMessage() only ever run here (see NetTask::begin()/run()/
+    // onMqttMessage()); the loop task (DialUi) talks to it only through the
+    // loop-task-safe methods documented on the class itself.
     FlightsService &flights() { return m_flights; }
 
     // Dial only (Plan 6). LightsService::onStateMessage() only ever runs
