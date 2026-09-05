@@ -221,6 +221,8 @@ Shows the aircraft overhead, nearest first, with airline logo, route, altitude a
 
 **Amended 2026-09-04 (page dots):** the `tap: next` hint and the `2/5` index suffix were replaced by a row of page dots on the bottom row — one per aircraft (up to 6), filled for the one currently shown and hollow outlines for the rest — so position in the list is shown once, not repeated as text on every line.
 
+**Superseded 2026-09-05:** this section's data path (the sources list, `HOME_LAT`/`HOME_LON`/`FLIGHTS_RADIUS_MI`, the refresh/enrichment/threading bullets) is replaced by §4.11 — all of it now runs in Home Assistant. The card layout, tap-to-cycle and page-dot bullets above still apply unchanged.
+
 ## 4.10 Lights cards (added 2026-09-04, approved)
 
 Two desk cards control Home Assistant lights over MQTT: **Office** (`light.mikes_office_2`, a colour-temperature group, 2202–4000 K) and **Lamp** (`light.lamp`, colour temperature 2000–6535 K plus hue/saturation colour). Home Assistant mirrors light state to the Dial and applies the Dial's commands through two automations (created 2026-09-04, YAML kept in `doc/HA_LIGHTS_AUTOMATIONS.md`); nothing else on the Dial changes.
@@ -253,3 +255,17 @@ All flight logic moves to Home Assistant; the Dial only displays. Motivation (20
 - **Dial:** `NetTask` subscribes to `pacekeeper-dial/flights/state` (QoS 0) and publishes the refresh; `FlightsService::onStateMessage()` (net task) parses via the new pure `FlightsModel::parseDialFlights(json, len, FlightsSnapshot&)` into the existing `FlightsSnapshot`/`Aircraft` (fields `hex` and `type` keep their meaning: `hex` unused → callsign-keyed; `operatorName` ← `an`; `airlineIata` ← `al`; `fromIata`/`toIata` ← `fr`/`to`; `routeKnown`/`operatorKnown` always true). `stale` = no message for 120 s while MQTT is up; `offline` = MQTT down. Logo download: plain HTTP `WiFiClient` GET of `FLIGHTS_LOGO_BASE_URL "/logos/XX.png"` (default `"http://" MQTT_SERVER ":8123/local"`, overridable in `config.h`), same LittleFS cache, PNG signature check, ≤ 8 KB body, same `DialUi` decode path; 404 remembered per session. Removed: adsb.fi/hexdb parsing and caches, `AirlineCodes`, `WiFiClientSecure`/TLS, request spacing and heap guards, `HOME_LAT`/`HOME_LON`/`FLIGHTS_RADIUS_MI`; `Geo` keeps only `compass8`. Card layout, tap-to-cycle and page dots unchanged.
 - **Auto-show (new, configurable):** when the belt is idle and the Clock card is showing, a change of aircraft count from 0 to > 0 switches the card ring to Flights; when the count returns to 0 (and the switch was automatic) the ring returns to Clock. A manual knob scroll or side button while auto-shown cancels the automatic return. Only the Clock card is interrupted — Treadmill, Lights and any belt/selector screen are never preempted. Setting `Flights Auto-show` (HA switch via MQTT discovery, `EntityCategory::CONFIG`, plus NVS, default on) follows the existing settings pattern (`CmdType::SET_FLIGHTS_AUTO_SHOW`, `PubType::FLIGHTS_AUTO_SHOW`, stored with the other settings in `TreadmillState`, echoed on change and full resync). Pure `FlightsAutoShow` state machine with Unity tests.
 - **Docs:** README (Flights section rewritten), `doc/HA_FLIGHTS.md` (integration setup, both automations' YAML, the template sensor, MQTT contract), Phase G hardware checklist.
+
+**Amended 2026-09-05 (as built):** the cached-logo list is an `input_text` helper
+(`input_text.pacekeeper_dial_logos_cached`, comma-separated IATA codes, capped at ~80) rather than
+the trigger-based template sensor sketched above, because trigger-based template sensors cannot be
+created through the HA API; the logos automation triggers on the sensor's state change (and HA
+start), not on the `flightradar24_entry` event, so airlines already overhead at startup are fetched
+too, not only newly-arriving ones. `FlightsService` gained a 5 s retry gate on logo network fetches
+(`kLogoRetryMs`), keyed on the last attempted IATA, so a stalled or failing logo fetch isn't retried
+every tick. The Flights card's offline caption reads `waiting for HA` (offline now means MQTT down,
+not WiFi down); the empty-state second line reads `none in range` (the search radius is HA's
+business now, not a Dial-side config value to name). Verified live 2026-09-05: payload
+`{"ts":1788596952,"ac":[{"cs":"BAW84NT","fl":"BA847","ty":"A320","al":"BA","an":"British Airways","fr":"WAW","to":"LHR","alt":5850,"gs":269,"di":0.8,"br":246,"gnd":0}]}`
+(167 B for one aircraft); logos served at `http://<HA>:8123/local/logos/VS.png` (3501 B) and
+`.../2L.png` (4475 B).

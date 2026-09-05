@@ -56,8 +56,8 @@ Get an app like **nRF Connect** – this app allows you to view Bluetooth connec
 * On the Dial, `config.h` also has `TIMEZONE_TZ` for the Clock card — a POSIX TZ string, defaulting
   to `Europe/London` (`GMT0BST,M3.5.0/1,M10.5.0`). Set it to your own timezone's POSIX TZ string if
   you're not in the UK; it's not needed on the DevKit build.
-* `config.h` also has `HOME_LAT`, `HOME_LON` and `FLIGHTS_RADIUS_MI` for the Flights card — see
-  [Desk mode](#desk-mode) below for what they do and their default values; not needed on the
+* `config.h` also has `FLIGHTS_LOGO_BASE_URL` for the Flights card's airline logos — see
+  [Desk mode](#desk-mode) below for what it does and its default value; not needed on the
   DevKit build.
 > **Note:** `src/config.h` is listed in `.gitignore` and will never be committed. Never commit your real credentials.
 * Connect the ESP32 with a USB cable (you might have to hold **RST** and **BOOT** while plugging it in)
@@ -212,33 +212,41 @@ below it (e.g. `BAW117 - A320`), the route large in the middle as IATA airport c
 plain `-`/`->` rather than real dashes/arrows, since the Dial's built-in bitmap fonts are
 ASCII-only. Below that, a row of small page dots — one per aircraft, filled for the one currently
 shown — shows position in the list instead of a text index. Tapping the screen cycles to the next
-aircraft.
+aircraft. When the ring is idle on the Clock card and an aircraft comes into range, the Flights
+card **auto-shows** itself over the Clock, and returns to the Clock on its own once the last
+aircraft leaves range — unless you've scrolled or pressed the side button in the meantime, which
+cancels the automatic return. This is the `Flights Auto-show` switch in Home Assistant (default
+on); turn it off there to keep Flights purely knob-scrolled, like any other card.
 
-Three keyless public data services are queried directly from the Dial over HTTPS — nothing goes
-through Home Assistant: [adsb.fi](https://adsb.fi) for nearby aircraft, [hexdb.io](https://hexdb.io)
-for route/airport/operator lookups, and [pics.avs.io](https://pics.avs.io) for airline logos. The
-Dial talks to all three with certificate checking disabled (`WiFiClientSecure::setInsecure()`) —
-an accepted trade-off given the data is public and read-only. Logos are cached under `/logos` in
-the Dial's onboard flash (LittleFS) after their first download, so repeat views of a known airline
-don't re-fetch the image. The card only fetches while it's actually showing: aircraft data
-refreshes every 20 seconds while visible, and nothing is fetched while another card or the
-Treadmill screen is on top.
+All of the actual flight-tracking work — proximity, distance/bearing, route and operator lookup,
+airline logos — now happens in **Home Assistant**, not on the Dial. The Dial only subscribes to
+one retained MQTT topic and renders whatever Home Assistant last published; the only network call
+it still makes itself is a plain-HTTP `GET` of a cached logo PNG from Home Assistant's own web
+server. This replaced an earlier design (see `docs/superpowers/specs/2026-09-03-m5dial-migration-design.md`
+§4.9, kept there for history) where the Dial queried a handful of public flight-data APIs directly
+over HTTPS with TLS certificate checking disabled — each TLS connection on the ESP32-S3 cost around
+45 KB of heap, WiFi and BLE share one antenna so the resulting request bursts could kick the
+treadmill's Bluetooth link, and the request-pacing needed to avoid that made a newly-seen aircraft
+take 8–10 seconds to fully enrich. Moving the work to Home Assistant (which already has the
+[Flightradar24](https://github.com/AlexandrErohin/home-assistant-flightradar24) HACS integration
+doing the ADS-B polling for its own dashboard) removes all of that from the firmware: no TLS, no
+per-aircraft HTTP bursts, and a single small retained JSON message instead.
 
-Add three lines to `config.h` to set your location — the example below is central London:
-```cpp
-#define HOME_LAT           51.5074
-#define HOME_LON           -0.1278
-#define FLIGHTS_RADIUS_MI  3
-```
-`HOME_LAT`/`HOME_LON` are decimal degrees (positive north/east, negative south/west) — a postcode
-centroid is close enough. `FLIGHTS_RADIUS_MI` is the search radius in statute miles. If these are
-omitted, `FlightsService.h` falls back to the same central-London default shown above and (on the
-Dial build only) emits a compile-time warning so the fallback doesn't go unnoticed.
+Setup and the full MQTT/YAML details live in [`doc/HA_FLIGHTS.md`](doc/HA_FLIGHTS.md). In short:
+an HA automation publishes retained JSON on `pacekeeper-dial/flights/state` (nearest first, up to
+6 aircraft) whenever the Flightradar24 sensor changes, at HA start, or when the Dial asks on
+`pacekeeper-dial/flights/refresh` after each MQTT (re)connect; a second automation caches each new
+airline's logo PNG into Home Assistant's `www/logos/` folder, which the Dial fetches over plain
+HTTP as `http://<HA>:8123/local/logos/{IATA}.png` and caches itself under `/logos` in its own
+onboard flash (LittleFS). `config.h`'s `FLIGHTS_LOGO_BASE_URL` points at that HA web server (see
+[Project Compilation](#project-compilation) above); there is nothing left to configure for
+location or radius on the Dial — both now live in the Flightradar24 integration's own options in
+Home Assistant.
 
-If the last fetch failed, a small grey dot appears near the top of the card while the previously
-known aircraft (if any) keep showing; if WiFi itself is down the card shows "waiting for WiFi"
-instead; and when the radius is genuinely quiet (typically overnight) it shows "no aircraft
-nearby" with the configured radius underneath.
+If Home Assistant goes quiet for two minutes with the card already showing a list, a small grey
+dot appears near the top while that list keeps showing; if MQTT itself is down the card shows
+"waiting for HA" instead; and when nothing is in range it shows "no aircraft nearby" / "none in
+range".
 
 **Lights** are two cards, **Office** and **Lamp**, each controlling one Home Assistant light over
 MQTT — nothing goes through HA's REST/WebSocket API, only plain topics (see below). Each card
