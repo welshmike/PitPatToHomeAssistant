@@ -9,14 +9,28 @@ void FlightsAutoShow::setEnabled(bool enabled)
     m_autoShown = false;
 }
 
-FlightsAutoShow::Action FlightsAutoShow::update(uint8_t aircraftCount, CardId currentCard, bool beltIdle,
-                                               bool dataValid)
+FlightsAutoShow::Action FlightsAutoShow::update(uint32_t nowMs, uint8_t aircraftCount, CardId currentCard,
+                                               bool beltIdle, bool dataValid)
 {
     // Stale or offline data is not evidence of anything: treat it as "no
     // aircraft" everywhere below, so an auto-shown card returns to Clock
     // when HA goes quiet and no fresh SHOW edge can be manufactured out of
     // a list nobody is maintaining any more.
     const uint8_t effCount = dataValid ? aircraftCount : 0;
+
+    // Return hysteresis: track how long the effective count has been 0. Any
+    // aircraft at all restarts the window, so the card only hands back once
+    // the sky has actually been empty for kReturnHoldMs. Tracked even while
+    // disabled, so the timer reflects the data rather than the setting.
+    if (effCount > 0)
+    {
+        m_haveZeroSince = false;
+    }
+    else if (!m_haveZeroSince)
+    {
+        m_haveZeroSince = true;
+        m_zeroSinceMs   = nowMs;
+    }
 
     if (!m_enabled)
     {
@@ -38,7 +52,8 @@ FlightsAutoShow::Action FlightsAutoShow::update(uint8_t aircraftCount, CardId cu
         m_autoShown = true;
         action = Action::SHOW_FLIGHTS;
     }
-    else if (m_autoShown && effCount == 0 && currentCard == CardId::FLIGHTS)
+    else if (m_autoShown && effCount == 0 && currentCard == CardId::FLIGHTS && m_haveZeroSince &&
+             (int32_t)(nowMs - m_zeroSinceMs) >= (int32_t)kReturnHoldMs)
     {
         m_autoShown = false;
         action = Action::RETURN_TO_CLOCK;

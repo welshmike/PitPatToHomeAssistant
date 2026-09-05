@@ -172,6 +172,60 @@ static void test_parseDialFlights_emptyAircraftList_isZeroCountAndTrue(void)
     TEST_ASSERT_EQUAL_UINT8(0, snap.count);
 }
 
+// Bearing arrives from HA as degrees and is normalised into [0,359] so
+// Geo::compass8() never sees an out-of-range angle: 360 is due north (0),
+// and a negative bearing wraps forward rather than indexing backwards.
+static void test_parseDialFlights_bearing360_normalisesToZero(void)
+{
+    static const char* kJson = "{\"ts\":1,\"ac\":[{\"cs\":\"BAW1\",\"br\":360}]}";
+
+    FlightsModel::FlightsSnapshot snap;
+    memset(&snap, 0, sizeof(snap));
+
+    TEST_ASSERT_TRUE(FlightsModel::parseDialFlights(kJson, strlen(kJson), snap));
+    TEST_ASSERT_EQUAL_UINT8(1, snap.count);
+    TEST_ASSERT_EQUAL_INT(0, snap.ac[0].bearing);
+}
+
+static void test_parseDialFlights_negativeBearing_wrapsForward(void)
+{
+    static const char* kJson = "{\"ts\":1,\"ac\":[{\"cs\":\"BAW1\",\"br\":-10}]}";
+
+    FlightsModel::FlightsSnapshot snap;
+    memset(&snap, 0, sizeof(snap));
+
+    TEST_ASSERT_TRUE(FlightsModel::parseDialFlights(kJson, strlen(kJson), snap));
+    TEST_ASSERT_EQUAL_UINT8(1, snap.count);
+    TEST_ASSERT_EQUAL_INT(350, snap.ac[0].bearing);
+}
+
+// "gnd" is optional and HA has published it both as 0/1 and as a JSON
+// boolean; an entry without it is airborne, not on the ground (the card
+// draws "on ground" off this flag, so a wrong default is visible).
+static void test_parseDialFlights_missingGnd_isNotOnGround(void)
+{
+    static const char* kJson = "{\"ts\":1,\"ac\":[{\"cs\":\"BAW1\",\"alt\":12000}]}";
+
+    FlightsModel::FlightsSnapshot snap;
+    memset(&snap, 0, sizeof(snap));
+
+    TEST_ASSERT_TRUE(FlightsModel::parseDialFlights(kJson, strlen(kJson), snap));
+    TEST_ASSERT_EQUAL_UINT8(1, snap.count);
+    TEST_ASSERT_FALSE(snap.ac[0].onGround);
+}
+
+static void test_parseDialFlights_jsonBooleanGnd_isOnGround(void)
+{
+    static const char* kJson = "{\"ts\":1,\"ac\":[{\"cs\":\"GABCD\",\"gnd\":true}]}";
+
+    FlightsModel::FlightsSnapshot snap;
+    memset(&snap, 0, sizeof(snap));
+
+    TEST_ASSERT_TRUE(FlightsModel::parseDialFlights(kJson, strlen(kJson), snap));
+    TEST_ASSERT_EQUAL_UINT8(1, snap.count);
+    TEST_ASSERT_TRUE(snap.ac[0].onGround);
+}
+
 int main(int argc, char** argv)
 {
     (void)argc;
@@ -186,5 +240,9 @@ int main(int argc, char** argv)
     RUN_TEST(test_parseDialFlights_malformedJson_returnsFalse);
     RUN_TEST(test_parseDialFlights_missingAc_returnsFalse);
     RUN_TEST(test_parseDialFlights_emptyAircraftList_isZeroCountAndTrue);
+    RUN_TEST(test_parseDialFlights_bearing360_normalisesToZero);
+    RUN_TEST(test_parseDialFlights_negativeBearing_wrapsForward);
+    RUN_TEST(test_parseDialFlights_missingGnd_isNotOnGround);
+    RUN_TEST(test_parseDialFlights_jsonBooleanGnd_isOnGround);
     return UNITY_END();
 }

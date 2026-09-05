@@ -58,8 +58,12 @@ struct FlightsSnapshot
 // reports "" if it doesn't); hex is always "" and lat/lon/track are always
 // 0 (the Dial no longer has raw ADS-B position data). Caps at 6 aircraft
 // (extras beyond the 6th are ignored) and sets out.count; leaves
-// fetchedMs/stale/offline untouched for the caller to stamp. Returns false
-// if the JSON is malformed or `ac` is missing/not an array.
+// fetchedMs/stale/offline untouched for the caller to stamp. Only
+// out.ac[0..count-1] are written: entries at index >= count keep whatever
+// was in them, so callers zero the snapshot before calling (as
+// FlightsService::onStateMessage() does) rather than assuming the tail is
+// cleared. Returns false if the JSON is malformed or `ac` is missing/not
+// an array.
 bool parseDialFlights(const char* json, size_t len, FlightsSnapshot& out);
 
 } // namespace FlightsModel

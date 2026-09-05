@@ -330,6 +330,10 @@ void DialUi::tick(uint32_t nowMs)
     // one of the desk cards rather than Connecting/Starting/Running/Selector
     // — which is exactly what FlightsAutoShow's beltIdle argument means.
     {
+        // One Screen per desk card, plus DISCONNECTED (the Treadmill card
+        // with no belt): adding a card to the ring means adding its screen
+        // here, or the belt-idle test silently stops covering it.
+        static_assert(static_cast<int>(CardId::COUNT) == 5, "update beltIdle card list in DialUi::tick");
         const bool beltIdle =
             (screenNow == Screen::DISCONNECTED || screenNow == Screen::CLOCK ||
              screenNow == Screen::FLIGHTS || screenNow == Screen::LIGHT_OFFICE ||
@@ -339,7 +343,7 @@ void DialUi::tick(uint32_t nowMs)
         // dataValid=false, which the state machine treats as zero aircraft.
         const bool dataValid = !(m_flightsSnap.offline || m_flightsSnap.stale);
         const FlightsAutoShow::Action action =
-            m_autoShow.update(m_flightsSnap.count, m_cards.current(), beltIdle, dataValid);
+            m_autoShow.update(nowMs, m_flightsSnap.count, m_cards.current(), beltIdle, dataValid);
         if (action == FlightsAutoShow::Action::SHOW_FLIGHTS)
         {
             m_cards.set(CardId::FLIGHTS);
@@ -473,6 +477,10 @@ void DialUi::handleInput(uint32_t nowMs)
             // count, or stays at 0 when the list is empty.
             const uint8_t count = m_flightsSnap.count;
             m_flightIdx = static_cast<uint8_t>((m_flightIdx + 1) % (count > 0 ? count : 1));
+            // The user is reading the card, not just watching it appear: an
+            // auto-show episode must not yank it back to Clock underneath
+            // them when the count later drops (spec 4.11).
+            m_autoShow.noteManualNavigation();
             playAcceptBeep(true);
         }
         else if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
@@ -982,9 +990,10 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
     key.flightOffline  = m_flightsSnap.offline;
     if (m_flightsSnap.count > 0 && m_flightIdx < m_flightsSnap.count)
     {
-        // FNV-1a over the callsign bytes, then folded in altFt/100 and
-        // gsKt/10 (coarsened the same way FrameKey coarsens speed/distance
-        // elsewhere) — cheap, deterministic, no heap.
+        // FNV-1a over the callsign and flight-number bytes (both are drawn
+        // now), then folded in altFt/100, gsKt/10 (coarsened the same way
+        // FrameKey coarsens speed/distance elsewhere) and the on-ground
+        // flag — cheap, deterministic, no heap.
         const FlightsModel::Aircraft& a = m_flightsSnap.ac[m_flightIdx];
         uint32_t h = 2166136261u;
         for (const char* p = a.callsign; *p != '\0'; ++p)
@@ -992,6 +1001,13 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
             h ^= static_cast<uint8_t>(*p);
             h *= 16777619u;
         }
+        for (const char* p = a.flightNumber; *p != '\0'; ++p)
+        {
+            h ^= static_cast<uint8_t>(*p);
+            h *= 16777619u;
+        }
+        h ^= static_cast<uint32_t>(a.onGround ? 1u : 0u);
+        h *= 16777619u;
         h ^= static_cast<uint32_t>(a.altFt / 100);
         h *= 16777619u;
         h ^= static_cast<uint32_t>(a.gsKt / 10);
@@ -1425,15 +1441,19 @@ void DialUi::drawFlights(LovyanGFX& gfx)
         gfx.drawString(fallback, kCentreX, kFlightsFallbackY, &fonts::Font2);
     }
 
-    // "callsign - type"
+    // "BA123 - A320": the flight number is what a passenger (or a plane
+    // spotter with a phone) would recognise, so it wins over the raw ATC
+    // callsign whenever HA has resolved one; "BAW123 - A320" is the
+    // fallback when it hasn't (spec 4.11, final review 2026-09-05).
+    const char* headline = (ac.flightNumber[0] != '\0') ? ac.flightNumber : ac.callsign;
     char line1[32];
     if (ac.type[0] != '\0')
     {
-        snprintf(line1, sizeof(line1), "%s - %s", ac.callsign, ac.type);
+        snprintf(line1, sizeof(line1), "%s - %s", headline, ac.type);
     }
     else
     {
-        snprintf(line1, sizeof(line1), "%s", ac.callsign);
+        snprintf(line1, sizeof(line1), "%s", headline);
     }
     gfx.setTextColor(col(Col::TEXT), col(Col::BG));
     gfx.drawString(line1, kCentreX, kFlightsCallsignY, &fonts::Font2);
@@ -1475,11 +1495,20 @@ void DialUi::drawFlights(LovyanGFX& gfx)
         gfx.drawString(cityBuf, kCentreX, kFlightsCityY, &fonts::Font2);
     }
 
-    // Altitude/speed: "12,000 ft - 450 kt".
-    char altBuf[12];
-    formatThousands(ac.altFt, altBuf, sizeof(altBuf));
+    // Altitude/speed: "12,000 ft - 450 kt", or "on ground" for an aircraft
+    // HA flagged with gnd — "0 ft - 0 kt" reads like missing data rather
+    // than a taxiing aircraft (final review 2026-09-05).
     char altSpeedBuf[32];
-    snprintf(altSpeedBuf, sizeof(altSpeedBuf), "%s ft - %d kt", altBuf, ac.gsKt);
+    if (ac.onGround)
+    {
+        snprintf(altSpeedBuf, sizeof(altSpeedBuf), "on ground");
+    }
+    else
+    {
+        char altBuf[12];
+        formatThousands(ac.altFt, altBuf, sizeof(altBuf));
+        snprintf(altSpeedBuf, sizeof(altSpeedBuf), "%s ft - %d kt", altBuf, ac.gsKt);
+    }
     gfx.setTextColor(col(Col::TEXT), col(Col::BG));
     gfx.drawString(altSpeedBuf, kCentreX, kFlightsAltY, &fonts::Font2);
 
