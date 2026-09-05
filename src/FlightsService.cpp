@@ -184,6 +184,12 @@ void FlightsService::invalidateLogo(const char *iata)
         LittleFS.remove(path); // LittleFS is internally locked; safe from the loop task
         log_w("FlightsService: logo %.2s removed after a decode failure, will re-download once", iata);
     }
+    // The file is gone, so the next tickLogo() will want to download it —
+    // ask it to skip the retry window and any back-off accumulated for this
+    // IATA, so the re-download happens on the very next net-task pass
+    // rather than up to a minute later. The net task owns the gate itself;
+    // this is a one-word atomic hand-off (loop task -> net task).
+    m_logoRetryReset.store(true, std::memory_order_relaxed);
 }
 
 void FlightsService::onStateMessage(const uint8_t *payload, size_t len, uint32_t nowMs)
@@ -193,9 +199,12 @@ void FlightsService::onStateMessage(const uint8_t *payload, size_t len, uint32_t
 
     if (!FlightsModel::parseDialFlights(reinterpret_cast<const char *>(payload), len, working))
     {
-        // Keep whatever is already on screen: one malformed message (or a
-        // truncated one, if HA ever outgrows the MQTT buffer) shouldn't
-        // blank the card. tick() still ages the old list out via `stale`.
+        // Keep whatever is already on screen: one malformed message
+        // shouldn't blank the card. Note this is not the path an oversized
+        // HA payload takes — PubSubClient drops a packet larger than its
+        // receive buffer whole, so nothing reaches the parser at all and
+        // the symptom is the list going `stale` after kStaleAfterMs.
+        // tick() ages the old list out that way either way.
         log_w("FlightsService: flights payload failed to parse (%u bytes) — keeping previous list", (unsigned)len);
         return;
     }
@@ -233,10 +242,14 @@ void FlightsService::tick(uint32_t nowMs)
         s.stale   = stale;
     });
 
-    if (!visible || !wifiUp || m_httpBuf == nullptr)
+    if (!visible || !wifiUp || !mqttUp || m_httpBuf == nullptr)
     {
-        // Not on screen, no WiFi, or malloc() failed this tick under heap
-        // pressure — nothing to do but try again next tick.
+        // Not on screen, no WiFi, no MQTT, or malloc() failed this tick
+        // under heap pressure — nothing to do but try again next tick.
+        // MQTT is part of the gate because the logo host is Home Assistant
+        // itself (FLIGHTS_LOGO_BASE_URL defaults to MQTT_SERVER:8123): if
+        // the broker is unreachable, HA's web server almost certainly is
+        // too, so a GET would just burn a connect timeout every window.
         return;
     }
 
@@ -310,7 +323,15 @@ void FlightsService::tickLogo(uint32_t nowMs)
         return;
     }
 
-    if (isLogoMissing(wanted.v))
+    // invalidateLogo() asks for the next attempt to be immediate (the
+    // cached file has just been deleted after a decode failure).
+    if (m_logoRetryReset.exchange(false, std::memory_order_relaxed))
+    {
+        m_logoAttempted = false;
+        m_logoRetryMs   = kLogoRetryMs;
+    }
+
+    if (isLogoMissing(wanted.v, nowMs))
     {
         return;
     }
@@ -335,14 +356,21 @@ void FlightsService::tickLogo(uint32_t nowMs)
         LittleFS.remove(path);
     }
 
-    // Bounded retry: see kLogoRetryMs. The cache-hit path above is
-    // deliberately outside this gate — it costs one LittleFS stat and is
-    // how a freshly-wanted logo goes ready with no network at all.
+    // Bounded retry: see kLogoRetryMs/m_logoRetryMs. The cache-hit path
+    // above is deliberately outside this gate — it costs one LittleFS stat
+    // and is how a freshly-wanted logo goes ready with no network at all.
     const bool sameAsLastAttempt =
         strncmp(m_lastLogoAttemptIata, wanted.v, sizeof(m_lastLogoAttemptIata)) == 0;
-    if (m_logoAttempted && sameAsLastAttempt && (nowMs - m_lastLogoAttemptMs) < kLogoRetryMs)
+    if (m_logoAttempted && sameAsLastAttempt && (nowMs - m_lastLogoAttemptMs) < m_logoRetryMs)
     {
         return;
+    }
+    if (!sameAsLastAttempt)
+    {
+        // A different airline: this one's history is its own, so start it
+        // at the base window rather than inheriting the previous IATA's
+        // back-off (cycling through aircraft still fetches promptly).
+        m_logoRetryMs = kLogoRetryMs;
     }
     m_logoAttempted     = true;
     m_lastLogoAttemptMs = nowMs;
@@ -355,8 +383,9 @@ void FlightsService::tickLogo(uint32_t nowMs)
     {
         // HA has no www/logos/{IATA}.png for this airline — remembered so
         // the card doesn't ask again every tick this session.
-        markLogoMissing(wanted.v);
-        log_i("FlightsService: logo %s not found (404), remembered for this session", wanted.v);
+        markLogoMissing(wanted.v, nowMs);
+        log_i("FlightsService: logo %s not found (404), remembered for %u ms", wanted.v,
+              (unsigned)kLogoMissingTtlMs);
         return;
     }
     if (status == -2)
@@ -365,24 +394,31 @@ void FlightsService::tickLogo(uint32_t nowMs)
         // outlier this large is treated as missing for the rest of this
         // session rather than retried every tick (fetchLogo() already
         // log_w'd the actual length).
-        markLogoMissing(wanted.v);
-        log_w("FlightsService: logo %s exceeds %u-byte cap, treating as missing for this session",
-              wanted.v, (unsigned)kHttpBufCap);
+        markLogoMissing(wanted.v, nowMs);
+        log_w("FlightsService: logo %s exceeds %u-byte cap, treating as missing for %u ms", wanted.v,
+              (unsigned)kHttpBufCap, (unsigned)kLogoMissingTtlMs);
         return;
     }
     if (status != 200)
     {
-        log_w("FlightsService: logo %s download failed (status=%d)", wanted.v, status);
-        return; // transient — retried next tick, not marked missing
+        // Transient (a connect/transport error is status < 0, a 5xx is the
+        // number itself) — retried after the back-off window, not marked
+        // missing.
+        backOffLogoRetry();
+        log_w("FlightsService: logo %s download failed (status=%d), next attempt in %u ms", wanted.v, status,
+              (unsigned)m_logoRetryMs);
+        return;
     }
     if (strncasecmp(m_lastContentType, "image/png", 9) != 0)
     {
+        backOffLogoRetry();
         log_w("FlightsService: logo %s unexpected content-type '%s', discarding", wanted.v, m_lastContentType);
         return;
     }
     // C2: verify the PNG signature before it ever touches LittleFS.
     if (len <= sizeof(kPngSignature) || !isPngSignature(m_httpBuf, len))
     {
+        backOffLogoRetry();
         log_w("FlightsService: logo %s failed PNG signature check (%u bytes), discarding", wanted.v, (unsigned)len);
         return;
     }
@@ -390,6 +426,7 @@ void FlightsService::tickLogo(uint32_t nowMs)
     File out = LittleFS.open(path, "w");
     if (!out)
     {
+        backOffLogoRetry();
         log_w("FlightsService: failed to open %s for write", path);
         return;
     }
@@ -399,12 +436,14 @@ void FlightsService::tickLogo(uint32_t nowMs)
     {
         // C2: partial/failed write — remove it rather than leave a
         // truncated file behind; retried next visible session.
+        backOffLogoRetry();
         log_w("FlightsService: logo %s write incomplete (%u/%u bytes), removing",
               wanted.v, (unsigned)written, (unsigned)len);
         LittleFS.remove(path);
         return;
     }
 
+    m_logoRetryMs = kLogoRetryMs; // success: back to the base window
     m_logoStatus.modify([&](LogoStatus &ls) {
         safeCopy(wanted.v, ls.iata, sizeof(ls.iata));
         ls.ready = true;
@@ -450,23 +489,66 @@ bool FlightsService::validateLogoFile(const char *path) const
     return got == sizeof(sig) && isPngSignature(sig, got);
 }
 
+// --- retry back-off --------------------------------------------------------
+
+// One consecutive failure for the current IATA: double the retry window, up
+// to kLogoRetryMaxMs. Reset to kLogoRetryMs by a success, a change of wanted
+// airline (tickLogo()) or invalidateLogo().
+void FlightsService::backOffLogoRetry()
+{
+    if (m_logoRetryMs < kLogoRetryMaxMs)
+    {
+        const uint32_t doubled = m_logoRetryMs * 2;
+        m_logoRetryMs = (doubled > kLogoRetryMaxMs) ? kLogoRetryMaxMs : doubled;
+    }
+}
+
 // --- negative cache: simple linear scan + round-robin replacement ----------
 
-bool FlightsService::isLogoMissing(const char *iata) const
+// A hit that has aged past kLogoMissingTtlMs is dropped and reported as "not
+// missing", so the logo is fetched again: HA's automation downloads a new
+// airline's PNG a few seconds after publishing the aircraft, so an early 404
+// means "not yet", not "never", and must not latch for the whole session.
+bool FlightsService::isLogoMissing(const char *iata, uint32_t nowMs)
 {
     for (uint8_t i = 0; i < m_missingCount; i++)
     {
-        if (strncmp(m_missingLogos[i].iata, iata, sizeof(m_missingLogos[i].iata)) == 0)
+        if (m_missingLogos[i].iata[0] == '\0')
         {
-            return true;
+            continue; // slot freed by an earlier expiry
         }
+        if (strncmp(m_missingLogos[i].iata, iata, sizeof(m_missingLogos[i].iata)) != 0)
+        {
+            continue;
+        }
+        // Wrap-safe age compare (millis() rolls over every ~49 days).
+        if ((int32_t)(nowMs - m_missingLogos[i].whenMs) >= (int32_t)kLogoMissingTtlMs)
+        {
+            m_missingLogos[i].iata[0] = '\0';
+            log_i("FlightsService: logo %.2s negative-cache entry expired, will retry", iata);
+            return false;
+        }
+        return true;
     }
     return false;
 }
 
-void FlightsService::markLogoMissing(const char *iata)
+void FlightsService::markLogoMissing(const char *iata, uint32_t nowMs)
 {
+    // Reuse an expired/free slot before overwriting a live one; only fall
+    // back to round-robin replacement when the table is genuinely full.
+    for (uint8_t i = 0; i < m_missingCount; i++)
+    {
+        if (m_missingLogos[i].iata[0] == '\0')
+        {
+            safeCopy(iata, m_missingLogos[i].iata, sizeof(m_missingLogos[i].iata));
+            m_missingLogos[i].whenMs = nowMs;
+            return;
+        }
+    }
+
     safeCopy(iata, m_missingLogos[m_missingNext].iata, sizeof(m_missingLogos[m_missingNext].iata));
+    m_missingLogos[m_missingNext].whenMs = nowMs;
     m_missingNext = (uint8_t)((m_missingNext + 1) % kMissingLogoSize);
     if (m_missingCount < kMissingLogoSize)
     {

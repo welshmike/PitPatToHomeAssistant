@@ -334,8 +334,12 @@ void DialUi::tick(uint32_t nowMs)
             (screenNow == Screen::DISCONNECTED || screenNow == Screen::CLOCK ||
              screenNow == Screen::FLIGHTS || screenNow == Screen::LIGHT_OFFICE ||
              screenNow == Screen::LIGHT_LAMP);
+        // The count is only evidence while the snapshot is actually live:
+        // stale (HA quiet) or offline (MQTT down) data is passed as
+        // dataValid=false, which the state machine treats as zero aircraft.
+        const bool dataValid = !(m_flightsSnap.offline || m_flightsSnap.stale);
         const FlightsAutoShow::Action action =
-            m_autoShow.update(m_flightsSnap.count, m_cards.current(), beltIdle);
+            m_autoShow.update(m_flightsSnap.count, m_cards.current(), beltIdle, dataValid);
         if (action == FlightsAutoShow::Action::SHOW_FLIGHTS)
         {
             m_cards.set(CardId::FLIGHTS);

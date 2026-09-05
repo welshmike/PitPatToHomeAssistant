@@ -114,9 +114,13 @@ private:
     {
         char v[3] = {0};
     };
+    // Negative-cache entry: an IATA whose logo HA could not serve, and when
+    // that was decided. Entries expire (kLogoMissingTtlMs) rather than
+    // latching for the session — see isLogoMissing().
     struct MissingLogo
     {
-        char iata[3] = {0};
+        char     iata[3] = {0};
+        uint32_t whenMs  = 0;
     };
 
     void tickLogo(uint32_t nowMs);
@@ -135,8 +139,19 @@ private:
     // signature. Does not touch m_httpBuf.
     bool validateLogoFile(const char *path) const;
 
-    bool isLogoMissing(const char *iata) const;
-    void markLogoMissing(const char *iata);
+    // Negative cache with a TTL. HA's logo automation downloads a new
+    // airline's PNG a few seconds AFTER it publishes the aircraft that
+    // needs it, so the Dial's first GET of /local/logos/{IATA}.png very
+    // often 404s meaning "not yet", not "never". A latched miss would then
+    // leave that airline logo-less until the next reboot, so an entry
+    // older than kLogoMissingTtlMs is dropped and the fetch is retried.
+    // Net task only (both mutate the table).
+    // One consecutive failure for the current IATA: doubles m_logoRetryMs
+    // up to kLogoRetryMaxMs. Net task only.
+    void backOffLogoRetry();
+
+    bool isLogoMissing(const char *iata, uint32_t nowMs);
+    void markLogoMissing(const char *iata, uint32_t nowMs);
 
     // Plain-HTTP GET of FLIGHTS_LOGO_BASE_URL "/logos/{iata}.png" into
     // m_httpBuf (HA serves these off its own `config/www/`, so there is no
@@ -192,10 +207,24 @@ private:
     // The gate is keyed on m_lastLogoAttemptIata alone — it only suppresses
     // repeat attempts for the *same* IATA within the window; it has no
     // memory of any other airline's attempt history.
-    static constexpr uint32_t kLogoRetryMs = 5000;
+    // The window doubles (kLogoRetryMs -> kLogoRetryMaxMs) on each
+    // consecutive failed attempt for the same IATA — a connect refusal or
+    // any other transport error while HA is down would otherwise re-open a
+    // socket every 5 s indefinitely — and resets to kLogoRetryMs on a
+    // success or a change of wanted airline.
+    static constexpr uint32_t kLogoRetryMs    = 5000;
+    static constexpr uint32_t kLogoRetryMaxMs = 60000;
     uint32_t m_lastLogoAttemptMs      = 0;
+    uint32_t m_logoRetryMs            = kLogoRetryMs;
     bool     m_logoAttempted          = false;
     char     m_lastLogoAttemptIata[3] = {0};
+
+    // Loop task -> net task: invalidateLogo() sets this so the next
+    // tickLogo() clears the retry gate and re-downloads immediately rather
+    // than waiting out the current back-off window. Not keyed by IATA:
+    // invalidateLogo() is only ever called for the aircraft on screen,
+    // which is by definition the wanted logo.
+    std::atomic<bool> m_logoRetryReset{false};
 
     // M2: HTTP scratch buffer for the logo body. Lazily malloc'ed/freed by
     // manageHttpBuf() (see tick()) rather than a static member, so it only
@@ -210,6 +239,10 @@ private:
     uint32_t  m_httpBufIdleSinceMs = 0; // 0 = not counting down (active, or already freed)
     char      m_lastContentType[40] = {0};
 
+    // 10 minutes: long enough that a genuinely absent logo isn't re-fetched
+    // on every card visit, short enough that one HA has since downloaded
+    // shows up well within a session.
+    static constexpr uint32_t kLogoMissingTtlMs = 10 * 60 * 1000;
     static constexpr uint8_t kMissingLogoSize = 16;
     MissingLogo   m_missingLogos[kMissingLogoSize];
     uint8_t       m_missingCount = 0;

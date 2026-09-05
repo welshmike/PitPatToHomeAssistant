@@ -9,11 +9,18 @@ void FlightsAutoShow::setEnabled(bool enabled)
     m_autoShown = false;
 }
 
-FlightsAutoShow::Action FlightsAutoShow::update(uint8_t aircraftCount, CardId currentCard, bool beltIdle)
+FlightsAutoShow::Action FlightsAutoShow::update(uint8_t aircraftCount, CardId currentCard, bool beltIdle,
+                                               bool dataValid)
 {
+    // Stale or offline data is not evidence of anything: treat it as "no
+    // aircraft" everywhere below, so an auto-shown card returns to Clock
+    // when HA goes quiet and no fresh SHOW edge can be manufactured out of
+    // a list nobody is maintaining any more.
+    const uint8_t effCount = dataValid ? aircraftCount : 0;
+
     if (!m_enabled)
     {
-        m_prevCount = aircraftCount;
+        m_prevCount = effCount;
         return Action::NONE;
     }
 
@@ -26,18 +33,18 @@ FlightsAutoShow::Action FlightsAutoShow::update(uint8_t aircraftCount, CardId cu
 
     Action action = Action::NONE;
 
-    if (!m_autoShown && beltIdle && currentCard == CardId::CLOCK && m_prevCount == 0 && aircraftCount > 0)
+    if (!m_autoShown && beltIdle && currentCard == CardId::CLOCK && m_prevCount == 0 && effCount > 0)
     {
         m_autoShown = true;
         action = Action::SHOW_FLIGHTS;
     }
-    else if (m_autoShown && aircraftCount == 0 && currentCard == CardId::FLIGHTS)
+    else if (m_autoShown && effCount == 0 && currentCard == CardId::FLIGHTS)
     {
         m_autoShown = false;
         action = Action::RETURN_TO_CLOCK;
     }
 
-    m_prevCount = aircraftCount;
+    m_prevCount = effCount;
     return action;
 }
 

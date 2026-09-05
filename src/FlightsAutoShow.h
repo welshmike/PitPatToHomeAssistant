@@ -26,18 +26,24 @@ public:
     void setEnabled(bool enabled);
 
     // Call once per poll with the latest aircraft count, the card currently
-    // on screen, and whether the belt is idle (the screen resolves to a
-    // card, not Connecting/Starting/Running/Selector). Returns the action
-    // the caller should take, if any:
+    // on screen, whether the belt is idle (the screen resolves to a card,
+    // not Connecting/Starting/Running/Selector) and whether that count can
+    // be trusted. `dataValid` is false when the snapshot is stale or
+    // offline (HA gone quiet, or MQTT down): the count on screen may be
+    // minutes old, so it is treated as 0 for BOTH decisions below — no
+    // SHOW_FLIGHTS fires on untrusted data, and an auto-shown card hands
+    // itself back to Clock rather than sitting on aircraft that may have
+    // long since flown past. Returns the action the caller should take, if
+    // any:
     //  - SHOW_FLIGHTS: enabled, beltIdle, currentCard == CLOCK, and the
-    //    aircraft count has just gone from 0 to >0.
+    //    (effective) aircraft count has just gone from 0 to >0.
     //  - RETURN_TO_CLOCK: this state machine auto-showed Flights earlier,
-    //    the count has dropped back to 0, and currentCard is still FLIGHTS
-    //    (i.e. the user hasn't navigated away from it themselves).
+    //    the (effective) count has dropped back to 0, and currentCard is
+    //    still FLIGHTS (i.e. the user hasn't navigated away themselves).
     // If currentCard is neither CLOCK nor FLIGHTS while an auto-show is in
     // progress, the episode is silently forgotten (the user left some other
     // way, e.g. the belt started) — no RETURN_TO_CLOCK follows.
-    Action update(uint8_t aircraftCount, CardId currentCard, bool beltIdle);
+    Action update(uint8_t aircraftCount, CardId currentCard, bool beltIdle, bool dataValid);
 
     // Call when the user manually navigates (knob scroll, side-button home)
     // while an auto-show is in progress: cancels the automatic return so a
