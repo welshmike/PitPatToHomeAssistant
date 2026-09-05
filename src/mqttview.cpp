@@ -22,6 +22,7 @@ MqttView::MqttView(PubSubClient *client)
       m_idleDisconnectMins(&m_device, "idle-disconnect-mins", "Idle Disconnect Minutes"),
       m_pauseTimeoutMins(&m_device, "pause-timeout-mins", "Pause Timeout Minutes"),
       m_startSpeed(&m_device, "start-speed", "Start Speed"),
+      m_flightsAutoShow(&m_device, "flights-auto-show", "Flights Auto-show"),
       // Cumulative totals
       m_totalDistance(&m_device, "total-distance", "Total Distance"),
       m_totalSteps(&m_device, "total-steps", "Total Steps"),
@@ -114,6 +115,11 @@ MqttView::MqttView(PubSubClient *client)
     m_startSpeed.setMode(NumberMode::BOX);
     m_startSpeed.setIcon("mdi:speedometer-slow");
     m_startSpeed.setUnit("mph");
+
+    // Flights auto-show (spec 4.11): lets the Dial raise the Flights card
+    // over the Clock while aircraft are nearby.
+    m_flightsAutoShow.setEntityType(EntityCategory::CONFIG);
+    m_flightsAutoShow.setIcon("mdi:airplane-clock");
 
     // Cumulative totals — each has its own state topic so they can use retain=true
     // and survive MQTT reconnects without waiting for the next live packet.
@@ -223,6 +229,7 @@ void MqttView::publishAllConfigs()
     publishConfig(m_idleDisconnectMins);
     publishConfig(m_pauseTimeoutMins);
     publishConfig(m_startSpeed);
+    publishConfig(m_flightsAutoShow);
 
     // Diagnostics
     publishConfig(m_maxSpeed);
@@ -261,6 +268,18 @@ void MqttView::publishStartSpeedSetting(float mph)
     char buf[16];
     snprintf(buf, sizeof(buf), "%.1f", mph);
     publishMqttState(m_startSpeed, buf);
+}
+
+void MqttView::publishFlightsAutoShowSetting(bool enabled)
+{
+    if (enabled)
+    {
+        publishMqttState(m_flightsAutoShow, m_flightsAutoShow.getOnState());
+    }
+    else
+    {
+        publishMqttState(m_flightsAutoShow, m_flightsAutoShow.getOffState());
+    }
 }
 
 void MqttView::publishState(TreadMillData data)

@@ -222,6 +222,9 @@ void NetTask::drainPublishQueue()
         case PubType::START_SPEED:
             m_view.publishStartSpeedSetting(item.f);
             break;
+        case PubType::FLIGHTS_AUTO_SHOW:
+            m_view.publishFlightsAutoShowSetting(item.b);
+            break;
         case PubType::CALIB_COUNT:
             m_view.publishCalibrationPoints(item.u8);
             break;
@@ -256,6 +259,7 @@ void NetTask::onMqttConnected()
     client.subscribe(m_view.getIdleDisconnectNumber().getCommandTopic(), 1);
     client.subscribe(m_view.getPauseTimeoutNumber().getCommandTopic(), 1);
     client.subscribe(m_view.getStartSpeedNumber().getCommandTopic(), 1);
+    client.subscribe(m_view.getFlightsAutoShowSwitch().getCommandTopic(), 1);
 
     client.subscribe(m_restoreTotalsTopic);
     log_i("Restore-totals topic: %s", m_restoreTotalsTopic);
@@ -306,6 +310,7 @@ void NetTask::fullResync()
     m_view.publishIdleDisconnectSetting(m_treadmill.getIdleDisconnectMins());
     m_view.publishPauseTimeoutSetting(m_treadmill.getPauseTimeoutMins());
     m_view.publishStartSpeedSetting(m_treadmill.getStartSpeedMph());
+    m_view.publishFlightsAutoShowSetting(m_treadmill.getFlightsAutoShow());
     m_view.publishCalibrationPoints(m_treadmill.getCalibrationPointCount());
 
     if (!m_stackLogged)
@@ -484,6 +489,32 @@ void NetTask::onMqttMessage(char *topic, uint8_t *payload, unsigned int length)
         cmd.type = CmdType::SET_START_SPEED;
         cmd.f    = strtof(buf, nullptr);
         log_i("Start speed setting received: %.1f mph", cmd.f);
+        enqueueCommand(cmd);
+        return;
+    }
+
+    if (strcmp(topic, m_view.getFlightsAutoShowSwitch().getCommandTopic()) == 0)
+    {
+        if (!payloadToBuf(payload, length, buf, sizeof(buf)))
+        {
+            return;
+        }
+        trimInPlace(buf);
+        log_i("Flights auto-show command received: %s", buf);
+        const MqttSwitch &sw = m_view.getFlightsAutoShowSwitch();
+        if (strcasecmp(buf, sw.getOnState()) == 0)
+        {
+            cmd.b = true;
+        }
+        else if (strcasecmp(buf, sw.getOffState()) == 0)
+        {
+            cmd.b = false;
+        }
+        else
+        {
+            return;
+        }
+        cmd.type = CmdType::SET_FLIGHTS_AUTO_SHOW;
         enqueueCommand(cmd);
         return;
     }

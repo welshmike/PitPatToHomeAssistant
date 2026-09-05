@@ -26,6 +26,7 @@ enum class CmdType : uint8_t
     SET_IDLE_MINS,
     SET_PAUSE_MINS,
     SET_START_SPEED,
+    SET_FLIGHTS_AUTO_SHOW,
     TOGGLE_CALIBRATION,
     RESTORE_TOTALS,
     RESTORE_CALIBRATION,
@@ -36,7 +37,7 @@ struct Command
 {
     CmdType  type = CmdType::NONE;
     float    f    = 0;     // SET_SPEED_MPH / SET_START_SPEED
-    bool     b    = false; // SET_AUTO_RECONNECT
+    bool     b    = false; // SET_AUTO_RECONNECT / SET_FLIGHTS_AUTO_SHOW
     uint16_t u16  = 0;     // SET_IDLE_MINS / SET_PAUSE_MINS
 
     // RESTORE_TOTALS. has[] marks which fields the JSON payload actually carried;
@@ -65,6 +66,7 @@ enum class PubType : uint8_t
     IDLE_MINS,
     PAUSE_MINS,
     START_SPEED,
+    FLIGHTS_AUTO_SHOW,
     CALIB_COUNT,
     FULL_RESYNC,
     LIGHT_CMD,
@@ -74,7 +76,7 @@ struct PublishItem
 {
     PubType       type = PubType::SNAPSHOT;
     TreadMillData snap;         // SNAPSHOT
-    bool          b    = false; // AUTO_RECONNECT
+    bool          b    = false; // AUTO_RECONNECT / FLIGHTS_AUTO_SHOW
     uint16_t      u16  = 0;     // IDLE_MINS / PAUSE_MINS
     uint8_t       u8   = 0;     // CALIB_COUNT
     float         f    = 0;     // START_SPEED

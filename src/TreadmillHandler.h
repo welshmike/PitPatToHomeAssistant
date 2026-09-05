@@ -75,6 +75,17 @@ public:
         return (uint16_t)lroundf(getStartSpeedMph() * SPEED_RAW_PER_MPH);
     }
 
+    // Flights auto-show (spec 4.11): whether the Dial may raise the Flights
+    // card over the Clock while aircraft are nearby. Belt-unrelated, but it
+    // lives here because this is where every persisted user setting lives —
+    // one NVS namespace, one saveSettings().
+    void setFlightsAutoShow(bool on);
+
+    bool getFlightsAutoShow() const
+    {
+        return m_flightsAutoShow;
+    }
+
     // Dynamic Step Calibration
     void toggleCalibration() { m_state.toggleCalibration(m_snapshot.read().speedFeedback); }
     uint8_t getCalibrationPointCount() const { return m_state.getCalibrationPointCount(); }
@@ -231,6 +242,9 @@ private:
     // START_SPEED_DEFAULT_MPH. Every "start" path uses this instead of the fixed
     // START_SPEED_RAW.
     uint16_t m_startSpeedTenths = 10;
+
+    // Flights auto-show setting (NVS key "fl_auto"), default on.
+    bool m_flightsAutoShow = true;
 
     // Pending command — queued when start()/setSpeed() is called while disconnected.
     // Executed in handle() once reconnected and POST_CONNECT_COOLDOWN has elapsed.

@@ -133,6 +133,14 @@ static void drainCommands()
       enqueue(PubType::START_SPEED, false, 0, 0, treadmill.getStartSpeedMph());
       break;
 
+    case CmdType::SET_FLIGHTS_AUTO_SHOW:
+      treadmill.setFlightsAutoShow(cmd.b);
+#if HAS_DIAL_UI
+      dialUi.setFlightsAutoShow(cmd.b);
+#endif
+      enqueue(PubType::FLIGHTS_AUTO_SHOW, cmd.b);
+      break;
+
     case CmdType::TOGGLE_CALIBRATION:
       treadmill.toggleCalibration();
       enqueue(PubType::CALIB_COUNT, false, 0, treadmill.getCalibrationPointCount());
@@ -204,6 +212,13 @@ void setup()
   // BLE first: the belt must work with no network at all.
   NimBLEAddress targetAddress(std::string(TARGET_ADDRESS), BLE_ADDR_PUBLIC);
   treadmill.begin(targetAddress);
+
+#if HAS_DIAL_UI
+  // treadmill.begin() has just loaded the persisted settings from NVS, so the
+  // Dial's auto-show state machine starts from the stored value (spec 4.11)
+  // rather than its own default — HA gets the same value from fullResync().
+  dialUi.setFlightsAutoShow(treadmill.getFlightsAutoShow());
+#endif
 
   log_i("Starting BLE Client...");
   NimBLEDevice::init("PaceKeeper");

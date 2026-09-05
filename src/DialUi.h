@@ -13,6 +13,7 @@
 #include "TimeService.h"
 #include "FlightsService.h"
 #include "FlightsModel.h"
+#include "FlightsAutoShow.h"
 #include "LightsService.h"
 #include "LightsModel.h"
 #include "LightCardState.h"
@@ -48,6 +49,13 @@ public:
     // and drives the controller every call; renders at most once every
     // kRenderIntervalMs.
     void tick(uint32_t nowMs);
+
+    // Flights auto-show setting (spec 4.11), owned by HA and persisted in
+    // NVS: main.cpp calls this at boot with the stored value and again on
+    // every SET_FLIGHTS_AUTO_SHOW command. Disabling forgets any auto-show
+    // episode in progress (see FlightsAutoShow::setEnabled) — the card the
+    // ring is parked on is left alone.
+    void setFlightsAutoShow(bool on);
 
     void onSnapshot(const TreadMillData& d) override;
     void onTargetSpeed(float mph, bool pending) override;
@@ -142,12 +150,19 @@ private:
     Screen currentScreen(bool paused) const;
 
     void handleInput(uint32_t nowMs);
+    // Pulls a fresh FlightsSnapshot at most every kFlightsSnapIntervalMs.
+    // Called from tick() on EVERY call, whatever screen is showing (spec
+    // 4.11): the auto-show state machine needs the aircraft count while the
+    // Clock card is up, not just while the Flights card is. snapshot() is a
+    // Guarded copy — cheap, and rate-limited here exactly as before.
+    void pollFlights(uint32_t nowMs);
     // Flights card housekeeping (spec 4.9), called from tick() every call
-    // while screen == FLIGHTS: pulls a fresh snapshot at most every
-    // kFlightsSnapIntervalMs, clamps m_flightIdx to the (possibly changed)
+    // while screen == FLIGHTS: clamps m_flightIdx to the (possibly changed)
     // aircraft count, and tells FlightsService which airline logo the net
-    // task should be fetching for the currently-selected aircraft.
-    void tickFlights(uint32_t nowMs);
+    // task should be fetching for the currently-selected aircraft. The
+    // snapshot itself is pulled by pollFlights() above, which runs whether
+    // or not this card is showing.
+    void tickFlights();
     // Lights card housekeeping (Plan 6), called from tick() every call while
     // the screen is a light card: pulls a fresh LightsSnapshot at most every
     // kLightsSnapIntervalMs and sync()s BOTH cards from it, then polls the
@@ -288,6 +303,11 @@ private:
     bool m_haveFlightsSnap = false;
     uint32_t m_lastFlightsSnapMs = 0;
     uint8_t m_flightIdx = 0; // index into m_flightsSnap.ac[], cycled by tap
+    // Auto-show (spec 4.11): decides when the Flights card should interrupt
+    // the Clock card and when to hand it back. Fed from tick() every call
+    // with the latest m_flightsSnap.count; enabled/disabled from HA via
+    // setFlightsAutoShow(). Pure — no time, no Arduino.
+    FlightsAutoShow m_autoShow;
     // Minor: last IATA passed to m_flights.setWantedLogo(), so tickFlights()
     // only calls it again when the wanted airline actually changes rather
     // than every call while screen == FLIGHTS.

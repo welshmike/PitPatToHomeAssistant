@@ -315,15 +315,56 @@ void DialUi::tick(uint32_t nowMs)
     M5Dial.update();
     handleInput(nowMs);
 
+    // Flights snapshot (spec 4.11): pulled on every tick, whatever is on
+    // screen — the auto-show state machine below needs the aircraft count
+    // while the Clock card is showing, not only while the Flights card is.
+    // Still rate-limited to kFlightsSnapIntervalMs inside pollFlights().
+    pollFlights(nowMs);
+
+    Screen screenNow = currentScreen(isPausedState());
+
+    // Auto-show (spec 4.11): the Flights card interrupts the Clock card
+    // while aircraft are nearby and hands control back when they are gone.
+    // Only meaningful while the belt is idle — i.e. the resolved screen is
+    // one of the desk cards rather than Connecting/Starting/Running/Selector
+    // — which is exactly what FlightsAutoShow's beltIdle argument means.
+    {
+        const bool beltIdle =
+            (screenNow == Screen::DISCONNECTED || screenNow == Screen::CLOCK ||
+             screenNow == Screen::FLIGHTS || screenNow == Screen::LIGHT_OFFICE ||
+             screenNow == Screen::LIGHT_LAMP);
+        const FlightsAutoShow::Action action =
+            m_autoShow.update(m_flightsSnap.count, m_cards.current(), beltIdle);
+        if (action == FlightsAutoShow::Action::SHOW_FLIGHTS)
+        {
+            m_cards.set(CardId::FLIGHTS);
+            m_flightIdx = 0;
+            // Nobody touched the Dial — wake the backlight ourselves so the
+            // card that just raised itself is actually readable. Brightness
+            // follows on the same tick rather than waiting for the next
+            // handleInput().
+            m_input.noteActivity(nowMs);
+            applyBrightness();
+        }
+        else if (action == FlightsAutoShow::Action::RETURN_TO_CLOCK)
+        {
+            m_cards.set(CardId::CLOCK);
+        }
+        if (action != FlightsAutoShow::Action::NONE)
+        {
+            // The ring moved: re-resolve so the visibility/housekeeping below
+            // and render() further down all act on the new card this tick.
+            screenNow = currentScreen(isPausedState());
+        }
+    }
+
     // Flights card (spec 4.9): tell FlightsService whether the card is on
-    // screen every tick (cheap atomic write; NetTask::flights() only fetches
-    // aircraft while visible), and pull fresh data at most every
-    // kFlightsSnapIntervalMs while it is.
-    const Screen screenNow = currentScreen(isPausedState());
+    // screen every tick (cheap atomic write), then run the visible card's
+    // own housekeeping (idx clamp, wanted logo) while it is.
     m_flights.setVisible(screenNow == Screen::FLIGHTS);
     if (screenNow == Screen::FLIGHTS)
     {
-        tickFlights(nowMs);
+        tickFlights();
     }
 
     // Lights cards (Plan 6): same shape as the flights housekeeping above —
@@ -538,6 +579,9 @@ void DialUi::handleInput(uint32_t nowMs)
             // Leaving whatever card was showing: a light card parked
             // mid-edit must not come back engaged (Plan 6).
             releaseLightCards();
+            // The user is driving the ring themselves — an auto-show in
+            // progress must not later yank the card back to Clock (4.11).
+            m_autoShow.noteManualNavigation();
             m_cards.set(CardId::TREADMILL);
             playAcceptBeep(true);
         }
@@ -596,6 +640,10 @@ void DialUi::handleInput(uint32_t nowMs)
                     // The ring is about to move: drop any engagement first so
                     // a card left mid-edit doesn't come back engaged.
                     releaseLightCards();
+                    // Manual navigation in either direction cancels any
+                    // auto-show episode, so a later drop to zero aircraft
+                    // doesn't fight the user's own scrolling (spec 4.11).
+                    m_autoShow.noteManualNavigation();
                     if (ev.detents > 0)
                     {
                         for (int i = 0; i < ev.detents; ++i)
@@ -634,18 +682,22 @@ void DialUi::handleInput(uint32_t nowMs)
 #endif
 }
 
-void DialUi::tickFlights(uint32_t nowMs)
+void DialUi::pollFlights(uint32_t nowMs)
 {
     // Pull a fresh copy at most every kFlightsSnapIntervalMs (and always on
     // the very first call) — snapshot() is a Guarded copy, cheap but no
-    // reason to pay for it every loop() iteration.
+    // reason to pay for it every loop() iteration. Unsigned subtraction, so
+    // this stays correct across a millis() wrap.
     if (!m_haveFlightsSnap || (nowMs - m_lastFlightsSnapMs) >= kFlightsSnapIntervalMs)
     {
         m_lastFlightsSnapMs = nowMs;
         m_flightsSnap = m_flights.snapshot();
         m_haveFlightsSnap = true;
     }
+}
 
+void DialUi::tickFlights()
+{
     // Clamp to the (possibly just-changed) aircraft count — 0 when empty.
     if (m_flightsSnap.count == 0 || m_flightIdx >= m_flightsSnap.count)
     {
@@ -796,6 +848,11 @@ void DialUi::applyBrightness()
     case DialInput::Backlight::DIM:  level = kBrightDim;  break;
     }
     M5Dial.Display.setBrightness(level);
+}
+
+void DialUi::setFlightsAutoShow(bool on)
+{
+    m_autoShow.setEnabled(on);
 }
 
 void DialUi::onSnapshot(const TreadMillData& d)
@@ -1299,9 +1356,10 @@ void DialUi::drawClock(LovyanGFX& gfx)
 }
 
 // Flights card (spec 4.9): nearest aircraft, nearest-first, cycled by tap
-// (see handleInput()/tickFlights()). m_flightsSnap/m_flightIdx are only
-// touched by tickFlights() (called from tick(), loop task), so this is a
-// plain read — no locking needed on top of Guarded's own.
+// (see handleInput()/tickFlights()). m_flightsSnap is written only by
+// pollFlights() and m_flightIdx only by handleInput()/tickFlights()/tick()
+// (all on the loop task), so this is a plain read — no locking needed on
+// top of Guarded's own.
 void DialUi::drawFlights(LovyanGFX& gfx)
 {
     if (m_flightsSnap.stale)
@@ -1312,7 +1370,7 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     if (m_flightsSnap.offline)
     {
         gfx.setTextColor(col(Col::TEXT), col(Col::BG));
-        gfx.drawString("waiting for WiFi", kRingCx, kRingCy, &fonts::Font4);
+        gfx.drawString("waiting for HA", kRingCx, kRingCy, &fonts::Font4);
         return;
     }
 

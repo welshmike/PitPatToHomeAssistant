@@ -214,6 +214,7 @@ void TreadmillHandler::begin(NimBLEAddress address)
         m_idleDisconnectMins = prefs.getUShort("idle", 30);
         m_pauseTimeoutMins   = prefs.getUShort("pause", 10);
         m_startSpeedTenths   = prefs.getUShort("start", 10);
+        m_flightsAutoShow    = prefs.getBool("fl_auto", true);
         prefs.end();
         // Clamp on load too — guards against a stale/out-of-range value written
         // by an older firmware or a manual NVS edit.
@@ -223,8 +224,9 @@ void TreadmillHandler::begin(NimBLEAddress address)
             if (m_startSpeedTenths < minTenths) m_startSpeedTenths = minTenths;
             if (m_startSpeedTenths > maxTenths) m_startSpeedTenths = maxTenths;
         }
-        log_i("Settings loaded: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min startSpeed=%u tenths",
-              m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins, m_startSpeedTenths);
+        log_i("Settings loaded: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min startSpeed=%u tenths flightsAutoShow=%d",
+              m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins, m_startSpeedTenths,
+              m_flightsAutoShow);
     }
 
     // Pre-populate m_snapshot totals from NVS so that the first publishState()
@@ -251,9 +253,11 @@ void TreadmillHandler::saveSettings()
     prefs.putUShort("idle",  m_idleDisconnectMins);
     prefs.putUShort("pause", m_pauseTimeoutMins);
     prefs.putUShort("start", m_startSpeedTenths);
+    prefs.putBool("fl_auto", m_flightsAutoShow);
     prefs.end();
-    log_i("Settings saved: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min startSpeed=%u tenths",
-          m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins, m_startSpeedTenths);
+    log_i("Settings saved: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min startSpeed=%u tenths flightsAutoShow=%d",
+          m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins, m_startSpeedTenths,
+          m_flightsAutoShow);
 }
 
 void TreadmillHandler::setStartSpeedMph(float mph)
@@ -263,6 +267,13 @@ void TreadmillHandler::setStartSpeedMph(float mph)
     m_startSpeedTenths = (uint16_t)lroundf(mph * 10.0f);
     saveSettings();
     log_i("Start speed set: %.1f mph (%u tenths)", getStartSpeedMph(), m_startSpeedTenths);
+}
+
+void TreadmillHandler::setFlightsAutoShow(bool on)
+{
+    m_flightsAutoShow = on;
+    saveSettings();
+    log_i("Flights auto-show set: %d", m_flightsAutoShow);
 }
 
 void TreadmillHandler::setIdleDisconnectMins(uint16_t mins)
