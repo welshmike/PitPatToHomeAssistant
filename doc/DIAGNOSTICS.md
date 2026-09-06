@@ -14,7 +14,7 @@ Both boards do this; the topics are fixed strings, and only one board is ever li
 | --- | --- | --- |
 | `pacekeeper-dial/diag` | no (QoS 0) | one log line per message, e.g. `W (48213) Treadmill: Mid-session kick — backing off 10s before reconnect to work through kicking phase` |
 | `pacekeeper-dial/diag/boot` | **yes** | `{"reset":"SW","build":"Sep  6 2026 12:41:07","uptime_s":37,"heap":118432,"last_lines":0}` |
-| `pacekeeper-dial/diag/last` | **yes** | one JSON object per crash: `{"reset":"TASK_WDT","build":"…","lines":["I (5642) Treadmill: connect() begin", …]}` oldest first — see [After a crash](#after-a-crash) |
+| `pacekeeper-dial/diag/last` | **yes** | one JSON object per crash: `{"reset":"TASK_WDT","build":"…","lines":["I (5642) Treadmill: link begin", …]}` oldest first — see [After a crash](#after-a-crash) |
 
 The boot record is republished on every MQTT (re)connect, so a subscriber that arrives late still
 learns how the Dial last restarted:
@@ -92,8 +92,9 @@ with room to spare — a `static_assert` in `NetTask.cpp` keeps it that way).
 
 Two things exist purely to make that tail readable:
 
-* **Brackets around the blocking BLE calls** (`src/TreadmillHandler.cpp`): `connect() begin` /
-  `connect() end ok|fail in N ms` around `NimBLEClient::connect()`, and `discover begin` /
+* **Brackets around the blocking BLE calls** (`src/TreadmillHandler.cpp`): `link begin` /
+  `link up after N ms` (or `link timeout after N ms, cancelled`) around the asynchronous
+  `NimBLEClient::connect()`, and `setup begin` /
   `discover end` around the service-discovery retry loop. A `begin` with no matching `end` at the
   tail of the ring names which call the loop task froze in.
 * **The loop stall detector** (`src/main.cpp`): a `loop stall N ms` warning whenever one `loop()`
