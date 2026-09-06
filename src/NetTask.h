@@ -72,6 +72,10 @@ public:
 
 private:
     void drainPublishQueue();
+    // Publishes up to 4 queued RemoteLog lines (spec 4.14). Net task only —
+    // this is the one place PubSubClient is touched for diagnostics.
+    void drainDiagQueue();
+    void publishBootRecord();
     void fullResync();
     bool enqueueCommand(const Command &cmd);
 

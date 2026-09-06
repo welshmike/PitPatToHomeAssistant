@@ -12,6 +12,10 @@
 
 #include "NetManager.h"
 
+// -DUSE_ESP_IDF_LOG (spec 4.14) makes log_x() expand to
+// ESP_LOG_LEVEL_LOCAL(..., TAG, ...); esp32-hal-log.h has no default TAG.
+static const char *TAG = "Flights";
+
 namespace
 {
 

@@ -187,6 +187,9 @@ blocked while the belt is still active).
   ```bash
   pio device monitor -e dial-usb
   ```
+* With nothing plugged in, the same log lines (warnings, errors and the BLE connect/kick story)
+  come out over MQTT on `pacekeeper-dial/diag`, plus a retained boot record on
+  `pacekeeper-dial/diag/boot` — see [`doc/DIAGNOSTICS.md`](doc/DIAGNOSTICS.md).
 
 ### Desk mode
 

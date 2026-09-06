@@ -16,6 +16,10 @@
 #include "DialMenuView.h"
 #include "LightLayout.h"
 
+// -DUSE_ESP_IDF_LOG (spec 4.14) makes log_x() expand to
+// ESP_LOG_LEVEL_LOCAL(..., TAG, ...); esp32-hal-log.h has no default TAG.
+static const char *TAG = "DialUi";
+
 namespace {
 
 // Three 8px status dots along the top: BLE, WiFi, MQTT, left to right.

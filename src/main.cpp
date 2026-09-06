@@ -15,12 +15,17 @@
 #include "TreadmillController.h"
 #include "NetManager.h"
 #include "NetTask.h"
+#include "RemoteLog.h"
 #include "mqttview.h"
 #include "board.h"
 #include "TimeService.h"
 #if HAS_DIAL_UI
 #include "DialUi.h"
 #endif
+
+// -DUSE_ESP_IDF_LOG (spec 4.14) makes log_x() expand to
+// ESP_LOG_LEVEL_LOCAL(..., TAG, ...); esp32-hal-log.h has no default TAG.
+static const char *TAG = "App";
 
 const uint WATCHDOG_TIMEOUT_S = 300;
 
@@ -175,8 +180,16 @@ static void drainCommands()
 
 void setup()
 {
+  // Very first statement (spec 4.14): from here on every log line — ours, the
+  // IDF's — is also queued for MQTT, so the boot story is captured even though
+  // nothing has opened Serial yet. The net task publishes the queue once MQTT
+  // is up; the line below therefore reaches the broker even if its serial copy
+  // is lost to the not-yet-initialised port.
+  RemoteLog::begin();
+  log_w("boot: reset=%s build=%s", RemoteLog::resetReasonName(), RemoteLog::buildStamp());
+
 #if HAS_DIAL_UI
-  // Must run first: M5Unified owns display/I2C/Serial init on the Dial.
+  // Must run first after that: M5Unified owns display/I2C/Serial init on the Dial.
   dialUi.begin();
 #endif
 

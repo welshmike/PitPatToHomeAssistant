@@ -7,9 +7,12 @@
 #include <strings.h> // strcasecmp
 
 #include "NetManager.h"
+#include "RemoteLog.h"
 #include "TreadmillHandler.h"
 #include "mqttview.h"
 #include "platform.h"
+
+static const char *TAG = "NetTask";
 
 namespace
 {
@@ -18,6 +21,11 @@ namespace
 NetTask *s_self = nullptr;
 
 constexpr UBaseType_t kQueueDepth = 8;
+
+// Diagnostics lines published per net-task loop (spec 4.14). Four every 10 ms
+// drains a burst fast enough to be useful while leaving NetManager::tick() —
+// and with it the MQTT keepalive — the rest of the loop.
+constexpr int kDiagPerLoop = 4;
 
 // 12 KB (bumped from 8 KB for FlightsService, spec 4.9): the deepest paths
 // were the discovery resync (a 255-byte topic buffer plus String/JSON
@@ -141,6 +149,7 @@ void NetTask::run()
         m_net.tick(millis());
         m_status.store(m_net.status(), std::memory_order_relaxed);
         drainPublishQueue();
+        drainDiagQueue();
 #if HAS_DIAL_UI
         m_flights.tick(millis());
 #endif
@@ -245,9 +254,43 @@ void NetTask::drainPublishQueue()
     }
 }
 
+void NetTask::drainDiagQueue()
+{
+    // Lines queued while MQTT was down stay queued (RemoteLog's queue is the
+    // only buffer), so the boot-time BLE story survives until the link is up.
+    char line[RemoteLog::kLineLen];
+    for (int i = 0; i < kDiagPerLoop; i++)
+    {
+        if (!m_net.mqttUp() || !RemoteLog::pop(line, sizeof(line)))
+        {
+            return;
+        }
+        // QoS 0, not retained: a diagnostics stream, not state. Deliberately
+        // not logged on failure — a log line here would feed itself back into
+        // the queue it just failed to drain.
+        m_net.mqtt().publish(RemoteLog::kTopic, line);
+    }
+}
+
+void NetTask::publishBootRecord()
+{
+    // Retained (spec 4.14): whoever subscribes later still learns whether the
+    // last restart was an OTA flash (SW) or a crash (PANIC/TASK_WDT/BROWNOUT),
+    // and which build is running.
+    char json[160];
+    snprintf(json, sizeof(json), "{\"reset\":\"%s\",\"build\":\"%s\",\"uptime_s\":%lu,\"heap\":%u}",
+             RemoteLog::resetReasonName(), RemoteLog::buildStamp(),
+             (unsigned long)(millis() / 1000), (unsigned)ESP.getFreeHeap());
+    m_net.mqtt().publish(RemoteLog::kBootTopic, json, true);
+}
+
 void NetTask::onMqttConnected()
 {
     PubSubClient &client = m_net.mqtt();
+
+    // First, before the subscribe/resync burst: the cheapest message we have
+    // and the one that says whether this connect follows a crash.
+    publishBootRecord();
 
     client.subscribe(m_view.getSpeed().getCommandTopic(), 1);
     client.subscribe(m_view.getStartButton().getCommandTopic(), 1);

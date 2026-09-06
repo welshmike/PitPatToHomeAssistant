@@ -1,5 +1,11 @@
 #include "SessionTracker.h"
 
+#ifndef NATIVE_TEST
+// -DUSE_ESP_IDF_LOG (spec 4.14) makes TRACKER_LOG_I/W expand, via log_x(), to
+// ESP_LOG_LEVEL_LOCAL(..., TAG, ...); esp32-hal-log.h has no default TAG.
+static const char *TAG = "Session";
+#endif
+
 SessionTracker::SessionTracker(ITotalsStore& totals, ISessionEvents& events)
     : m_totals(totals), m_events(events)
 {
