@@ -307,7 +307,8 @@ void drawLightCard(LovyanGFX& gfx, const DialTheme& theme, const LightCardState&
     // The Colour page draws bare: no card name, no page dots. The swatch ring
     // is unmistakable on its own, and with the ring rotated onto the top and
     // bottom of the face there is no room left for either without crowding
-    // (Mike: "hide the background"). The small power glyph stays.
+    // (Mike: "hide the background") — and no power glyph either: Mike wants
+    // nothing under the picker. Swipe back, or the 10 s page timeout, leaves it.
     const bool bareColourPage = mqttUp && v.valid && v.available && v.on &&
                                 card.page() == LightCardState::Page::COLOUR;
 
@@ -358,8 +359,12 @@ void drawLightCard(LovyanGFX& gfx, const DialTheme& theme, const LightCardState&
     }
 
     // Small power glyph at the bottom: tap it (or hold anywhere) to switch off.
-    drawPowerGlyph(gfx, LightLayout::kPowerGlyphX, LightLayout::kPowerGlyphY,
-                   LightLayout::kPowerGlyphR, theme.col(Col::DIM));
+    // Not on the bare Colour page (see above).
+    if (!bareColourPage)
+    {
+        drawPowerGlyph(gfx, LightLayout::kPowerGlyphX, LightLayout::kPowerGlyphY,
+                       LightLayout::kPowerGlyphR, theme.col(Col::DIM));
+    }
 }
 
 void paintLightTrueColour(LGFX_Device& display, const LightCardState& card)

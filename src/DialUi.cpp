@@ -549,6 +549,9 @@ void DialUi::handleInput(uint32_t nowMs)
 // exactly like the Clock card's tap.
 void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
 {
+    // Hardware diagnostics (2026-09-06): taps on the bottom power glyph were
+    // not registering; log where taps actually land on the light cards.
+    log_i("Light tap at %d,%d", x, y);
     LightCardState& card = lightCardFor(screen);
     const LightsModel::LightState& v = card.view();
 
@@ -597,7 +600,8 @@ void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
         }
     }
 
-    if (LightLayout::hitPowerGlyph(x, y))
+    // The glyph is not drawn on the Colour page, so it is not a target there.
+    if (card.page() != LightCardState::Page::COLOUR && LightLayout::hitPowerGlyph(x, y))
     {
         const LightsModel::Command cmd = card.powerOff(nowMs);
         if (cmd.type != LightsModel::Command::Type::NONE)
@@ -693,7 +697,13 @@ void DialUi::tickLights(uint32_t nowMs)
     // card with nothing pending.
     for (uint8_t i = 0; i < static_cast<uint8_t>(LightsModel::LightKey::COUNT); ++i)
     {
+        const LightCardState::Page pageBefore = m_lightCards[i].page();
         const LightsModel::Command cmd = m_lightCards[i].tick(nowMs);
+        if (m_lightCards[i].page() != pageBefore)
+        {
+            // Only tick() itself changes the page here: the PAGE_IDLE_MS fallback.
+            log_i("Light %u page idle timeout -> Brightness", (unsigned)i);
+        }
         if (cmd.type != LightsModel::Command::Type::NONE)
         {
             publishLightCommand(static_cast<LightsModel::LightKey>(i), cmd);

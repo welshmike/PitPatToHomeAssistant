@@ -83,9 +83,9 @@ static void test_layout_offFaceConstants(void)
 static void test_layout_onFaceConstants(void)
 {
     TEST_ASSERT_EQUAL_INT(120, LightLayout::kPowerGlyphX);
-    TEST_ASSERT_EQUAL_INT(212, LightLayout::kPowerGlyphY);
-    TEST_ASSERT_EQUAL_INT(8, LightLayout::kPowerGlyphR);
-    TEST_ASSERT_EQUAL_INT(14, LightLayout::kPowerGlyphHitR);
+    TEST_ASSERT_EQUAL_INT(208, LightLayout::kPowerGlyphY);
+    TEST_ASSERT_EQUAL_INT(9, LightLayout::kPowerGlyphR);
+    TEST_ASSERT_EQUAL_INT(18, LightLayout::kPowerGlyphHitR);
     TEST_ASSERT_EQUAL_INT(54, LightLayout::kPageDotY);
     TEST_ASSERT_EQUAL_INT(12, LightLayout::kPageDotSpacing);
     TEST_ASSERT_EQUAL_INT(3, LightLayout::kPageDotR);
@@ -103,7 +103,7 @@ static void test_layout_pageConstants(void)
     TEST_ASSERT_EQUAL_FLOAT(22.5f, LightLayout::kSwatchStartDeg);
     TEST_ASSERT_EQUAL_INT(12, LightLayout::kSwatchR);
     TEST_ASSERT_EQUAL_INT(16, LightLayout::kSwatchRSelected);
-    TEST_ASSERT_EQUAL_INT(18, LightLayout::kSwatchHitR);
+    TEST_ASSERT_EQUAL_INT(14, LightLayout::kSwatchHitR);
     TEST_ASSERT_EQUAL_INT(30, LightLayout::kCentreDiscR);
 }
 
@@ -227,9 +227,9 @@ static void test_hitSwatch_andPowerGlyph_neverClaimTheSamePoint(void)
 
 static void test_hitPowerGlyph_withinAndOutsideHitRadius(void)
 {
-    TEST_ASSERT_TRUE(LightLayout::hitPowerGlyph(120, 212));
-    TEST_ASSERT_TRUE(LightLayout::hitPowerGlyph(120, 212 + LightLayout::kPowerGlyphHitR));
-    TEST_ASSERT_FALSE(LightLayout::hitPowerGlyph(120, 212 + LightLayout::kPowerGlyphHitR + 1));
+    TEST_ASSERT_TRUE(LightLayout::hitPowerGlyph(120, 208));
+    TEST_ASSERT_TRUE(LightLayout::hitPowerGlyph(120, 208 + LightLayout::kPowerGlyphHitR));
+    TEST_ASSERT_FALSE(LightLayout::hitPowerGlyph(120, 208 + LightLayout::kPowerGlyphHitR + 1));
     TEST_ASSERT_FALSE(LightLayout::hitPowerGlyph(120, 120));
 }
 

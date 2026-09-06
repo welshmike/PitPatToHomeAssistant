@@ -26,9 +26,9 @@ constexpr int kPowerCircleR = 44;
 
 // On face: the small power glyph that switches the light off.
 constexpr int kPowerGlyphX = 120;
-constexpr int kPowerGlyphY = 212;
-constexpr int kPowerGlyphR = 8;
-constexpr int kPowerGlyphHitR = 14;
+constexpr int kPowerGlyphY = 208;
+constexpr int kPowerGlyphR = 9;
+constexpr int kPowerGlyphHitR = 18; // generous: a tap on the glyph did not register on hardware at r 14 (2026-09-06)
 
 // On face: the page dots (one per LightCardState::Page), centred on kCentreX.
 constexpr int kPageDotY = 54;
@@ -50,7 +50,7 @@ constexpr int kKelvinBarH = 8;
 constexpr int kSwatchRingR = 74;
 constexpr int kSwatchR = 12;
 constexpr int kSwatchRSelected = 16;
-constexpr int kSwatchHitR = 18;
+constexpr int kSwatchHitR = 14; // swatch r 12 fully covered; kept small so the bottom pair stays clear of the power glyph
 constexpr int kCentreDiscR = 30;
 
 constexpr uint8_t kPresetCount = 8;
