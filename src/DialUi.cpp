@@ -46,46 +46,6 @@ constexpr int32_t kBleDotX   = 96;
 constexpr int32_t kWifiDotX  = 120;
 constexpr int32_t kMqttDotX  = 144;
 
-// Palette source values (2026-09-04): the 16 RGB888 colours behind DialUi::Col
-// (declared in DialUi.h), in Col enum order — index i is the palette entry
-// for Col value i. Each was the original RGB565 constant used before the
-// canvas became a 4bpp palette sprite, expanded 565->888 the same way the
-// display itself would (top bits replicated into the low bits), so the
-// on-screen colour is unchanged:
-//   BG          TFT_BLACK    0x0000 -> (  0,   0,   0)
-//   TEXT        TFT_WHITE    0xFFFF -> (255, 255, 255)
-//   DIM         TFT_DARKGREY 0x7BEF -> (123, 125, 123) -- also TFT_darkgrey's
-//               365 "TICK" use, and dimColor565(TFT_WHITE) == TFT_DARKGREY
-//               exactly (both decode to r=15,g=31,b=15 in 565 components),
-//               so this same entry doubles as TEXT's paused-dim shade.
-//   BLE_ON      TFT_BLUE     0x001F -> (  0,   0, 255)
-//   NET_ON      TFT_GREEN    0x07E0 -> (  0, 255,   0)
-//   SPEED       TFT_CYAN     0x07FF -> (  0, 255, 255)
-//   PENDING     TFT_ORANGE   0xFDA0 -> (255, 182,   0)
-//   RED         TFT_RED      0xF800 -> (255,   0,   0)
-//   SECOND      color565(220,40,40) quantised to 565 then back -> (222,40,41)
-//   DIM_DIM     dimColor565(TFT_DARKGREY)                      -> ( 57,  60,  57)
-//   SPEED_DIM   dimColor565(TFT_CYAN)                          -> (  0, 125, 123)
-//   PENDING_DIM dimColor565(TFT_ORANGE)                        -> (123,  89,   0)
-// dimColor565() (the halving of each 565 channel used for the paused-state
-// dim, formerly a runtime helper) is folded into these constants instead —
-// there is nothing left to dim at draw time once the palette holds the
-// dimmed shades directly.
-static const uint32_t kPaletteRgb888[12] = {
-    0x000000, // BG
-    0xFFFFFF, // TEXT
-    0x7B7D7B, // DIM
-    0x0000FF, // BLE_ON
-    0x00FF00, // NET_ON
-    0x00FFFF, // SPEED
-    0xFFB600, // PENDING
-    0xFF0000, // RED
-    0xDE2829, // SECOND
-    0x393C39, // DIM_DIM
-    0x007D7B, // SPEED_DIM
-    0x7B5900, // PENDING_DIM
-};
-
 // Clock card layout (spec 4.8), centred on the same 240x240 canvas as the
 // speed ring.
 constexpr int32_t kClockR0        = 104; // tick inner radius
@@ -224,44 +184,12 @@ DialUi::DialUi(TreadmillController& controller, const TimeService& timeService,
 {
 }
 
-// See the DialUi::Col declaration in DialUi.h and the kPaletteRgb888 comment
-// above for what each entry means. How LovyanGFX interprets the value
-// returned here, for a 4bpp palette destination (m_useCanvas true):
-//  - fillCircle/fillArc/drawCircle/drawString/fillScreen/... all route their
-//    colour argument through LGFXBase::setColor() -> _write_conv.convert(T)
-//    (lgfx/v1/LGFXBase.hpp, the `setColor`/`LGFX_INLINE_T` draw-call
-//    forwarders). For T=uint32_t, color_conv_t::convert() calls
-//    convert_rgb888(), a function pointer selected by
-//    get_fp_convert_src<rgb888_t>(dst_depth) (lgfx/v1/misc/colortype.hpp,
-//    get_fp_convert_src): a 4-bit *palette* dst_depth matches none of that
-//    function's named pixel formats, so it falls through to
-//    `switch (dst_depth & bit_mask) { case 4: return
-//    convert_uint32_to_palette4; ... }`, and
-//    `convert_uint32_to_palette4(uint32_t c) { return (c & 0x0F) * 0x11; }`
-//    (colortype.hpp, near the top) takes the low nibble of whatever integer
-//    was passed as the raw index — not an RGB value.
-//  - setTextColor() makes this explicit rather than routing through convert():
-//    `_text_style.fore_rgb888 = _text_style.back_rgb888 = this->hasPalette()
-//    ? color : convert_to_rgb888(color);` (LGFXBase.hpp, setTextColor).
-//  - drawWideLine()/drawWedgeLine() (used for the clock hands/ticks) instead
-//    call `convert_to_rgb888(color)` and hand that to draw_wedgeline(), which
-//    builds a one-pixel rgb888_t gradient and pushes it through the same
-//    paletted pixelcopy path (misc/pixelcopy.cpp, the `dst_palette_` branch
-//    of pixelcopy_t's constructor uses `copy_bit_affine`, which reads the
-//    *first* in-memory byte of that rgb888_t). rgb888_t's field order is
-//    `{ uint8_t b; uint8_t g; uint8_t r; }` (colortype.hpp, struct rgb888_t)
-//    — for a small integer built via `rgb888_t(uint32_t)`, that first byte
-//    is the low byte of the value that was passed, i.e. the same raw index
-//    survives this longer path too.
-// createPalette()/setPaletteColor() (LGFX_Sprite.hpp), by contrast, take a
-// real RGB888/RGB565 value and store it in the palette table — that's why
-// begin() below passes kPaletteRgb888[i] there rather than the index.
-// Net effect: every draw call in this file can be handed col(Col::X) as its
-// colour argument, uniformly, on either destination.
+// Every colour goes through the theme: see DialTheme.h for what each Col
+// means and for how LovyanGFX interprets the returned value on a 4bpp palette
+// canvas versus the direct-to-display fallback.
 uint32_t DialUi::col(Col c) const
 {
-    const uint8_t idx = static_cast<uint8_t>(c);
-    return m_useCanvas ? idx : kPaletteRgb888[idx];
+    return m_theme.col(c);
 }
 
 void DialUi::begin()
@@ -283,19 +211,19 @@ void DialUi::begin()
     // (~28.8 KB instead of ~57.6 KB for the 240x240 frame) so WiFi TX
     // buffers have more heap to work with (2026-09-04).
     m_canvas.setColorDepth(4);
-    m_useCanvas = m_canvas.createSprite(240, 240);
-    if (m_useCanvas)
+    m_theme.useCanvas = m_canvas.createSprite(240, 240);
+    if (m_theme.useCanvas)
     {
         m_canvas.createPalette();
-        for (uint8_t i = 0; i < 12; ++i)
+        for (uint8_t i = 0; i < kDialPaletteSize; ++i)
         {
-            m_canvas.setPaletteColor(i, kPaletteRgb888[i]);
+            m_canvas.setPaletteColor(i, dialPaletteRgb888(i));
         }
         m_canvas.setPaletteColor(static_cast<uint8_t>(Col::TRANSPARENT), 0x000000u);
     }
     log_i("DialUi: free heap after sprite = %u bytes", (unsigned)ESP.getFreeHeap());
 
-    if (!m_useCanvas)
+    if (!m_theme.useCanvas)
     {
         log_e("DialUi: canvas createSprite(240,240) failed, drawing directly to M5Dial.Display");
     }
@@ -1087,7 +1015,7 @@ void DialUi::render(uint32_t nowMs)
     m_lastFrameDrawMs = nowMs;
 
     m_logoToDraw[0] = '\0';
-    if (m_useCanvas)
+    if (m_theme.useCanvas)
     {
         draw(m_canvas, nowMs);
         // Explicit destination: m_canvas has no parent bound at construction
@@ -1450,7 +1378,7 @@ void DialUi::drawFlights(LovyanGFX& gfx)
         // Reserve the logo rectangle: on the canvas the TRANSPARENT index keeps
         // the display's logo pixels through the push (see render()).
         gfx.fillRect(kFlightsLogoX, kFlightsLogoY, 120, 48,
-                     m_useCanvas ? static_cast<uint32_t>(Col::TRANSPARENT) : col(Col::BG));
+                     m_theme.useCanvas ? static_cast<uint32_t>(Col::TRANSPARENT) : col(Col::BG));
     }
     else
     {
@@ -1837,8 +1765,8 @@ void DialUi::drawSelector(LovyanGFX& gfx)
 
 void DialUi::drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs)
 {
-    // Paused dims each colour to its DialUi::Col::*_DIM palette entry — see
-    // the kPaletteRgb888 comment above for how those shades were derived
+    // Paused dims each colour to its Col::*_DIM palette entry — see the
+    // palette comment in DialTheme.h for how those shades were derived
     // (formerly a runtime dimColor565() halving, now baked into the
     // palette). TEXT's paused shade is DIM itself (dimColor565(TFT_WHITE)
     // == TFT_DARKGREY exactly), not a dedicated TEXT_DIM entry.

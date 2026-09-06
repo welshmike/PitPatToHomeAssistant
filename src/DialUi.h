@@ -5,6 +5,7 @@
 #include <M5Dial.h>
 #include <stdint.h>
 
+#include "DialTheme.h"
 #include "TreadmillController.h"
 #include "NetStatus.h"
 #include "DialInput.h"
@@ -70,34 +71,12 @@ private:
     static constexpr uint8_t kBrightFull = 255;
     static constexpr uint8_t kBrightDim  = 50;
 
-    // Palette for the 4-bit (16-colour, ~28.8 KB) canvas sprite created in
-    // begin() — every colour the UI draws, reduced to <= 16 distinct RGB
-    // values (2026-09-04: down from an 8bpp/RGB332 canvas to save another
-    // ~28.8 KB of heap for WiFi). See col()'s definition in DialUi.cpp for
-    // how LovyanGFX interprets a draw call's colour argument for a palette
-    // destination, with citations.
-    enum class Col : uint8_t
-    {
-        BG = 0,     // screen background
-        TEXT,       // primary text/foreground (also clock hands, ring track lit state's text)
-        DIM,        // secondary/caption text, clock ticks, unlit ring track
-        BLE_ON,     // BLE status dot when connected
-        NET_ON,     // WiFi/MQTT status dots when up
-        SPEED,      // speed ring/centre value while not pending (cyan)
-        PENDING,    // speed ring/centre value while a nudge is settling, and the selector (amber)
-        RED,        // long-press-to-stop progress arc
-        SECOND,     // clock second hand — a distinct red shade from RED
-        DIM_DIM,    // paused-dim shade of DIM (also the paused-dim shade of
-                    // TEXT: dimColor565(TFT_WHITE) == TFT_DARKGREY exactly,
-                    // so TEXT's paused shade is DIM itself, not DIM_DIM)
-        SPEED_DIM,  // paused-dim shade of SPEED
-        PENDING_DIM,// paused-dim shade of PENDING
-        TRANSPARENT = 15, // canvas-only: skipped by pushSprite(transp) so the display keeps what is under it (the full-colour logo)
-    };
+    // Every colour drawn goes through the theme (DialTheme.h), which owns the
+    // Col enum, the palette table and the canvas/direct-display distinction.
     // Returns the value to pass as a "colour" to any LovyanGFX draw call on
-    // gfx: the raw palette index (0-15) while drawing into the 4bpp
-    // m_canvas (m_useCanvas), or the real 24-bit RGB for the direct-to-
-    // M5Dial.Display fallback used when the sprite allocation fails.
+    // gfx: the raw palette index (0-15) while drawing into the 4bpp m_canvas,
+    // or the real 24-bit RGB for the direct-to-M5Dial.Display fallback used
+    // when the sprite allocation fails.
     uint32_t col(Col c) const;
 
     void render(uint32_t nowMs);
@@ -376,7 +355,9 @@ private:
     // static-init-order hazard. The sprite is pushed to an explicit
     // destination (&M5Dial.Display) in render() instead.
     M5Canvas m_canvas;
-    bool m_useCanvas = false;
+    // Owns useCanvas (set in begin()) and every colour the UI draws; passed by
+    // const reference to the free-function views (menu, lights, flights).
+    DialTheme m_theme;
     uint32_t m_lastRenderMs = 0;
 
     // Last state pushed by the controller. Defaults mirror a fresh boot:
