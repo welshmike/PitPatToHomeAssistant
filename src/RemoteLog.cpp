@@ -153,7 +153,10 @@ int hook(const char *fmt, va_list ap)
     }
 
     Line line;
-    const uint32_t dropped = s_dropped.load(std::memory_order_relaxed);
+    // Take the pending drop count atomically so two tasks logging at once can
+    // never both report (and both clear) the same drops (review 2026-09-06).
+    // A drop landing between here and the send is simply reported next time.
+    const uint32_t dropped = s_dropped.exchange(0, std::memory_order_relaxed);
     if (dropped != 0)
     {
         snprintf(line.text, sizeof(line.text), "[+%u dropped] %s", (unsigned)dropped, buf);
@@ -181,14 +184,11 @@ int hook(const char *fmt, va_list ap)
         sent = xQueueSend(s_queue, &line, 0);
     }
 
-    if (sent == pdTRUE)
+    if (sent != pdTRUE)
     {
-        // Only clear what this line actually reported.
-        s_dropped.fetch_sub(dropped, std::memory_order_relaxed);
-    }
-    else
-    {
-        s_dropped.fetch_add(1, std::memory_order_relaxed);
+        // The line (and the drops it was about to report) never made it: put
+        // the count back plus this one.
+        s_dropped.fetch_add(dropped + 1, std::memory_order_relaxed);
     }
     return written;
 }
