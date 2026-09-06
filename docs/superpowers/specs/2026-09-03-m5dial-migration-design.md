@@ -322,3 +322,13 @@ When the Flights card is showing and the aircraft list is empty (and neither `of
 - **Text:** `Searching` in `Font2`, `DIM`, centred at y 196 (below the outer ring's bottom chord); the page-dots row stays empty; the stale dot rule is unchanged (a stale list with count 0 still shows the radar plus the stale dot).
 - **Timing:** the sweep phase is `(nowMs / 100) % 30` (12° per step, 10 Hz). `FrameKey` carries `radarPhase` only while this state is visible, so the card redraws at 10 Hz then and never otherwise. No heap, no `delay`; the phase derives from `nowMs`, so it is wrap-safe.
 - **Untouched:** `offline` (`waiting for HA`) and populated states; auto-show; `FlightsService`.
+
+## 4.14 Remote diagnostics log over MQTT (added 2026-09-06, approved)
+
+The Dial lives where USB is impractical (Mike: "OTA only"), and the recurring BLE kick cycles (4, 5 and 6 Sep) cannot be diagnosed from Home Assistant, which only sees successful connects. The Dial therefore forwards its own log lines over MQTT.
+
+- **Capture:** build with `-DUSE_ESP_IDF_LOG` so Arduino's `log_e/w/i` route through ESP-IDF's logger, and install `esp_log_set_vprintf()` (`RemoteLog::begin()`, called first in `setup()`). The hook still calls the previous vprintf (serial output unchanged), formats the line into a fixed 120-byte buffer and pushes it onto a FreeRTOS queue (depth 24, zero wait; a dropped-line counter is reported in the next forwarded line). It runs on whichever task logged (NimBLE host task included) and must not allocate or block.
+- **Filter:** levels E and W are always forwarded; I lines only when the text contains one of `connect`, `Connect`, `kick`, `Kick`, `Subscribed`, `BLE`, `Net status`, `boot`. D/V never. This keeps the volume to a few lines per event rather than the 15 s heap heartbeat.
+- **Publish:** `NetTask::run()` drains up to 4 lines per loop when MQTT is up and publishes each to `pacekeeper-dial/diag` (QoS 0, not retained). Lines queued while MQTT is down are kept until the queue fills, so the boot-time BLE story survives until the link comes up. On each MQTT connect the Dial also publishes `pacekeeper-dial/diag/boot` (retained) = `{"reset":"<esp_reset_reason name>","build":"<__DATE__ __TIME__>","uptime_s":N,"heap":N}`.
+- **Reading:** `doc/DIAGNOSTICS.md` documents a one-line `mosquitto_sub` and a paho snippet; the retained boot record shows whether the Dial crashed (reset reason) versus rebooted for OTA.
+- **Untouched:** BLE behaviour (`TreadmillHandler` only gains no code — its existing `log_*` calls are what get forwarded); Q1_BLE_NOTES.
