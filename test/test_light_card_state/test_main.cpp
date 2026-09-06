@@ -100,6 +100,7 @@ static void test_layout_pageConstants(void)
     TEST_ASSERT_EQUAL_INT(170, LightLayout::kKelvinBarY);
     TEST_ASSERT_EQUAL_INT(8, LightLayout::kKelvinBarH);
     TEST_ASSERT_EQUAL_INT(74, LightLayout::kSwatchRingR);
+    TEST_ASSERT_EQUAL_FLOAT(22.5f, LightLayout::kSwatchStartDeg);
     TEST_ASSERT_EQUAL_INT(12, LightLayout::kSwatchR);
     TEST_ASSERT_EQUAL_INT(16, LightLayout::kSwatchRSelected);
     TEST_ASSERT_EQUAL_INT(18, LightLayout::kSwatchHitR);
@@ -120,23 +121,64 @@ static void test_layout_presetHues(void)
 // LightLayout: swatch geometry + hit tests
 // ---------------------------------------------------------------------------
 
-static void test_swatchCentre_firstIsTwelveOClock(void)
+// The ring is rotated half a step (kSwatchStartDeg = 22.5) so that no swatch
+// sits at 12 or 6 o'clock, where the page-dot row and the power glyph live.
+static void test_swatchCentre_ringStartsHalfAStepPastTwelve(void)
 {
     int x = 0, y = 0;
     LightLayout::swatchCentre(0, x, y);
-    TEST_ASSERT_EQUAL_INT(120, x);
-    TEST_ASSERT_EQUAL_INT(120 - 74, y);
+    TEST_ASSERT_EQUAL_INT(148, x);
+    TEST_ASSERT_EQUAL_INT(52, y);
 }
 
 static void test_swatchCentre_goesClockwise(void)
 {
     int x = 0, y = 0;
-    LightLayout::swatchCentre(2, x, y); // quarter turn clockwise: 3 o'clock
-    TEST_ASSERT_EQUAL_INT(120 + 74, x);
-    TEST_ASSERT_EQUAL_INT(120, y);
-    LightLayout::swatchCentre(4, x, y); // half turn: 6 o'clock
-    TEST_ASSERT_EQUAL_INT(120, x);
-    TEST_ASSERT_EQUAL_INT(120 + 74, y);
+    LightLayout::swatchCentre(2, x, y); // quarter turn clockwise from swatch 0
+    TEST_ASSERT_EQUAL_INT(188, x);
+    TEST_ASSERT_EQUAL_INT(148, y);
+    LightLayout::swatchCentre(4, x, y); // half turn: bottom right of 6 o'clock
+    TEST_ASSERT_EQUAL_INT(92, x);
+    TEST_ASSERT_EQUAL_INT(188, y);
+}
+
+// The two bottom swatches are the closest to the small power glyph; the
+// rotation is what buys them their clearance, so assert it directly. 32 px is
+// kSwatchHitR + kPowerGlyphHitR: below that the two hit discs would overlap.
+static void test_swatchCentre_everySwatchClearsThePowerGlyph(void)
+{
+    for (uint8_t i = 0; i < LightLayout::kPresetCount; ++i)
+    {
+        int x = 0, y = 0;
+        LightLayout::swatchCentre(i, x, y);
+        const int dx = x - LightLayout::kPowerGlyphX;
+        const int dy = y - LightLayout::kPowerGlyphY;
+        const int minSep = LightLayout::kSwatchHitR + LightLayout::kPowerGlyphHitR;
+        TEST_ASSERT_TRUE(dx * dx + dy * dy > minSep * minSep);
+    }
+}
+
+// The top pair straddles 12 o'clock rather than sitting on it: swatch 7 to
+// the left, swatch 0 to the right, both level with the page-dot row's y but
+// well outside the widest row the dots can occupy (three dots, so 120 +/- one
+// kPageDotSpacing plus kPageDotR). The Colour page hides the dots anyway, but
+// the ring geometry is shared with the pages that draw them.
+static void test_swatchCentre_topPairStraddlesTwelveOClock(void)
+{
+    int x = 0, y = 0;
+    LightLayout::swatchCentre(7, x, y);
+    TEST_ASSERT_EQUAL_INT(92, x);
+    TEST_ASSERT_EQUAL_INT(52, y);
+
+    const int dotHalfWidth = 2 * LightLayout::kPageDotSpacing; // generous
+    for (uint8_t i = 0; i < LightLayout::kPresetCount; ++i)
+    {
+        LightLayout::swatchCentre(i, x, y);
+        const int dy = y - LightLayout::kPageDotY;
+        const int adx = (x - 120) < 0 ? (120 - x) : (x - 120);
+        const bool onTheDotRow = (dy > -12 && dy < 12) && adx <= dotHalfWidth;
+        TEST_ASSERT_FALSE(onTheDotRow);
+    }
 }
 
 static void test_hitSwatch_centresHitTheirOwnIndex(void)
@@ -160,6 +202,27 @@ static void test_hitSwatch_edgeOfHitRadiusHitsAndJustPastMisses(void)
 static void test_hitSwatch_centreOfFaceMisses(void)
 {
     TEST_ASSERT_EQUAL_INT(-1, LightLayout::hitSwatch(120, 120));
+}
+
+// Tap priority only matters if the two targets can ever both claim a point;
+// sweep the whole round face and assert they never do.
+static void test_hitSwatch_andPowerGlyph_neverClaimTheSamePoint(void)
+{
+    for (int y = 0; y <= 240; y += 2)
+    {
+        for (int x = 0; x <= 240; x += 2)
+        {
+            const int dx = x - 120;
+            const int dy = y - 120;
+            if (dx * dx + dy * dy > 120 * 120)
+            {
+                continue; // outside the round display
+            }
+            const bool swatch = LightLayout::hitSwatch(x, y) >= 0;
+            const bool power  = LightLayout::hitPowerGlyph(x, y);
+            TEST_ASSERT_FALSE(swatch && power);
+        }
+    }
 }
 
 static void test_hitPowerGlyph_withinAndOutsideHitRadius(void)
@@ -811,8 +874,11 @@ int main(int, char**)
     RUN_TEST(test_layout_pageConstants);
     RUN_TEST(test_layout_presetHues);
 
-    RUN_TEST(test_swatchCentre_firstIsTwelveOClock);
+    RUN_TEST(test_swatchCentre_ringStartsHalfAStepPastTwelve);
     RUN_TEST(test_swatchCentre_goesClockwise);
+    RUN_TEST(test_swatchCentre_everySwatchClearsThePowerGlyph);
+    RUN_TEST(test_swatchCentre_topPairStraddlesTwelveOClock);
+    RUN_TEST(test_hitSwatch_andPowerGlyph_neverClaimTheSamePoint);
     RUN_TEST(test_hitSwatch_centresHitTheirOwnIndex);
     RUN_TEST(test_hitSwatch_edgeOfHitRadiusHitsAndJustPastMisses);
     RUN_TEST(test_hitSwatch_centreOfFaceMisses);

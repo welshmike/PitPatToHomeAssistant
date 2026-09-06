@@ -227,6 +227,95 @@ static void test_btnStop_stillFiresOnRawClick_independentOfSingleClickHold(void)
     TEST_ASSERT_FALSE(e.btnHold);
 }
 
+// ---------------------------------------------------------------------------
+// consumeClick(): swallowing the single click that follows an acted-on stop
+// ---------------------------------------------------------------------------
+//
+// M5Unified reports one physical press twice: wasClicked() at release, then
+// wasSingleClicked() about 500 ms later once the multi-click window closes.
+// The belt's emergency stop acts on the first; the second must not then open
+// the card menu behind it. The UI says so by calling consumeClick() on the
+// tick it acts on btnStop — the swallow is never armed on cards where the
+// click is the legitimate menu gesture.
+
+static void test_consumeClick_swallowsTheFollowingSingleClick(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, false, 0, 0, false, false, false, t0); // baseline
+
+    DialEvents stop = input.tick(0, false, 0, 0, true, false, false, t0 + 10);
+    TEST_ASSERT_TRUE(stop.btnStop);
+
+    input.consumeClick(t0 + 10); // the UI acted on the stop
+
+    DialEvents e = input.tick(0, false, 0, 0, false, true, false, t0 + 510);
+    TEST_ASSERT_FALSE(e.btnClick);
+}
+
+static void test_singleClick_afterAnUnconsumedStop_stillFires(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, false, 0, 0, false, false, false, t0); // baseline
+
+    DialEvents stop = input.tick(0, false, 0, 0, true, false, false, t0 + 10);
+    TEST_ASSERT_TRUE(stop.btnStop);
+    // No consumeClick(): the UI ignored btnStop (belt idle), so the decided
+    // click is the card-menu gesture and must survive.
+
+    DialEvents e = input.tick(0, false, 0, 0, false, true, false, t0 + 510);
+    TEST_ASSERT_TRUE(e.btnClick);
+}
+
+static void test_consumeClick_windowExpires(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, false, 0, 0, false, false, false, t0); // baseline
+    input.tick(0, false, 0, 0, true, false, false, t0 + 10);
+    input.consumeClick(t0 + 10);
+
+    // 800 ms later is past SWALLOW_CLICK_MS: a genuinely new press gets
+    // through rather than being eaten by a stale latch.
+    DialEvents e = input.tick(0, false, 0, 0, false, true, false, t0 + 810);
+    TEST_ASSERT_TRUE(e.btnClick);
+}
+
+static void test_consumeClick_swallowsOnlyOneClick(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, false, 0, 0, false, false, false, t0); // baseline
+    input.tick(0, false, 0, 0, true, false, false, t0 + 10);
+    input.consumeClick(t0 + 10);
+
+    DialEvents swallowed = input.tick(0, false, 0, 0, false, true, false, t0 + 510);
+    TEST_ASSERT_FALSE(swallowed.btnClick);
+
+    // A second press inside the same window is a real one — the latch is
+    // spent, not a 700 ms blackout.
+    DialEvents e = input.tick(0, false, 0, 0, false, true, false, t0 + 600);
+    TEST_ASSERT_TRUE(e.btnClick);
+}
+
+static void test_consumeClick_doesNotSwallowHold(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    input.tick(0, false, 0, 0, false, false, false, t0); // baseline
+    input.tick(0, false, 0, 0, true, false, false, t0 + 10);
+    input.consumeClick(t0 + 10);
+
+    DialEvents e = input.tick(0, false, 0, 0, false, false, true, t0 + 510);
+    TEST_ASSERT_TRUE(e.btnHold);
+}
+
 static void test_wake_btnSingleClickedWhileDim_wakesOnly(void)
 {
     DialInput input;
@@ -532,6 +621,11 @@ int main(int argc, char **argv)
     RUN_TEST(test_btnClick_singleClick_setsBtnClickOnlyOnThatTick);
     RUN_TEST(test_btnHold_setsBtnHoldOnThatTick);
     RUN_TEST(test_btnStop_stillFiresOnRawClick_independentOfSingleClickHold);
+    RUN_TEST(test_consumeClick_swallowsTheFollowingSingleClick);
+    RUN_TEST(test_singleClick_afterAnUnconsumedStop_stillFires);
+    RUN_TEST(test_consumeClick_windowExpires);
+    RUN_TEST(test_consumeClick_swallowsOnlyOneClick);
+    RUN_TEST(test_consumeClick_doesNotSwallowHold);
     RUN_TEST(test_wake_btnSingleClickedWhileDim_wakesOnly);
     RUN_TEST(test_wake_btnHoldWhileDim_wakesOnly);
     RUN_TEST(test_wake_encoderWhileDim_rebasesBaselineForNextDetent);

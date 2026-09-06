@@ -55,16 +55,26 @@ constexpr int kCentreDiscR = 30;
 
 constexpr uint8_t kPresetCount = 8;
 
+// Angle of swatch 0, measured clockwise from 12 o'clock. Half a step (45/2),
+// so the ring is rotated to leave both 12 and 6 o'clock empty: the page-dot
+// row lives at the top and the small power glyph at the bottom, and a swatch
+// on either would sit under (or next to) them. With this rotation the closest
+// swatch centres — 3 and 4, at 157.5 and 202.5 degrees — are ~37 px from the
+// power glyph centre, comfortably past the kSwatchHitR + kPowerGlyphHitR = 32
+// px at which the two hit discs would start to overlap (see the layout tests).
+constexpr float kSwatchStartDeg = 22.5f;
+
 // The eight preset hues, all at saturation 100. Index order is ring order:
-// index 0 sits at 12 o'clock and the rest run clockwise.
+// index 0 sits at kSwatchStartDeg and the rest run clockwise.
 static constexpr float kPresetHues[8] = {0, 30, 60, 120, 180, 240, 275, 320};
 
 // Centre of swatch `i` (0..kPresetCount-1); out-of-range indices wrap.
 inline void swatchCentre(uint8_t i, int& x, int& y)
 {
     constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
-    const float angleDeg = -90.0f + static_cast<float>(i % kPresetCount) *
-                                        (360.0f / static_cast<float>(kPresetCount));
+    const float angleDeg = -90.0f + kSwatchStartDeg +
+                           static_cast<float>(i % kPresetCount) *
+                               (360.0f / static_cast<float>(kPresetCount));
     const float angleRad = angleDeg * kDegToRad;
     x = static_cast<int>(lroundf(static_cast<float>(kCentreX) +
                                  static_cast<float>(kSwatchRingR) * cosf(angleRad)));

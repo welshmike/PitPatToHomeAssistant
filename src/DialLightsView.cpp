@@ -304,9 +304,19 @@ void drawLightCard(LovyanGFX& gfx, const DialTheme& theme, const LightCardState&
 {
     const LightsModel::LightState& v = card.view();
 
+    // The Colour page draws bare: no card name, no page dots. The swatch ring
+    // is unmistakable on its own, and with the ring rotated onto the top and
+    // bottom of the face there is no room left for either without crowding
+    // (Mike: "hide the background"). The small power glyph stays.
+    const bool bareColourPage = mqttUp && v.valid && v.available && v.on &&
+                                card.page() == LightCardState::Page::COLOUR;
+
     gfx.setTextDatum(middle_center);
-    gfx.setTextColor(theme.col(Col::TEXT), theme.col(Col::BG));
-    gfx.drawString(name, kCentreX, kNameY, &fonts::Font2);
+    if (!bareColourPage)
+    {
+        gfx.setTextColor(theme.col(Col::TEXT), theme.col(Col::BG));
+        gfx.drawString(name, kCentreX, kNameY, &fonts::Font2);
+    }
 
     // MQTT is the only path HA light state arrives on, so without it there is
     // nothing to show and nothing a tap could do.
@@ -329,7 +339,10 @@ void drawLightCard(LovyanGFX& gfx, const DialTheme& theme, const LightCardState&
         return;
     }
 
-    drawPageDots(gfx, theme, card);
+    if (!bareColourPage)
+    {
+        drawPageDots(gfx, theme, card);
+    }
     switch (card.page())
     {
     case LightCardState::Page::KELVIN:

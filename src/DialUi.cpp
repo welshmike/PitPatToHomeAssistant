@@ -409,6 +409,12 @@ void DialUi::handleInput(uint32_t nowMs)
         {
             const bool stopped = m_controller.stop();
             playStopBeep(nowMs, stopped);
+            // M5Unified reports this one press twice: wasClicked() now, then
+            // wasSingleClicked() ~500 ms later. Tell DialInput to drop that
+            // second half so the stop doesn't also open the card menu behind
+            // itself. Only on the acted-on path — where btnStop is ignored,
+            // the decided click is the legitimate menu gesture.
+            m_input.consumeClick(nowMs);
         }
     }
 
@@ -561,17 +567,11 @@ void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
         return;
     }
 
-    if (LightLayout::hitPowerGlyph(x, y))
-    {
-        const LightsModel::Command cmd = card.powerOff(nowMs);
-        if (cmd.type != LightsModel::Command::Type::NONE)
-        {
-            publishLightCommand(lightKeyFor(screen), cmd);
-            playAcceptBeep(true);
-        }
-        return;
-    }
-
+    // Swatches first: on the Colour page they are the page's whole point, and
+    // this ordering is what makes a swatch win outright if the two hit discs
+    // ever did overlap. (They don't — the rotated ring keeps every swatch
+    // centre past kSwatchHitR + kPowerGlyphHitR from the glyph, and a layout
+    // test sweeps the face to prove it — but the priority is free.)
     if (card.page() == LightCardState::Page::COLOUR && card.hasColour())
     {
         const int8_t swatch = LightLayout::hitSwatch(x, y);
@@ -580,6 +580,17 @@ void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
             // Same settle path as a detent: the command goes out 300 ms later
             // from tickLights(), so a quick second choice replaces the first.
             card.selectPreset(static_cast<uint8_t>(swatch), nowMs);
+            playAcceptBeep(true);
+            return;
+        }
+    }
+
+    if (LightLayout::hitPowerGlyph(x, y))
+    {
+        const LightsModel::Command cmd = card.powerOff(nowMs);
+        if (cmd.type != LightsModel::Command::Type::NONE)
+        {
+            publishLightCommand(lightKeyFor(screen), cmd);
             playAcceptBeep(true);
         }
     }

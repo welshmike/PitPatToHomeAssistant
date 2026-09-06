@@ -32,6 +32,12 @@ public:
     static constexpr uint32_t HOLD_MS = 1000;
     static constexpr int SWIPE_MIN_PX = 40;
     static constexpr uint32_t DIM_AFTER_MS = 120000;
+    // How long after an acted-on stop the follow-up single click is dropped.
+    // M5Unified decides wasSingleClicked() one _msecHold (500 ms) after the
+    // release that already produced wasClicked(); 700 ms covers that plus the
+    // tick the UI happens to see it on, and is far short of a deliberate
+    // second press.
+    static constexpr uint32_t SWALLOW_CLICK_MS = 700;
 
     enum class Backlight { FULL, DIM };
 
@@ -45,6 +51,16 @@ public:
                      bool btnClicked, bool btnSingleClicked, bool btnHold, uint32_t nowMs);
 
     Backlight backlight() const { return m_backlight; }
+
+    // Called by the UI on the tick it *acts* on btnStop (the belt's emergency
+    // stop, accepted or refused). One physical press is reported twice by
+    // M5Unified — wasClicked() at release, then wasSingleClicked() once the
+    // multi-click window closes — and without this the second half would open
+    // the card menu behind the stop. Arms a one-shot swallow of the next
+    // btnSingleClicked within SWALLOW_CLICK_MS; btnHold is untouched, since a
+    // hold never co-fires with a click. The UI does NOT call this when it
+    // ignores btnStop (belt idle), so the click stays the menu gesture there.
+    void consumeClick(uint32_t nowMs);
 
     // Called by the UI on belt activity (e.g. a running walk) so the
     // backlight stays FULL without any encoder/touch/button input.
@@ -66,6 +82,9 @@ private:
     bool m_touchIsDrag = false;
     bool m_longPressFired = false;
     bool m_swipeFired = false;
+
+    bool m_swallowClick = false;       // one-shot: drop the next btnSingleClicked
+    uint32_t m_swallowClickUntilMs = 0; // ...but only until this instant
 
     Backlight m_backlight = Backlight::FULL;
     uint32_t m_lastActivityMs = 0;

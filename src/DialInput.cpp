@@ -29,6 +29,12 @@ void DialInput::noteActivity(uint32_t nowMs)
     wake(nowMs);
 }
 
+void DialInput::consumeClick(uint32_t nowMs)
+{
+    m_swallowClick = true;
+    m_swallowClickUntilMs = nowMs + SWALLOW_CLICK_MS;
+}
+
 DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int touchY,
                             bool btnClicked, bool btnSingleClicked, bool btnHold, uint32_t nowMs)
 {
@@ -157,7 +163,17 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
         ev.btnStop = true;
     }
     if (btnSingleClicked) {
-        ev.btnClick = true;
+        // Signed difference, so the window survives a millis() wrap.
+        const bool inWindow = (int32_t)(nowMs - m_swallowClickUntilMs) < 0;
+        if (m_swallowClick && inWindow) {
+            // This is the decided half of the press the UI already used as an
+            // emergency stop; drop it. The latch is one-shot, so a second,
+            // genuine press inside the same window still gets through.
+            m_swallowClick = false;
+        } else {
+            m_swallowClick = false; // stale latch: the window has passed
+            ev.btnClick = true;
+        }
     }
     if (btnHold) {
         ev.btnHold = true;
