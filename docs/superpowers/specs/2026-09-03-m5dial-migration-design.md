@@ -278,3 +278,5 @@ older payloads — parse as empty, same as any other missing string field).
 
 
 **Amended 2026-09-05 (airline-only filter):** `input_boolean.pacekeeper_dial_airline_flights_only` (default on) is read by the publish automation; when on, aircraft with no airline IATA code are omitted from the payload, and toggling it republishes at once. Radius reduced to 4000 m the same day. Purely HA-side; no firmware change.
+
+**Amended 2026-09-06 (logo band):** the top 58 px of the Flights card are white; the airline logo (white-backed sprite, 90 % scale) sits inside at y = 8, the text fallback is drawn dark on the band, and the stale dot moves to (120, 63). Logos from pics.avs.io are designed for light backgrounds.
