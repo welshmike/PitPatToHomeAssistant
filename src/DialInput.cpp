@@ -30,14 +30,14 @@ void DialInput::noteActivity(uint32_t nowMs)
 }
 
 DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int touchY,
-                            bool btnClicked, uint32_t nowMs)
+                            bool btnClicked, bool btnSingleClicked, bool btnHold, uint32_t nowMs)
 {
     DialEvents ev;
 
     long rawDelta = m_haveLastCount ? (encoderCount - m_lastCount) : 0;
     bool encoderMoving = rawDelta != 0;
     bool touchBeginning = touchDown && !m_touchActive;
-    bool inputBeginning = touchBeginning || encoderMoving || btnClicked;
+    bool inputBeginning = touchBeginning || encoderMoving || btnClicked || btnSingleClicked || btnHold;
 
     if (inputBeginning && m_backlight != Backlight::FULL) {
         // Wake gating: this tick's input is entirely swallowed. Only wake=true
@@ -77,7 +77,7 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
         m_haveActivity = true;
     }
 
-    bool hasInput = touchDown || encoderMoving || btnClicked;
+    bool hasInput = touchDown || encoderMoving || btnClicked || btnSingleClicked || btnHold;
     if (hasInput) {
         m_backlight = Backlight::FULL;
         m_lastActivityMs = nowMs;
@@ -155,6 +155,12 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
     // Button.
     if (btnClicked) {
         ev.btnStop = true;
+    }
+    if (btnSingleClicked) {
+        ev.btnClick = true;
+    }
+    if (btnHold) {
+        ev.btnHold = true;
     }
 
     updateBacklight(nowMs);

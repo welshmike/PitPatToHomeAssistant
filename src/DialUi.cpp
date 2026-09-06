@@ -415,8 +415,10 @@ void DialUi::handleInput(uint32_t nowMs)
     // expects.
     const bool btnClicked = M5Dial.BtnA.wasClicked();
 
+    // Task 3 wires the real single-click/hold reads; for now these two new
+    // inputs are always false so the device build keeps compiling.
     const DialEvents ev = m_input.tick(encoderCount, touch.isPressed(), touch.x, touch.y,
-                                        btnClicked, nowMs);
+                                        btnClicked, false, false, nowMs);
     m_holdProgress = ev.holdProgress;
 
     // Keep the screen awake through an active walk even with no touch/encoder

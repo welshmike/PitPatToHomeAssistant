@@ -19,6 +19,8 @@ struct DialEvents
     bool wake = false;
     bool btnStop = false;
     int swipe = 0; // -1 left, +1 right, 0 none
+    bool btnClick = false; // decided single click (from btnSingleClicked)
+    bool btnHold = false;  // hold threshold reached (from btnHold)
 };
 
 class DialInput
@@ -34,8 +36,13 @@ public:
     enum class Backlight { FULL, DIM };
 
     // Feed one tick's raw readings; returns the intents derived from them.
+    // btnClicked is the raw wasClicked() edge (drives btnStop, unchanged).
+    // btnSingleClicked/btnHold are M5Dial's debounced wasSingleClicked()/
+    // wasHold() edges, fed straight through to btnClick/btnHold; like
+    // btnClicked, either counts as activity for the backlight and is
+    // swallowed (wake-only) on the tick that wakes a dimmed backlight.
     DialEvents tick(long encoderCount, bool touchDown, int touchX, int touchY,
-                     bool btnClicked, uint32_t nowMs);
+                     bool btnClicked, bool btnSingleClicked, bool btnHold, uint32_t nowMs);
 
     Backlight backlight() const { return m_backlight; }
 
