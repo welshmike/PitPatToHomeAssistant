@@ -1,8 +1,10 @@
 # Home Assistant automations for the Dial's Lights cards
 
-The Dial's two Lights cards (Office, Lamp — spec §4.10) never talk to Home Assistant's
-REST/WebSocket API. They only publish and subscribe to plain MQTT topics; two HA automations
-do the actual `light.turn_on`/`light.turn_off` calls and mirror state back. Both were created
+The Dial's two Lights cards (Office, Lamp — spec §4.10, rebuilt as swipeable pages in §4.12) never
+talk to Home Assistant's REST/WebSocket API. They only publish and subscribe to plain MQTT topics;
+two HA automations do the actual `light.turn_on`/`light.turn_off` calls and mirror state back. Plan
+8 changed the Dial's on-screen UI (pages and knob-as-value instead of on-screen buttons) but not
+this MQTT contract or either automation below — nothing here needs to change for it. Both were created
 directly through the HA API on 2026-09-04 (`automation.pacekeeper_dial_light_commands` and
 `automation.pacekeeper_dial_light_state_publish`); the YAML below is a readable copy of exactly
 what's live, with the `id` HA assigns on creation dropped (re-importing this YAML gets a fresh

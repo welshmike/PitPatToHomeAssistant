@@ -108,19 +108,23 @@ configuration screen for this and similar settings is planned.
   * Selector: starts the belt at the default speed, skipping the candidate
   * Running or Paused: stop
   * Connecting: cancels the connect
-* **Side WAKE button**: on Running/Paused this is an emergency stop that always fires regardless
-  of what's showing. On the Selector screen it cancels the picker instead, without sending any
-  belt command. On Connecting it's a harmless no-op refusal since there's no belt link yet, and it
-  does not cancel an in-progress connect; only tap/hold on the Connecting screen do that.
-  Otherwise (Disconnected, Clock, or any other idle card) it homes: closes the selector if one was
-  open and returns to the Treadmill card — see Desk mode below
+* **Side WAKE button**: on Running/Paused the raw press is an emergency stop that always fires
+  instantly, regardless of what's showing. On Connecting it's a harmless no-op refusal since
+  there's no belt link yet, and it does not cancel an in-progress connect; only tap/hold on the
+  Connecting screen do that. Otherwise, while the belt is idle, the button works in two stages: a
+  decided single click (after M5Unified's ~350 ms multi-click window) opens the **card menu**, or
+  picks the highlighted card if the menu is already open; a **hold** (500 ms) always jumps
+  straight to the Treadmill card from any screen, closing any open menu or selector on the
+  way — see Desk mode below. On the Selector screen a click has no effect; a hold closes it
+  (cancelling the candidate speed, no belt command sent) on its way home.
 * **Rotate** the dial (one detent = one physical "click" of the encoder):
   * Selector: ±0.2 mph per detent, clamped to 0.6–3.8 mph
   * Running: ±0.1 mph per detent, queued and sent as a single speed command about 400 ms after
     the last click, so spinning several clicks quickly only produces one BLE write
   * Paused, Connecting: ignored
-  * Treadmill/Disconnected, Clock, and any other idle card (Selector not open): scrolls the card
-    ring one card per detent — see Desk mode below
+  * Treadmill/Disconnected, Clock, and any other idle card (Selector not open): no effect — the
+    knob never scrolls the card ring; it always adjusts whatever value the card showing owns —
+    see Desk mode below
 * **Horizontal swipe** on the Selector screen: an alternate way to step the candidate, same
   0.2 mph per swipe as a detent — swiping right (clockwise) makes it faster, left makes it slower
 * The Selector closes itself back to Disconnected after 20 seconds with no input
@@ -190,8 +194,9 @@ Away from the belt, the Dial is a small desk gadget: cards sit in a ring — Tre
 Flights, Office (light), Lamp (light), with more (Calendar, Music) coming in later sub-projects.
 While the belt is idle, a **single click of the side button opens a card menu**: the five cards as
 glyphs on a ring, the current one highlighted in amber with its name in the middle. Turn the knob
-to move the highlight, tap a glyph (or click again to take the highlighted one) to go there; eight
-seconds without input closes it unchanged. **Holding** the side button jumps straight back to the
+to move the highlight (it wraps at the ends); tap a glyph to go straight there, or tap anywhere
+else on the face (or click the side button again) to take the highlighted one — the menu is never
+a dead end. Eight seconds without input closes it unchanged. **Holding** the side button jumps straight back to the
 Treadmill card from anywhere, closing the menu or the speed picker on the way. While the belt is
 actually running the side button is still the emergency stop, on the instant press rather than
 after the click window. The knob never scrolls cards: it always adjusts whatever the card showing
@@ -264,8 +269,8 @@ MQTT — nothing goes through HA's REST/WebSocket API, only plain topics (see be
 
 When the light is **off** the whole card is one switch-on target: a large power circle with
 `tap to switch on` underneath. Tap anywhere and the light comes back on at whatever brightness it
-was last at (the Dial sends `{"state":"ON"}` and lets the light restore itself); the knob and a
-touch-hold do nothing there.
+was last at (the Dial sends `{"state":"ON"}` and lets the light restore itself); the knob, a swipe,
+and a touch-hold all do nothing there — there is only the one face.
 
 When it is **on** the card is a small stack of pages, shown by the dots near the top — Brightness,
 Kelvin and, on the Lamp, Colour. Swipe left or right to change page (the ends don't wrap), and
