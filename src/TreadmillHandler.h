@@ -305,8 +305,25 @@ private:
     // that onDisconnect() knows the disconnect was deliberate, not radio loss.
     // In practice Q1 beats the 6s supervision timer with its own HCI 0x13 kick,
     // so onDisconnect() uses the m_intentionalDrop flag regardless of reason code.
-    bool m_intentionalDrop = false;
-    bool m_stopKeepalives  = false;
+    // volatile: set on the loop task, cleared by onDisconnect() on the NimBLE
+    // task, and read by sendKeepalive()/handle() in between.
+    volatile bool m_intentionalDrop = false;
+    volatile bool m_stopKeepalives  = false;
+
+    // Bounded escalation for the keepalive-zombie path (re-review of spec
+    // 4.17): when a heartbeat write fails but the link layer is still up we
+    // stop keepalives and let the supervision timeout drop the link (the
+    // lighter kick path). If the pad negotiated a long supervision timeout that
+    // wait is open-ended while the belt may be running and we are mute, so
+    // handle() forces disconnect() once this deadline passes with the link still
+    // up. 0 = no escalation pending. Deadline = 2x the negotiated supervision
+    // timeout, clamped to [kDropEscalateMinMs, kDropEscalateMaxMs].
+    uint32_t m_dropDeadlineMs = 0;
+    // Negotiated supervision timeout in ms, captured in completeSetup(); falls
+    // back to the 6 s we request if the stack reports 0.
+    uint32_t m_connTimeoutMs = 6000;
+    static constexpr uint32_t kDropEscalateMinMs = 12000;
+    static constexpr uint32_t kDropEscalateMaxMs = 30000;
 
     // Set by notifyCallback() (Core 0) when a fresh BLE packet is ready.
     // Cleared by handle() (Core 1), which reports it to the caller. This keeps ALL

@@ -141,8 +141,7 @@ bool TreadmillHandler::requestDisconnect()
     // straight through to the disconnect() path below.
     // (SETUP runs to completion inside handle() on this same task, so the
     // stage can only be IDLE or LINKING here.)
-    if (m_linkStage != LinkStage::IDLE ||
-        (!isConnected() && m_doConnect && m_autoReconnect))
+    if (isConnecting())
     {
         log_i("Connect cancelled by user while connecting");
         if (m_linkStage == LinkStage::LINKING && m_pClient)
@@ -195,7 +194,23 @@ bool TreadmillHandler::requestConnect()
 {
     if (isConnected())
     {
-        return false;
+        // A link that is up but muted — keepalives stopped for an intentional
+        // drop, or the keepalive-zombie debounce — is not a connection the user
+        // can use, and left alone it only ends when the supervision timeout
+        // fires. The user pressing Connect means they want to walk: force the
+        // drop now so onDisconnect() -> m_doConnect brings up a fresh link.
+        if (!m_stopKeepalives)
+        {
+            return false;
+        }
+        log_w("Manual connect on a muted link — forcing disconnect to re-link");
+        m_autoReconnect        = true;
+        m_userRequestedConnect = true;
+        m_reconnectNotBefore   = 0;
+        m_connectAttempts      = 0;
+        m_dropDeadlineMs       = 0;
+        m_pClient->disconnect();
+        return true;
     }
     log_i("Manual connect requested");
     m_autoReconnect = true;
@@ -443,9 +458,23 @@ bool TreadmillHandler::sendCommand(const uint8_t *data, size_t length)
             // the write may simply have raced the GATT setup.
             if (!isUserCommand || m_linkStage != LinkStage::IDLE)
             {
-                log_w("keepalive write failed — letting supervision timeout drop the link");
+                uint32_t escalateMs = m_connTimeoutMs * 2;
+                if (escalateMs < kDropEscalateMinMs) escalateMs = kDropEscalateMinMs;
+                if (escalateMs > kDropEscalateMaxMs) escalateMs = kDropEscalateMaxMs;
+                if (isUserCommand)
+                    log_w("command write failed during link setup — letting supervision timeout drop the link (forced after %u ms)",
+                          escalateMs);
+                else
+                    log_w("keepalive write failed — letting supervision timeout drop the link (forced after %u ms)",
+                          escalateMs);
                 m_stopKeepalives  = true;
                 m_intentionalDrop = true;
+                // Bounded: if the link is still up after this, handle() forces
+                // disconnect() — see m_dropDeadlineMs in the header.
+                if (m_dropDeadlineMs == 0)
+                {
+                    m_dropDeadlineMs = millis() + escalateMs;
+                }
             }
             else
             {
@@ -580,6 +609,20 @@ bool TreadmillHandler::handle()
         m_sendInitNow = false;
         sendInitSequence();
         m_lastKeepalive = millis();
+    }
+
+    // Bounded escalation for the keepalive-zombie path: the debounce above
+    // (sendCommand) stopped keepalives and armed this deadline. If the link
+    // layer is still up when it passes, the supervision timeout is not coming
+    // soon enough — force the drop so the reconnect chain runs.
+    if (m_dropDeadlineMs != 0 && (int32_t)(millis() - m_dropDeadlineMs) >= 0)
+    {
+        m_dropDeadlineMs = 0;
+        if (m_pClient && m_pClient->isConnected())
+        {
+            log_e("Zombie link still up after the escalation deadline — forcing disconnect");
+            m_pClient->disconnect();
+        }
     }
 
     // Heartbeat: reply once to each belt notification (the PitPat app's pattern, ~1 Hz),
@@ -799,6 +842,13 @@ bool TreadmillHandler::completeSetup()
     }
     log_i("Write characteristic initialized");
 
+    // A fresh link is never a muted one: clear the intentional-drop flags before
+    // the early keepalive below, or sendKeepalive() would refuse it if a
+    // previous drop was still flagged.
+    m_intentionalDrop = false;
+    m_stopKeepalives  = false;
+    m_dropDeadlineMs  = 0;
+
     // Send an immediate keepalive now that we have the write characteristic.
     // The Q1 kicks the connection (reason=531) if it receives no BLE write within
     // ~300ms of connecting. On ESP32 dual-core, characteristic discovery takes
@@ -829,8 +879,6 @@ bool TreadmillHandler::completeSetup()
     m_logRawFirstPacket       = true;
     m_sendInitNow             = false;
     m_reconnectNotBefore      = 0;
-    m_intentionalDrop         = false;
-    m_stopKeepalives          = false;
     // Baselines, packet-type tracking and session/pause flags.
     m_tracker.onConnected(m_lastConnectTime);
 
@@ -855,6 +903,7 @@ bool TreadmillHandler::completeSetup()
     // latency=0, timeout=600 (6s). If the pad negotiated a much longer timeout, that
     // explains why onDisconnect() can take hundreds of seconds after the GATT layer breaks.
     NimBLEConnInfo connInfo = m_pClient->getConnInfo();
+    m_connTimeoutMs = connInfo.getConnTimeout() ? connInfo.getConnTimeout() * 10u : 6000u;
     log_i("Negotiated BLE params: interval=%u (%.1fms) latency=%u timeout=%u (%ums)",
           connInfo.getConnInterval(), connInfo.getConnInterval() * 1.25f,
           connInfo.getConnLatency(),
@@ -980,8 +1029,9 @@ void TreadmillHandler::onDisconnect(BLEClient *pClient, int reason)
     // Clear the staged-connect state first (spec 4.17): a drop mid-LINKING (a
     // connect that failed to establish) or mid-SETUP must never leave the stage
     // stuck — handle() would then start no further attempts.
-    m_linkUp    = false;
-    m_linkStage = LinkStage::IDLE;
+    m_linkUp         = false;
+    m_linkStage      = LinkStage::IDLE;
+    m_dropDeadlineMs = 0;
 
     // NimBLE reason = 512 + HCI error code. Common codes:
     //   0x08 (520) = connection timeout       — radio loss / device out of range
