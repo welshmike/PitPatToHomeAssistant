@@ -281,6 +281,34 @@ void DialUi::handleInput(uint32_t nowMs)
 
     const Screen screen = currentScreen(isPausedState());
 
+    // Hue-ring scrub (spec 4.18 amendment): a touch that began inside the
+    // ring's annulus on the Lamp's Colour page is the ring's for the rest of
+    // the gesture. Every tick it is held, the hue under the finger becomes the
+    // edit hue (angle only — the finger may drift off the band), re-arming
+    // the 300 ms settle, so the marker and disc follow live and the lamp gets
+    // one command 300 ms after the finger pauses or lifts. claimTouch() mutes
+    // the swipe/long-press/tap the same motion would otherwise produce.
+    if (ev.touchHeld && screen == Screen::LIGHT_LAMP && lightCardLive(screen))
+    {
+        LightCardState& card = lightCardFor(screen);
+        if (card.page() == LightCardState::Page::COLOUR && card.hasColour() &&
+            LightLayout::hitHueRing(ev.touchStartX, ev.touchStartY))
+        {
+            m_input.claimTouch();
+            const float hue = LightLayout::hueAt(ev.touchX, ev.touchY);
+            // Skip sub-degree jitter: selectHue() re-arms the settle every call.
+            float d = fabsf(hue - card.editHue());
+            if (d > 180.0f)
+            {
+                d = 360.0f - d;
+            }
+            if (d >= 1.0f || !card.settling())
+            {
+                card.selectHue(hue, nowMs);
+            }
+        }
+    }
+
     if (ev.tap)
     {
         // The Connecting screen has no running belt to toggle — tap cancels
@@ -590,20 +618,8 @@ void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
         return;
     }
 
-    // Colour page: only the hue ring is a target (the glyph is not drawn there).
-    if (card.page() == LightCardState::Page::COLOUR && card.hasColour())
-    {
-        if (LightLayout::hitHueRing(x, y))
-        {
-            // Same settle path as a detent: the command goes out 300 ms later
-            // from tickLights(), so a quick second choice replaces the first.
-            const float hue = LightLayout::hueAt(x, y);
-            card.selectHue(hue, nowMs);
-            playAcceptBeep(true);
-            return;
-        }
-    }
-
+    // Colour page: the hue ring is handled by the scrub path in update() (a
+    // tap is a one-tick scrub), and the power glyph is not drawn there.
     // The glyph is not drawn on the Colour page, so it is not a target there.
     if (card.page() != LightCardState::Page::COLOUR && LightLayout::hitPowerGlyph(x, y))
     {

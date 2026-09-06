@@ -132,7 +132,9 @@ private:
     void handleInput(uint32_t nowMs);
     // The tap handler for a light card (spec 4.12), split out of
     // handleInput(): switch-on anywhere on the off face, the small power
-    // glyph and the Colour page's hue ring on the lit face, nothing else.
+    // glyph on the lit face, nothing else. The Colour page's hue ring is
+    // handled by the per-tick scrub path earlier in handleInput() (spec 4.18
+    // amendment), not here.
     void handleLightTap(Screen screen, int x, int y, uint32_t nowMs);
     // Moves the card ring to `id` the way the user asked for it (menu
     // selection or the hold-home gesture): counts as manual navigation for
