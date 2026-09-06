@@ -300,14 +300,41 @@ void NetTask::publishBootRecord()
              (unsigned long)(millis() / 1000), (unsigned)ESP.getFreeHeap(), (unsigned)lastCount);
     m_net.mqtt().publish(RemoteLog::kBootTopic, json, true);
 
-    // Oldest first, numbered back from the reset: [last-8] … [last-1], so the
-    // last line the firmware managed to log is the one labelled [last-1].
-    // QoS 0 and not retained — this is forensics, not state.
-    for (uint8_t i = 0; i < lastCount; i++)
+    // Oldest first, as ONE retained JSON object, so the tail can be read at
+    // any later time with a single subscribe — a spontaneous crash would
+    // otherwise be lost unless someone happened to be listening at boot
+    // (controller decision 2026-09-06, amends spec 4.16). Only written when
+    // there IS a crash tail: a clean OTA/power-on boot leaves the previous
+    // record in place rather than erasing evidence.
+    if (lastCount > 0)
     {
-        char payload[RemoteLog::kLineLen + 16];
-        snprintf(payload, sizeof(payload), "[last-%u] %s", (unsigned)(lastCount - i), last[i]);
-        m_net.mqtt().publish(RemoteLog::kLastTopic, payload);
+        static char doc[RemoteLog::kLastLines * (RemoteLog::kLineLen * 2) + 160];
+        size_t n = (size_t)snprintf(doc, sizeof(doc), "{\"reset\":\"%s\",\"build\":\"%s\",\"lines\":[",
+                                    RemoteLog::resetReasonName(), RemoteLog::buildStamp());
+        for (uint8_t i = 0; i < lastCount && n + 4 < sizeof(doc); i++)
+        {
+            if (i > 0) doc[n++] = ',';
+            doc[n++] = '"';
+            for (const char *c = last[i]; *c != '\0' && n + 3 < sizeof(doc); c++)
+            {
+                if (*c == '"' || *c == '\\')
+                {
+                    doc[n++] = '\\';
+                }
+                if ((unsigned char)*c < 0x20)
+                {
+                    doc[n++] = ' ';
+                    continue;
+                }
+                doc[n++] = *c;
+            }
+            doc[n++] = '"';
+        }
+        if (n + 3 <= sizeof(doc))
+        {
+            doc[n++] = ']'; doc[n++] = '}'; doc[n] = '\0';
+            m_net.mqtt().publish(RemoteLog::kLastTopic, doc, true);
+        }
     }
 
     if (first)

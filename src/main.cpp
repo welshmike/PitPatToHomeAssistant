@@ -79,7 +79,7 @@ constexpr uint32_t kPostBootHoldMs = 30000;
 // watchdog, so a freeze leaves evidence long before it becomes a reset. The one
 // routine pass that can trip it is a connect whose service discovery runs all 8
 // retries (2 s inside treadmill.handle()), which is worth seeing anyway.
-constexpr uint32_t kLoopStallMs = 2000;
+constexpr uint32_t kLoopStallMs = 3000; // above the 2 s worst-case GATT discovery loop, so only real freezes log
 
 // millis() of the last transition into MQTT_UP; 0 while not MQTT_UP.
 uint32_t g_mqttUpSinceMs = 0;
@@ -329,10 +329,14 @@ void loop()
   }
 
   // Cheap every loop — the handler logs only when the flag actually changes.
+  // Latched rather than compared against millis() so the boot window cannot
+  // re-open when millis() wraps after 49.7 days (Plan 11 review).
+  static bool bootWindowOver = false;
+  if (!bootWindowOver && now >= kPostBootHoldMs) bootWindowOver = true;
   const bool bringingUp = (netStatus == NetStatus::WIFI_CONNECTING ||
                            netStatus == NetStatus::MQTT_CONNECTING);
   const bool connectHold =
-      (now < kPostBootHoldMs && bringingUp) ||
+      (!bootWindowOver && bringingUp) ||
       (netStatus == NetStatus::MQTT_UP && g_mqttUpSinceMs != 0 &&
        now - g_mqttUpSinceMs < kPostMqttHoldMs);
   treadmill.setConnectHold(connectHold);
