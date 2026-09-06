@@ -296,7 +296,7 @@ void drawColourPage(LovyanGFX& gfx, const DialTheme& theme, const LightCardState
     else
     {
         // Direct-to-display fallback: no push, so paint the real colours here.
-        paintHueWheel(gfx, card, theme.col(card.settling() ? Col::PENDING : Col::TEXT));
+        paintHueWheel(gfx, card, theme.col(card.hueEditInFlight() ? Col::PENDING : Col::TEXT));
     }
 }
 
@@ -379,9 +379,12 @@ void drawLightCard(LovyanGFX& gfx, const DialTheme& theme, const LightCardState&
 
 void paintLightTrueColour(LGFX_Device& display, const LightCardState& card)
 {
-    // The display is 16-bit, so the outline colours are RGB565 literals: white,
-    // and TFT_ORANGE 0xFDA0 which is what Col::PENDING maps to (DialTheme.h).
-    const uint32_t outline = card.settling() ? 0xFDA0u : 0xFFFFu;
+    // This path paints straight to the display outside the canvas, so
+    // LovyanGFX wants the outline colour as RGB888 (uint32_t) -- unlike the
+    // ring and marker disc, which paintHueWheel() draws RGB565 (uint16_t) via
+    // hueRgb565(). dialPaletteRgb888() gives the RGB888 value for a Col.
+    const uint32_t outline =
+        dialPaletteRgb888(static_cast<uint8_t>(card.hueEditInFlight() ? Col::PENDING : Col::TEXT));
     paintHueWheel(display, card, outline);
 }
 

@@ -263,6 +263,12 @@ private:
         bool     lightMqttUp    = false;
         uint8_t  lightPage      = 0;
         uint16_t lightHue       = 0; // editHue() rounded to whole degrees
+        // card.settling() OR card.hueEditInFlight(): a HUE edit keeps the
+        // marker's amber outline through the awaiting-confirmation hold,
+        // after settling() itself has already gone false, and the hue it
+        // holds can echo back rounded to the same whole degree -- so
+        // settling() alone (or lightHue) can't be trusted to catch the
+        // amber-to-white transition at confirmation.
         bool     lightSettling  = false;
         bool     lightOn        = false;
 

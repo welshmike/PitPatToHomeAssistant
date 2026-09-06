@@ -79,7 +79,8 @@ inline float wrapHue(float h)
 
 // Hue of the screen point (x, y): the angle of the point around the face
 // centre, 0 at 12 o'clock, clockwise. atan2f(dx, -dy) is exactly that
-// convention (up = 0, right = +90). The centre itself reads 0.
+// convention (up = 0, right = +90). The centre itself reads 180 and is
+// never hit-tested (hitHueRing excludes it).
 inline float hueAt(int x, int y)
 {
     const float dx = static_cast<float>(x - kCentreX);

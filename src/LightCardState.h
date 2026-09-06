@@ -111,7 +111,9 @@ public:
     LightsModel::Command powerOff(uint32_t nowMs);
 
     // Adjusts the showing page's value by n detents -- BRIGHT +-5 clamped
-    // 1-100; KELVIN +-100 clamped to [minKelvin, maxKelvin]; COLOUR +-HUE_STEP degrees, wrapping at 360 -- and (re)arms the 300 ms settle deadline from nowMs.
+    // 1-100; KELVIN +-100 clamped to [minKelvin, maxKelvin]; COLOUR
+    // +-HUE_STEP degrees, wrapping at 360 -- and (re)arms the 300 ms settle
+    // deadline from nowMs.
     // Ignored when n == 0, or while the light is off or unavailable (the off
     // face has no value to turn, and there is nothing to send to a light that
     // isn't there).
@@ -150,6 +152,11 @@ public:
     // awaiting confirmation, otherwise HA's reported hue, normalised. No
     // snapping -- a colour set from HA or the Hue app is shown faithfully.
     float editHue() const;
+
+    // True while a HUE edit is in flight: settling (command not yet sent) or
+    // awaiting HA's confirmation of the sent command. Drives the marker's
+    // amber outline on the Colour page.
+    bool hueEditInFlight() const;
 
     // Which of the two colour pages the light is actually in: HA reports one
     // mode at a time, and the other page draws dim ("not active - turn to

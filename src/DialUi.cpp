@@ -598,7 +598,6 @@ void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
             // Same settle path as a detent: the command goes out 300 ms later
             // from tickLights(), so a quick second choice replaces the first.
             const float hue = LightLayout::hueAt(x, y);
-            log_i("Light tap: hue ring at (%d,%d) -> %.0f", x, y, static_cast<double>(hue));
             card.selectHue(hue, nowMs);
             playAcceptBeep(true);
             return;
@@ -1054,7 +1053,7 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
         key.lightHash     = static_cast<uint16_t>(h ^ (h >> 16));
         key.lightPage     = static_cast<uint8_t>(card.page());
         key.lightHue      = static_cast<uint16_t>(lroundf(card.editHue())) % 360u;
-        key.lightSettling = card.settling();
+        key.lightSettling = card.settling() || card.hueEditInFlight();
         key.lightOn       = v.on;
     }
     else

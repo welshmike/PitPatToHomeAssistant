@@ -349,13 +349,17 @@ LightsModel::Command LightCardState::tick(uint32_t nowMs)
 
 float LightCardState::editHue() const
 {
-    const bool pendingHue = m_settling && m_pending == LightsModel::Command::Type::HUE;
-    const bool holdingHue = m_confirmHold.type == LightsModel::Command::Type::HUE;
-    if (pendingHue || holdingHue)
+    if (hueEditInFlight())
     {
         return m_editHue;
     }
     return LightLayout::wrapHue(m_view.hue);
+}
+
+bool LightCardState::hueEditInFlight() const
+{
+    return (m_settling && m_pending == LightsModel::Command::Type::HUE) ||
+           m_confirmHold.type == LightsModel::Command::Type::HUE;
 }
 
 float LightCardState::ringFraction() const

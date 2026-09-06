@@ -579,6 +579,18 @@ static void test_selectHue_onACardWithoutColour_isIgnored(void)
     TEST_ASSERT_FALSE(card.settling());
 }
 
+// A tap on the dim ring (lamp in TEMP mode) still selects that hue and makes
+// colour live -- same as a detent, so the two boundary circles are a real target.
+static void test_selectHue_onDimColourPage_makesColourLive(void)
+{
+    LightCardState card = onColourPageCard(); // colourOn() is TEMP mode -> colour not live
+    TEST_ASSERT_FALSE(card.colourLive());
+    card.selectHue(90.0f, 1000);
+    TEST_ASSERT_TRUE(card.colourLive());
+    TEST_ASSERT_EQUAL_FLOAT(90.0f, card.editHue());
+    TEST_ASSERT_TRUE(card.settling());
+}
+
 // ---------------------------------------------------------------------------
 // LightCardState: editHue(), kelvinLive(), colourLive(), ringFraction()
 // ---------------------------------------------------------------------------
@@ -616,6 +628,26 @@ static void test_editHue_holdsTheSentHueUntilConfirmedThenFollowsHa(void)
     card.sync(makeState(true, 50, LightsModel::ColorMode::HS, 0, 2000, 6500, 273.3f, 92.0f, true),
               1500);
     TEST_ASSERT_EQUAL_FLOAT(273.3f, card.editHue());
+}
+
+static void test_hueEditInFlight_trueWhileSettlingAndUntilConfirmed(void)
+{
+    LightCardState card = onColourPageCard();
+    TEST_ASSERT_FALSE(card.hueEditInFlight());
+    card.selectHue(120.0f, 1000);
+    TEST_ASSERT_TRUE(card.hueEditInFlight());   // settling
+    (void)card.tick(1300);                       // command sent, hold begins
+    TEST_ASSERT_TRUE(card.hueEditInFlight());   // awaiting confirmation
+    card.sync(makeState(true, 50, LightsModel::ColorMode::HS, 0, 2000, 6500, 121.0f, 100, true), 1500);
+    TEST_ASSERT_FALSE(card.hueEditInFlight());  // confirmed within tolerance
+}
+
+static void test_hueEditInFlight_falseForABrightnessEdit(void)
+{
+    LightCardState card = onCard(); // Brightness page
+    card.detents(1, 1000);
+    TEST_ASSERT_TRUE(card.settling());
+    TEST_ASSERT_FALSE(card.hueEditInFlight());
 }
 
 static void test_kelvinLiveAndColourLive_followTheReportedMode(void)
@@ -879,10 +911,13 @@ int main(int, char**)
     RUN_TEST(test_selectHue_whileOff_isIgnored);
     RUN_TEST(test_selectHue_offTheColourPage_isIgnored);
     RUN_TEST(test_selectHue_onACardWithoutColour_isIgnored);
+    RUN_TEST(test_selectHue_onDimColourPage_makesColourLive);
 
     RUN_TEST(test_editHue_followsHaHueWhenIdle);
     RUN_TEST(test_editHue_isThePendingOneWhileSettling);
     RUN_TEST(test_editHue_holdsTheSentHueUntilConfirmedThenFollowsHa);
+    RUN_TEST(test_hueEditInFlight_trueWhileSettlingAndUntilConfirmed);
+    RUN_TEST(test_hueEditInFlight_falseForABrightnessEdit);
     RUN_TEST(test_kelvinLiveAndColourLive_followTheReportedMode);
     RUN_TEST(test_colourEdit_makesColourLiveImmediately);
     RUN_TEST(test_kelvinEdit_makesKelvinLiveImmediately);
