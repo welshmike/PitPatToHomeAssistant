@@ -46,9 +46,21 @@ LightCardState::LightCardState(bool hasColour) : m_hasColour(hasColour)
 {
 }
 
+LightCardState::Page LightCardState::pageAt(uint8_t i) const
+{
+    static constexpr Page kLamp[3]   = {Page::BRIGHT, Page::COLOUR, Page::KELVIN};
+    static constexpr Page kOffice[2] = {Page::BRIGHT, Page::KELVIN};
+    const uint8_t last = pageCount() - 1;
+    if (i > last)
+    {
+        i = last;
+    }
+    return m_hasColour ? kLamp[i] : kOffice[i];
+}
+
 void LightCardState::resetPage()
 {
-    m_page = Page::BRIGHT;
+    m_pageIdx = 0;
     m_scrubActive = false; // a gesture cannot outlive the page
 }
 
@@ -59,7 +71,7 @@ void LightCardState::swipe(int dir, uint32_t nowMs)
         return;
     }
     const int last = static_cast<int>(pageCount()) - 1;
-    m_page = static_cast<Page>(clampInt(static_cast<int>(m_page) + dir, 0, last));
+    m_pageIdx = static_cast<uint8_t>(clampInt(static_cast<int>(m_pageIdx) + dir, 0, last));
     m_pageInputMs = nowMs;
 }
 
@@ -238,7 +250,7 @@ void LightCardState::detents(int n, uint32_t nowMs)
         return;
     }
 
-    switch (m_page)
+    switch (page())
     {
     case Page::BRIGHT:
     {
@@ -281,7 +293,7 @@ void LightCardState::selectHue(float hue, uint32_t nowMs)
     // Only the Colour page draws the ring, and only a colour-capable card has
     // that page — a tap that lands on those coordinates on any other page is
     // a tap on bare background.
-    if (!m_hasColour || m_page != Page::COLOUR || !editable())
+    if (!m_hasColour || page() != Page::COLOUR || !editable())
     {
         return;
     }
@@ -298,7 +310,7 @@ void LightCardState::selectHue(float hue, uint32_t nowMs)
 
 void LightCardState::scrub(float hue, uint32_t nowMs)
 {
-    if (!m_hasColour || m_page != Page::COLOUR || !editable())
+    if (!m_hasColour || page() != Page::COLOUR || !editable())
     {
         return;
     }
@@ -362,7 +374,7 @@ LightsModel::Command LightCardState::tick(uint32_t nowMs)
 
     // Page idle timeout: back to Brightness once nothing has touched the
     // page for PAGE_IDLE_MS. Independent of the settle below.
-    if (m_page != Page::BRIGHT && elapsedAtLeast(nowMs, m_pageInputMs, PAGE_IDLE_MS))
+    if (page() != Page::BRIGHT && elapsedAtLeast(nowMs, m_pageInputMs, PAGE_IDLE_MS))
     {
         resetPage();
     }

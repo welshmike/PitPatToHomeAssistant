@@ -115,4 +115,16 @@ inline bool hitPowerGlyph(int x, int y)
     return dx * dx + dy * dy <= kPowerGlyphHitR * kPowerGlyphHitR;
 }
 
+// Colour page: the centre disc is a tap target that leaves the page. Hit
+// radius a little larger than the disc (kCentreDiscR 30) and well inside the
+// ring's touch annulus (kHueHitInnerR 70), so the two can never both claim
+// a point.
+constexpr int kCentreDiscHitR = 34;
+inline bool hitCentreDisc(int x, int y)
+{
+    const int dx = x - kCentreX;
+    const int dy = y - kCentreY;
+    return dx * dx + dy * dy <= kCentreDiscHitR * kCentreDiscHitR;
+}
+
 } // namespace LightLayout

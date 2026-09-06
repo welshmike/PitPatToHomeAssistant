@@ -276,22 +276,23 @@ was last at (the Dial sends `{"state":"ON"}` and lets the light restore itself);
 and a touch-hold all do nothing there — there is only the one face.
 
 When it is **on** the card is a small stack of pages, shown by the dots near the top — Brightness,
-Kelvin and, on the Lamp, Colour. Swipe left or right to change page (the ends don't wrap), and
-**the knob always adjusts the page you're looking at**:
+then, on the Lamp, Colour, then Kelvin (Office has no Colour page, so it's just Brightness then
+Kelvin). Swipe left or right to change page (the ends don't wrap), and **the knob always adjusts
+the page you're looking at**:
 
 * **Brightness**: the value ring around the edge plus the percentage in the middle; ±5 % per
   detent, clamped 1–100 %. The caption underneath shows the light's live colour state (`2700K` or
   `hue 240`).
-* **Kelvin**: the value large in the middle over a warm→cool bar with a marker at where this light
-  sits inside its own min/max range; ±100 K per detent, clamped to that range.
 * **Colour** (Lamp only): a continuous hue ring around the edge of the face with a marker at the
   selected hue and the colour itself in the centre disc. Tap anywhere on the ring to jump to that
   hue; each knob detent moves 15° (24 detents per revolution, wrapping), or put a finger on the
   ring and drag it round: the marker follows live and the lamp gets one command 300 ms after the
   finger pauses or lifts. The marker outline turns amber while the command settles and until HA
-  echoes it. This page draws nothing but the ring, marker and disc: leave it by swiping back from
-  the centre disc (a swipe starting on the ring scrubs instead) or waiting for the 10 s page
+  echoes it. This page draws nothing but the ring, marker and disc: tap the centre disc to go back
+  to Brightness (a touch starting on the ring scrubs instead), or swipe, or wait for the 10 s page
   timeout.
+* **Kelvin**: the value large in the middle over a warm→cool bar with a marker at where this light
+  sits inside its own min/max range; ±100 K per detent, clamped to that range.
 
 The Lamp is in either temperature or hue mode at a time, so whichever of those two pages isn't
 live draws dim with `not active - turn to use`; the first detent on it sends that mode's command

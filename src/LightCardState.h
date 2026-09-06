@@ -8,12 +8,14 @@
 // or Lamp). No dependency on Arduino/M5 headers so this builds and is
 // tested on the host (native env).
 //
-// Model (spec §4.12 "Lights v2"): the card is a small stack of pages —
-// Brightness, Kelvin and, on the Lamp, Colour — and the knob always adjusts
-// the page that is showing. A horizontal swipe changes page (no wrap); every
-// arrival on the card and every switch-on starts on Brightness. When the
-// light is off the whole face is a switch-on target (tapOn()); when it is on,
-// the small power glyph and a touch-hold switch it off (powerOff()).
+// Model (spec §4.12 "Lights v2", page order per the §4.18 amendment): the
+// card is a small stack of pages — Brightness, Kelvin and, on the Lamp,
+// Colour — and the knob always adjusts the page that is showing. A
+// horizontal swipe changes page (no wrap); every arrival on the card and
+// every switch-on starts on Brightness. Lamp runs Brightness -> Colour ->
+// Kelvin; Office (no Colour page) runs Brightness -> Kelvin. When the light
+// is off the whole face is a switch-on target (tapOn()); when it is on, the
+// small power glyph and a touch-hold switch it off (powerOff()).
 //
 // DialUi owns one LightCardState per card, feeds it HA state via sync(),
 // drives it from swipe()/tapOn()/powerOff()/selectHue()/detents(), polls
@@ -30,7 +32,9 @@
 class LightCardState
 {
 public:
-    // Page order is also the swipe order and the page-dot order.
+    // Enum values are stable (FrameKey::lightPage stores card.page() as this
+    // value) but no longer double as the swipe/page-dot order -- see
+    // pageAt().
     enum class Page : uint8_t { BRIGHT, KELVIN, COLOUR };
 
     static constexpr uint32_t SETTLE_MS = 300;
@@ -57,7 +61,12 @@ public:
     // 3 for the Lamp, 2 for Office.
     uint8_t pageCount() const { return m_hasColour ? 3 : 2; }
 
-    Page page() const { return m_page; }
+    // The card's page sequence (spec 4.18 amendment): Lamp is Brightness ->
+    // Colour -> Kelvin, Office (no colour) is Brightness -> Kelvin. Indices
+    // past the end clamp to the last page.
+    Page pageAt(uint8_t i) const;
+    uint8_t pageIndex() const { return m_pageIdx; }
+    Page page() const { return pageAt(m_pageIdx); }
 
     // Back to the Brightness page. Deliberately does not touch a pending
     // settle or an in-flight command: DialUi calls this on arrival at the
@@ -198,7 +207,7 @@ private:
 
     bool m_hasColour;
     LightsModel::LightState m_view;
-    Page m_page = Page::BRIGHT;
+    uint8_t m_pageIdx = 0; // index into the card's page sequence (pageAt)
     // What the pending settle will send (NONE when nothing is pending). This
     // is the page the edit was made on, not the page showing now: a swipe
     // mid-settle must not change what gets sent.

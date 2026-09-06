@@ -104,7 +104,7 @@ void drawPageDots(LovyanGFX& gfx, const DialTheme& theme, const LightCardState& 
     for (int i = 0; i < count; ++i)
     {
         const int x = firstX + i * LightLayout::kPageDotSpacing;
-        if (i == static_cast<int>(card.page()))
+        if (i == static_cast<int>(card.pageIndex()))
         {
             gfx.fillCircle(x, LightLayout::kPageDotY, LightLayout::kPageDotR, theme.col(Col::TEXT));
         }

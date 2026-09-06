@@ -628,8 +628,17 @@ void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
 
     // Colour page: the hue ring is claimed on the touch-down tick by the
     // scrub path in handleInput(), so a ring touch never reaches here as a
-    // tap. The power glyph is not drawn on the Colour page, so it is not a
-    // target there either.
+    // tap; the power glyph is not drawn on the Colour page, so it is not a
+    // target there either. A tap on the centre disc leaves the page (spec
+    // 4.18 amendment): the disc sits inside the ring's touch annulus, so a
+    // tap there is never claimed and always arrives as ev.tap.
+    if (card.page() == LightCardState::Page::COLOUR && LightLayout::hitCentreDisc(x, y))
+    {
+        card.resetPage();
+        playAcceptBeep(true);
+        return;
+    }
+
     if (card.page() != LightCardState::Page::COLOUR && LightLayout::hitPowerGlyph(x, y))
     {
         const LightsModel::Command cmd = card.powerOff(nowMs);

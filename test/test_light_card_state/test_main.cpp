@@ -60,8 +60,18 @@ static LightCardState onOfficeCard()
     return card;
 }
 
-// An on colour card sitting on its Colour page.
+// An on colour card sitting on its Colour page (Lamp order: Brightness ->
+// Colour -> Kelvin -- spec 4.18 amendment).
 static LightCardState onColourPageCard()
+{
+    LightCardState card = onCard();
+    card.swipe(1, 1000);
+    return card;
+}
+
+// An on colour card sitting on its Kelvin page (two swipes now that Colour
+// sits between Brightness and Kelvin on the Lamp).
+static LightCardState onKelvinPageCard()
 {
     LightCardState card = onCard();
     card.swipe(1, 1000);
@@ -195,6 +205,26 @@ static void test_hitPowerGlyph_withinAndOutsideHitRadius(void)
     TEST_ASSERT_FALSE(LightLayout::hitPowerGlyph(120, 120));
 }
 
+// Colour page: a tap on the centre disc leaves the page (spec 4.18
+// amendment). The hit radius sits well inside the ring's touch annulus so
+// the two hit tests can never both claim the same point.
+static void test_hitCentreDisc_withinAndOutside(void)
+{
+    TEST_ASSERT_EQUAL_INT(34, LightLayout::kCentreDiscHitR);
+    TEST_ASSERT_TRUE(LightLayout::hitCentreDisc(120, 120));
+    TEST_ASSERT_TRUE(LightLayout::hitCentreDisc(120, 120 - 34));
+    TEST_ASSERT_FALSE(LightLayout::hitCentreDisc(120, 120 - 35));
+    TEST_ASSERT_FALSE(LightLayout::hitCentreDisc(120 + 99, 120));
+
+    for (int x = 0; x < 240; x += 4)
+    {
+        for (int y = 0; y < 240; y += 4)
+        {
+            TEST_ASSERT_FALSE(LightLayout::hitCentreDisc(x, y) && LightLayout::hitHueRing(x, y));
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // LightCardState: pages
 // ---------------------------------------------------------------------------
@@ -218,15 +248,48 @@ static void test_page_startsOnBrightness(void)
     TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == card.page());
 }
 
-static void test_swipe_forwardWalksPagesAndClampsAtColour(void)
+// Lamp order (spec 4.18 amendment): Brightness -> Colour -> Kelvin, clamping
+// at Kelvin.
+static void test_swipe_forwardWalksBrightColourKelvinAndClampsAtKelvin(void)
 {
     LightCardState card = onCard();
+    TEST_ASSERT_EQUAL_UINT8(0, card.pageIndex());
+    TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == card.page());
     card.swipe(1, 1000);
+    TEST_ASSERT_EQUAL_UINT8(1, card.pageIndex());
+    TEST_ASSERT_TRUE(LightCardState::Page::COLOUR == card.page());
+    card.swipe(1, 1000);
+    TEST_ASSERT_EQUAL_UINT8(2, card.pageIndex());
     TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
     card.swipe(1, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Page::COLOUR == card.page());
+    TEST_ASSERT_EQUAL_UINT8(2, card.pageIndex());
+    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
+}
+
+// pageAt() sequences: Lamp is Brightness -> Colour -> Kelvin, Office (no
+// colour) is Brightness -> Kelvin; an out-of-range index clamps to the last
+// page.
+static void test_pageAt_lampAndOfficeSequences(void)
+{
+    LightCardState lamp(true);
+    TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == lamp.pageAt(0));
+    TEST_ASSERT_TRUE(LightCardState::Page::COLOUR == lamp.pageAt(1));
+    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == lamp.pageAt(2));
+    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == lamp.pageAt(99));
+
+    LightCardState office(false);
+    TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == office.pageAt(0));
+    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == office.pageAt(1));
+    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == office.pageAt(99));
+}
+
+// Office has no Colour page: one swipe reaches Kelvin directly.
+static void test_swipe_officeSkipsColour(void)
+{
+    LightCardState card = onOfficeCard();
     card.swipe(1, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Page::COLOUR == card.page());
+    TEST_ASSERT_EQUAL_UINT8(1, card.pageIndex());
+    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
 }
 
 static void test_swipe_backwardClampsAtBrightness(void)
@@ -242,10 +305,10 @@ static void test_swipe_backwardClampsAtBrightness(void)
 static void test_pageIdle_returnsToBrightnessAfterTenSeconds(void)
 {
     LightCardState card = onCard();
-    card.swipe(1, 1000); // -> KELVIN
-    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
+    card.swipe(1, 1000); // -> COLOUR
+    TEST_ASSERT_TRUE(LightCardState::Page::COLOUR == card.page());
     card.tick(10999);
-    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
+    TEST_ASSERT_TRUE(LightCardState::Page::COLOUR == card.page());
     card.tick(11000);
     TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == card.page());
 }
@@ -253,10 +316,10 @@ static void test_pageIdle_returnsToBrightnessAfterTenSeconds(void)
 static void test_pageIdle_detentExtendsTheTimeout(void)
 {
     LightCardState card = onCard();
-    card.swipe(1, 1000);      // -> KELVIN at t=1000
+    card.swipe(1, 1000);      // -> COLOUR at t=1000
     card.detents(1, 6000);    // activity at t=6000
     card.tick(11000);         // 10 s after the swipe, 5 s after the detent
-    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
+    TEST_ASSERT_TRUE(LightCardState::Page::COLOUR == card.page());
     card.tick(16000);
     TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == card.page());
 }
@@ -291,8 +354,7 @@ static void test_resetPage_returnsToBrightness(void)
 
 static void test_resetPage_leavesPendingSettleAlone(void)
 {
-    LightCardState card = onCard();
-    card.swipe(1, 1000); // KELVIN
+    LightCardState card = onKelvinPageCard();
     card.detents(1, 1000);
     TEST_ASSERT_TRUE(card.settling());
     card.resetPage();
@@ -302,6 +364,20 @@ static void test_resetPage_leavesPendingSettleAlone(void)
     LightsModel::Command cmd = card.tick(1300);
     TEST_ASSERT_TRUE(LightsModel::Command::Type::TEMP == cmd.type);
     TEST_ASSERT_EQUAL_UINT16(4100, cmd.kelvin);
+}
+
+// resetPage() from the Colour page (the centre-disc tap) also ends any
+// scrub gesture in progress, but never touches a pending settle -- an edit
+// made a moment ago still deserves to be sent.
+static void test_resetPage_fromColourReturnsToBrightnessAndEndsScrub(void)
+{
+    LightCardState card = onColourPageCard();
+    card.scrub(90.0f, 1000);
+    TEST_ASSERT_TRUE(card.scrubbing());
+    card.resetPage();
+    TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == card.page());
+    TEST_ASSERT_FALSE(card.scrubbing());
+    TEST_ASSERT_TRUE(card.settling()); // resetPage() never drops an edit
 }
 
 // ---------------------------------------------------------------------------
@@ -327,8 +403,7 @@ static void test_detents_brightPage_clampsTo1And100(void)
 
 static void test_detents_kelvinPage_stepsBy100AndClampsToBounds(void)
 {
-    LightCardState card = onCard();
-    card.swipe(1, 1000);
+    LightCardState card = onKelvinPageCard();
     card.detents(3, 1000);
     TEST_ASSERT_EQUAL_UINT16(4300, card.view().kelvin);
     card.detents(50, 1100);
@@ -340,7 +415,6 @@ static void test_detents_kelvinPage_stepsBy100AndClampsToBounds(void)
 static void test_detents_colourPage_stepsFifteenDegreesPerDetent(void)
 {
     LightCardState card = onCard(); // HA hue 0
-    card.swipe(1, 1000);
     card.swipe(1, 1000);
     card.detents(1, 1000);
     TEST_ASSERT_EQUAL_FLOAT(15.0f, card.editHue());
@@ -354,7 +428,6 @@ static void test_detents_colourPage_wrapsBothWays(void)
 {
     LightCardState card = onCard();
     card.swipe(1, 1000);
-    card.swipe(1, 1000);
     card.detents(-1, 1000); // 0 -> 345
     TEST_ASSERT_EQUAL_FLOAT(345.0f, card.editHue());
     card.detents(1, 1100); // 345 -> 0
@@ -367,7 +440,6 @@ static void test_detents_colourPage_fromTempMode_startsAtHaHue(void)
     // TEMP mode, but HA still reports the last hue: 250.
     card.sync(makeState(true, 50, LightsModel::ColorMode::TEMP, 4000, 2000, 6500, 250, 100, true),
               1000);
-    card.swipe(1, 1000);
     card.swipe(1, 1000);
     card.detents(1, 1000);
     TEST_ASSERT_EQUAL_FLOAT(265.0f, card.editHue());
@@ -425,7 +497,7 @@ static void test_tapOn_whenAlreadyOn_isIgnored(void)
     card.swipe(1, 1000);
     LightsModel::Command cmd = card.tapOn(1000);
     TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == cmd.type);
-    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
+    TEST_ASSERT_TRUE(LightCardState::Page::COLOUR == card.page());
 }
 
 static void test_tapOn_whenNoStateYet_isIgnored(void)
@@ -493,8 +565,7 @@ static void test_settle_rearmsFromTheLastDetent(void)
 
 static void test_settle_kelvinPageEmitsTempCommand(void)
 {
-    LightCardState card = onCard();
-    card.swipe(1, 1000);
+    LightCardState card = onKelvinPageCard();
     card.detents(-2, 1000);
     LightsModel::Command cmd = card.tick(1300);
     TEST_ASSERT_TRUE(LightsModel::Command::Type::TEMP == cmd.type);
@@ -506,7 +577,6 @@ static void test_settle_colourPageEmitsHueCommandWithRoundedHueAndFullSaturation
 {
     LightCardState card = onCard();
     card.swipe(1, 1000);
-    card.swipe(1, 1000);
     card.detents(5, 1000); // 0 -> 75
     LightsModel::Command cmd = card.tick(1300);
     TEST_ASSERT_TRUE(LightsModel::Command::Type::HUE == cmd.type);
@@ -517,13 +587,15 @@ static void test_settle_colourPageEmitsHueCommandWithRoundedHueAndFullSaturation
 
 static void test_settle_survivesAPageSwipeAndStillSendsTheEditedField(void)
 {
-    LightCardState card = onCard();
-    card.swipe(1, 1000); // KELVIN
+    LightCardState card = onKelvinPageCard();
     card.detents(1, 1000);
-    card.swipe(-1, 1000); // user flicks back to brightness before it settles
+    card.swipe(-1, 1000); // user flicks back to Colour before it settles
+    TEST_ASSERT_TRUE(LightCardState::Page::COLOUR == card.page());
     LightsModel::Command cmd = card.tick(1300);
     TEST_ASSERT_TRUE(LightsModel::Command::Type::TEMP == cmd.type);
     TEST_ASSERT_EQUAL_UINT16(4100, cmd.kelvin);
+    // The Colour page itself was never edited, so it must not read live.
+    TEST_ASSERT_FALSE(card.colourLive());
 }
 
 // ---------------------------------------------------------------------------
@@ -569,7 +641,8 @@ static void test_selectHue_offTheColourPage_isIgnored(void)
     LightCardState card = onCard(); // BRIGHT
     card.selectHue(90.0f, 1000);
     TEST_ASSERT_FALSE(card.settling());
-    card.swipe(1, 1000); // KELVIN
+    card.swipe(1, 1000); // -> COLOUR
+    card.swipe(1, 1000); // -> KELVIN
     card.selectHue(90.0f, 1000);
     TEST_ASSERT_FALSE(card.settling());
 }
@@ -753,7 +826,6 @@ static void test_editHue_isThePendingOneWhileSettling(void)
 {
     LightCardState card = onCard();
     card.swipe(1, 1000);
-    card.swipe(1, 1000);
     card.detents(2, 1000); // 0 -> 30
     // A stale HA echo (still hue 0) mustn't drag the marker back.
     card.sync(colourOn(), 1050);
@@ -810,7 +882,6 @@ static void test_colourEdit_makesColourLiveImmediately(void)
 {
     LightCardState card = onCard(); // TEMP mode
     card.swipe(1, 1000);
-    card.swipe(1, 1000);
     card.detents(1, 1000);
     TEST_ASSERT_TRUE(card.colourLive());
     TEST_ASSERT_FALSE(card.kelvinLive());
@@ -821,7 +892,8 @@ static void test_kelvinEdit_makesKelvinLiveImmediately(void)
     LightCardState card(true);
     card.sync(makeState(true, 50, LightsModel::ColorMode::HS, 3000, 2000, 6500, 240, 100, true),
               1000);
-    card.swipe(1, 1000);
+    card.swipe(1, 1000); // -> COLOUR
+    card.swipe(1, 1000); // -> KELVIN
     card.detents(1, 1000);
     TEST_ASSERT_TRUE(card.kelvinLive());
     TEST_ASSERT_FALSE(card.colourLive());
@@ -873,8 +945,7 @@ static void test_sync_afterSettleConfirmed_adoptsHaAgain(void)
 
 static void test_sync_duringSettle_reclampsKelvinToNewBounds(void)
 {
-    LightCardState card = onCard();
-    card.swipe(1, 1000);
+    LightCardState card = onKelvinPageCard();
     card.detents(30, 1000); // 7000 -> clamped to 6500 with the old bounds
     TEST_ASSERT_EQUAL_UINT16(6500, card.view().kelvin);
     LightsModel::LightState s = colourOn();
@@ -930,8 +1001,7 @@ static void test_confirmHold_bright_keepsSentPctUntilEchoed(void)
 
 static void test_confirmHold_temp_kelvinWithinToleranceConfirms(void)
 {
-    LightCardState card = onCard();
-    card.swipe(1, 1000);
+    LightCardState card = onKelvinPageCard();
     card.detents(1, 1000); // 4100
     card.tick(1300);
     LightsModel::LightState s = colourOn();
@@ -942,8 +1012,7 @@ static void test_confirmHold_temp_kelvinWithinToleranceConfirms(void)
 
 static void test_confirmHold_temp_kelvinOutsideToleranceKeepsLocal(void)
 {
-    LightCardState card = onCard();
-    card.swipe(1, 1000);
+    LightCardState card = onKelvinPageCard();
     card.detents(1, 1000); // 4100
     card.tick(1300);
     LightsModel::LightState s = colourOn();
@@ -955,7 +1024,6 @@ static void test_confirmHold_temp_kelvinOutsideToleranceKeepsLocal(void)
 static void test_confirmHold_hue_withinToleranceConfirms(void)
 {
     LightCardState card = onCard();
-    card.swipe(1, 1000);
     card.swipe(1, 1000);
     card.selectHue(240.0f, 1000);
     card.tick(1300);
@@ -969,7 +1037,6 @@ static void test_confirmHold_hue_withinToleranceConfirms(void)
 static void test_confirmHold_hue_outsideToleranceKeepsLocal(void)
 {
     LightCardState card = onCard();
-    card.swipe(1, 1000);
     card.swipe(1, 1000);
     card.selectHue(240.0f, 1000);
     card.tick(1300);
@@ -1016,18 +1083,22 @@ int main(int, char**)
     RUN_TEST(test_hueMarkerCentre_hue0IsTopHue90IsRight);
     RUN_TEST(test_hueMarkerCentre_roundTripsThroughHueAt);
     RUN_TEST(test_hitPowerGlyph_withinAndOutsideHitRadius);
+    RUN_TEST(test_hitCentreDisc_withinAndOutside);
 
     RUN_TEST(test_hueStep_is15Degrees);
     RUN_TEST(test_pageCount_lampHasThreeOfficeHasTwo);
     RUN_TEST(test_page_startsOnBrightness);
-    RUN_TEST(test_swipe_forwardWalksPagesAndClampsAtColour);
+    RUN_TEST(test_pageAt_lampAndOfficeSequences);
+    RUN_TEST(test_swipe_forwardWalksBrightColourKelvinAndClampsAtKelvin);
     RUN_TEST(test_swipe_backwardClampsAtBrightness);
     RUN_TEST(test_swipe_officeClampsAtKelvin);
+    RUN_TEST(test_swipe_officeSkipsColour);
     RUN_TEST(test_pageIdle_returnsToBrightnessAfterTenSeconds);
     RUN_TEST(test_pageIdle_detentExtendsTheTimeout);
     RUN_TEST(test_swipe_whileOff_isIgnored);
     RUN_TEST(test_resetPage_returnsToBrightness);
     RUN_TEST(test_resetPage_leavesPendingSettleAlone);
+    RUN_TEST(test_resetPage_fromColourReturnsToBrightnessAndEndsScrub);
 
     RUN_TEST(test_detents_brightPage_stepsBy5AndArmsSettle);
     RUN_TEST(test_detents_brightPage_clampsTo1And100);
