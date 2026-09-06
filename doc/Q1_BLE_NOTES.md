@@ -124,6 +124,11 @@ if (m_stopKeepalives) return;
 Without keepalives, the Q1's supervision timer fires (~6s after the last packet) → `onDisconnect()`
 fires with reason=520 → `m_intentionalDrop` cleanup runs → no reconnect.
 
+Two exits from the muted state (added 2026-09-06): a start/speed command the belt accepts while the
+drop is pending cancels it (the belt is now moving on our say-so, so the link must stay up and
+auto-reconnect is re-armed); a user Connect on a muted link forces `disconnect()` and re-links.
+Stop/pause commands leave the drop in place.
+
 `onDisconnect()` handles any reason code when `m_intentionalDrop` is set (in case Q1 kicks us
 first before the supervision timeout):
 ```cpp

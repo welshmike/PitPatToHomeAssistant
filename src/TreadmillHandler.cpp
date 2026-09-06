@@ -208,8 +208,9 @@ bool TreadmillHandler::requestConnect()
         m_userRequestedConnect = true;
         m_reconnectNotBefore   = 0;
         m_connectAttempts      = 0;
-        // m_dropDeadlineMs is left armed: onDisconnect() clears it, and if the
-        // terminate below is refused the deadline is the remaining safety net.
+        // m_dropDeadlineMs is left as is: onDisconnect() clears it, and if the
+        // terminate below is refused the deadline (when armed — only the
+        // debounce arms it) is the remaining safety net.
         if (!m_pClient->disconnect())
         {
             log_e("disconnect() refused on the muted link — escalation deadline still armed");
@@ -507,12 +508,18 @@ bool TreadmillHandler::sendCommand(const uint8_t *data, size_t length)
     // pending (pause timeout / idle disconnect window) means the belt may now be
     // running on our say-so: keep the link alive rather than letting the
     // deliberate supervision-timeout drop fire under a moving belt.
-    if (length == 27 && m_stopKeepalives)
+    // Only start/speed commands (cmd1 = 0x01): stop/pause leave no moving belt,
+    // so an idle/pause drop can stand. Auto-reconnect is re-armed too — the
+    // idle/pause paths turned it off before muting, and a belt we just started
+    // must survive a mid-session kick.
+    if (isSpeedSet && m_stopKeepalives)
     {
-        log_w("User command accepted on a muted link — cancelling the intentional drop");
-        m_stopKeepalives  = false;
-        m_intentionalDrop = false;
-        m_dropDeadlineMs  = 0;
+        log_w("Start/speed command accepted on a muted link — cancelling the intentional drop");
+        m_stopKeepalives       = false;
+        m_intentionalDrop      = false;
+        m_dropDeadlineMs       = 0;
+        m_autoReconnect        = true;
+        m_userRequestedConnect = true;
     }
     return true;
 }
