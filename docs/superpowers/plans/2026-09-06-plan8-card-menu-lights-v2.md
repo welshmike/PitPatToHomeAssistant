@@ -43,3 +43,9 @@
 
 - [ ] Phase H items: click opens the menu with the current card highlighted, knob wraps, tap-on-glyph and tap-elsewhere both select, 8 s auto-close; hold-home from every card; side click still stops the belt instantly while running; Lamp off → tap anywhere turns on at last brightness on the Brightness page; knob brightness with one HA trace per burst; swipe to Kelvin and back, 100 K steps clamped at 2000/6535 (Office 2202/4000); Colour page shows eight true-colour swatches, knob wraps, tap selects, HA shows the hue; kelvin page dim while in colour mode and vice versa; touch-hold 1 s turns off with the red arc; small power glyph turns off; flights knob cycles aircraft; auto-show still returns to Clock; heap ≥ 100 KB free at rest.
 - [ ] Commit: `Docs: card menu and Lights v2`.
+
+---
+
+## Backlog (after Plan 8)
+
+- **Flights empty state as a radar sweep** (Mike, 2026-09-06): replace `no aircraft nearby` with a fake radar screen — concentric rings, a rotating sweep arm (one revolution every ~3 s, drawn with the palette's DIM/NET_ON greens, trailing fade via 2–3 dimmer arcs), a home dot at the centre, and the word `Searching` (Font2) beneath. Must respect the render throttle (animate at ≤ 10 Hz, FrameKey carries the sweep phase) and the no-per-frame-heap rule. Auto-show stays untouched (this is only what shows when the card is visible and empty).
