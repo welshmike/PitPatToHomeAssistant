@@ -48,7 +48,7 @@ public:
     static constexpr float CONFIRM_HUE_TOL = 2.0f;
     static constexpr int BRIGHT_STEP = 5;
     static constexpr int KELVIN_STEP = 100;
-    static constexpr int HUE_STEP = 5; // degrees per detent on the Colour page
+    static constexpr int HUE_STEP = 15; // degrees per detent on the Colour page (24 per revolution)
 
     // hasColour: true for the Lamp card (which has a Colour page), false for
     // Office (Brightness and Kelvin only).

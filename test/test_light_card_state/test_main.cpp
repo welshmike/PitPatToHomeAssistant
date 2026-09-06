@@ -108,6 +108,7 @@ static void test_layout_pageConstants(void)
     TEST_ASSERT_EQUAL_INT(120, LightLayout::kHueHitOuterR);
     TEST_ASSERT_EQUAL_INT(72, LightLayout::kHueSegments);
     TEST_ASSERT_EQUAL_FLOAT(5.0f, LightLayout::kHueSegmentDeg);
+    TEST_ASSERT_EQUAL_INT(15, LightCardState::HUE_STEP);
     TEST_ASSERT_EQUAL_INT(30, LightLayout::kCentreDiscR);
 }
 
@@ -332,17 +333,17 @@ static void test_detents_kelvinPage_stepsBy100AndClampsToBounds(void)
     TEST_ASSERT_EQUAL_UINT16(2000, card.view().kelvin);
 }
 
-static void test_detents_colourPage_stepsFiveDegreesPerDetent(void)
+static void test_detents_colourPage_stepsFifteenDegreesPerDetent(void)
 {
     LightCardState card = onCard(); // HA hue 0
     card.swipe(1, 1000);
     card.swipe(1, 1000);
     card.detents(1, 1000);
-    TEST_ASSERT_EQUAL_FLOAT(5.0f, card.editHue());
-    TEST_ASSERT_EQUAL_FLOAT(5.0f, card.view().hue);
+    TEST_ASSERT_EQUAL_FLOAT(15.0f, card.editHue());
+    TEST_ASSERT_EQUAL_FLOAT(15.0f, card.view().hue);
     TEST_ASSERT_EQUAL_FLOAT(100.0f, card.view().sat);
     card.detents(3, 1050);
-    TEST_ASSERT_EQUAL_FLOAT(20.0f, card.editHue());
+    TEST_ASSERT_EQUAL_FLOAT(60.0f, card.editHue());
 }
 
 static void test_detents_colourPage_wrapsBothWays(void)
@@ -350,9 +351,9 @@ static void test_detents_colourPage_wrapsBothWays(void)
     LightCardState card = onCard();
     card.swipe(1, 1000);
     card.swipe(1, 1000);
-    card.detents(-1, 1000); // 0 -> 355
-    TEST_ASSERT_EQUAL_FLOAT(355.0f, card.editHue());
-    card.detents(1, 1100); // 355 -> 0
+    card.detents(-1, 1000); // 0 -> 345
+    TEST_ASSERT_EQUAL_FLOAT(345.0f, card.editHue());
+    card.detents(1, 1100); // 345 -> 0
     TEST_ASSERT_EQUAL_FLOAT(0.0f, card.editHue());
 }
 
@@ -365,8 +366,8 @@ static void test_detents_colourPage_fromTempMode_startsAtHaHue(void)
     card.swipe(1, 1000);
     card.swipe(1, 1000);
     card.detents(1, 1000);
-    TEST_ASSERT_EQUAL_FLOAT(255.0f, card.editHue());
-    TEST_ASSERT_EQUAL_FLOAT(255.0f, card.view().hue);
+    TEST_ASSERT_EQUAL_FLOAT(265.0f, card.editHue());
+    TEST_ASSERT_EQUAL_FLOAT(265.0f, card.view().hue);
     TEST_ASSERT_TRUE(card.colourLive());
 }
 
@@ -502,11 +503,11 @@ static void test_settle_colourPageEmitsHueCommandWithRoundedHueAndFullSaturation
     LightCardState card = onCard();
     card.swipe(1, 1000);
     card.swipe(1, 1000);
-    card.detents(5, 1000); // 0 -> 25
+    card.detents(5, 1000); // 0 -> 75
     LightsModel::Command cmd = card.tick(1300);
     TEST_ASSERT_TRUE(LightsModel::Command::Type::HUE == cmd.type);
     TEST_ASSERT_TRUE(cmd.on);
-    TEST_ASSERT_EQUAL_FLOAT(25.0f, cmd.hue);
+    TEST_ASSERT_EQUAL_FLOAT(75.0f, cmd.hue);
     TEST_ASSERT_EQUAL_FLOAT(100.0f, cmd.sat);
 }
 
@@ -609,10 +610,10 @@ static void test_editHue_isThePendingOneWhileSettling(void)
     LightCardState card = onCard();
     card.swipe(1, 1000);
     card.swipe(1, 1000);
-    card.detents(2, 1000); // 0 -> 10
+    card.detents(2, 1000); // 0 -> 30
     // A stale HA echo (still hue 0) mustn't drag the marker back.
     card.sync(colourOn(), 1050);
-    TEST_ASSERT_EQUAL_FLOAT(10.0f, card.editHue());
+    TEST_ASSERT_EQUAL_FLOAT(30.0f, card.editHue());
 }
 
 // After the command goes out the marker stays on the sent hue until HA
@@ -886,7 +887,7 @@ int main(int, char**)
     RUN_TEST(test_detents_brightPage_stepsBy5AndArmsSettle);
     RUN_TEST(test_detents_brightPage_clampsTo1And100);
     RUN_TEST(test_detents_kelvinPage_stepsBy100AndClampsToBounds);
-    RUN_TEST(test_detents_colourPage_stepsFiveDegreesPerDetent);
+    RUN_TEST(test_detents_colourPage_stepsFifteenDegreesPerDetent);
     RUN_TEST(test_detents_colourPage_wrapsBothWays);
     RUN_TEST(test_detents_colourPage_fromTempMode_startsAtHaHue);
     RUN_TEST(test_detents_whileOff_isIgnored);

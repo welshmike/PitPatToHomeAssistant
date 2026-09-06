@@ -35,6 +35,13 @@ void DialInput::consumeClick(uint32_t nowMs)
     m_swallowClickUntilMs = nowMs + SWALLOW_CLICK_MS;
 }
 
+void DialInput::claimTouch()
+{
+    if (m_touchActive) {
+        m_touchClaimed = true;
+    }
+}
+
 DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int touchY,
                             bool btnClicked, bool btnSingleClicked, bool btnHold, uint32_t nowMs)
 {
@@ -60,6 +67,7 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
             m_touchIsDrag = false;
             m_longPressFired = false;
             m_swipeFired = false;
+            m_touchClaimed = false;
         }
 
         // Discard the encoder pulses that arrived in this tick.
@@ -108,7 +116,8 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
             m_touchIsDrag = false;
             m_longPressFired = false;
             m_swipeFired = false;
-        } else if (!m_touchSwallowed) {
+            m_touchClaimed = false;
+        } else if (!m_touchSwallowed && !m_touchClaimed) {
             int dx = touchX - m_touchStartX;
             int dy = touchY - m_touchStartY;
             if (dx * dx + dy * dy > TAP_MAX_MOVE_PX * TAP_MAX_MOVE_PX) {
@@ -141,8 +150,16 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
                 ev.holdProgress = 0.0f;
             }
         }
-    } else if (m_touchActive) {
+
         if (!m_touchSwallowed) {
+            ev.touchHeld = true;
+            ev.touchX = touchX;
+            ev.touchY = touchY;
+            ev.touchStartX = m_touchStartX;
+            ev.touchStartY = m_touchStartY;
+        }
+    } else if (m_touchActive) {
+        if (!m_touchSwallowed && !m_touchClaimed) {
             uint32_t heldMs = nowMs - m_touchStartMs;
             if (!m_touchIsDrag && !m_longPressFired && heldMs < TAP_MAX_MS) {
                 ev.tap = true;
@@ -155,6 +172,7 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
         m_touchIsDrag = false;
         m_longPressFired = false;
         m_swipeFired = false;
+        m_touchClaimed = false;
         ev.holdProgress = 0.0f;
     }
 

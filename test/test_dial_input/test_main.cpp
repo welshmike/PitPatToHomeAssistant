@@ -581,6 +581,121 @@ static void test_swipe_39px_notASwipe_isADrag(void)
 }
 
 // ---------------------------------------------------------------------------
+// Finger report + claimTouch (hue-ring scrub, spec 4.18 amendment)
+// ---------------------------------------------------------------------------
+
+static void test_touchHeld_reportsPositionEveryTickAndStartPoint(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    DialEvents eDown = input.tick(0, true, 120, 20, false, false, false, t0);
+    TEST_ASSERT_TRUE(eDown.touchHeld);
+    TEST_ASSERT_EQUAL_INT(120, eDown.touchX);
+    TEST_ASSERT_EQUAL_INT(20, eDown.touchY);
+    TEST_ASSERT_EQUAL_INT(120, eDown.touchStartX);
+    TEST_ASSERT_EQUAL_INT(20, eDown.touchStartY);
+
+    DialEvents eMove = input.tick(0, true, 200, 60, false, false, false, t0 + 100);
+    TEST_ASSERT_TRUE(eMove.touchHeld);
+    TEST_ASSERT_EQUAL_INT(200, eMove.touchX);
+    TEST_ASSERT_EQUAL_INT(60, eMove.touchY);
+    TEST_ASSERT_EQUAL_INT(120, eMove.touchStartX); // start point is sticky
+    TEST_ASSERT_EQUAL_INT(20, eMove.touchStartY);
+
+    DialEvents eUp = input.tick(0, false, 0, 0, false, false, false, t0 + 200);
+    TEST_ASSERT_FALSE(eUp.touchHeld);
+}
+
+static void test_touchHeld_falseWithNoTouch(void)
+{
+    DialInput input;
+    DialEvents e = input.tick(0, false, 0, 0, false, false, false, 1000);
+    TEST_ASSERT_FALSE(e.touchHeld);
+}
+
+// A touch that wakes a dimmed backlight is swallowed: no finger report for it.
+static void test_touchHeld_falseWhileWakeSwallowed(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+    input.tick(0, false, 0, 0, false, false, false, t0);
+    DialEvents eDim = input.tick(0, false, 0, 0, false, false, false, t0 + DialInput::DIM_AFTER_MS + 1);
+    TEST_ASSERT_TRUE(DialInput::Backlight::DIM == input.backlight());
+    (void)eDim;
+    DialEvents eDown = input.tick(0, true, 100, 100, false, false, false, t0 + DialInput::DIM_AFTER_MS + 10);
+    TEST_ASSERT_TRUE(eDown.wake);
+    TEST_ASSERT_FALSE(eDown.touchHeld);
+    DialEvents eHold = input.tick(0, true, 100, 100, false, false, false, t0 + DialInput::DIM_AFTER_MS + 200);
+    TEST_ASSERT_FALSE(eHold.touchHeld);
+}
+
+// claimTouch(): the gesture keeps reporting the finger but produces no swipe,
+// no long press (holdProgress 0) and no tap on release.
+static void test_claimTouch_mutesSwipeLongPressAndTap(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+
+    DialEvents eDown = input.tick(0, true, 50, 120, false, false, false, t0);
+    TEST_ASSERT_TRUE(eDown.touchHeld);
+    input.claimTouch();
+
+    // 60 px to the right: would be a swipe if unclaimed.
+    DialEvents eMove = input.tick(0, true, 110, 120, false, false, false, t0 + 100);
+    TEST_ASSERT_TRUE(eMove.touchHeld);
+    TEST_ASSERT_EQUAL_INT(110, eMove.touchX);
+    TEST_ASSERT_EQUAL_INT(0, eMove.swipe);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, eMove.holdProgress);
+
+    // Held well past HOLD_MS without moving: would be a long press if unclaimed.
+    DialEvents eHeld = input.tick(0, true, 110, 120, false, false, false, t0 + DialInput::HOLD_MS + 200);
+    TEST_ASSERT_FALSE(eHeld.longPress);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, eHeld.holdProgress);
+    TEST_ASSERT_TRUE(eHeld.touchHeld);
+
+    DialEvents eUp = input.tick(0, false, 0, 0, false, false, false, t0 + DialInput::HOLD_MS + 300);
+    TEST_ASSERT_FALSE(eUp.tap);
+    TEST_ASSERT_FALSE(eUp.touchHeld);
+}
+
+// A quick claimed touch is not a tap either: the claimer already acted on it.
+static void test_claimTouch_quickReleaseIsNotATap(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+    input.tick(0, true, 50, 120, false, false, false, t0);
+    input.claimTouch();
+    DialEvents eUp = input.tick(0, false, 0, 0, false, false, false, t0 + 100);
+    TEST_ASSERT_FALSE(eUp.tap);
+}
+
+// The claim is per gesture: the next touch behaves normally again.
+static void test_claimTouch_clearsOnRelease(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+    input.tick(0, true, 50, 120, false, false, false, t0);
+    input.claimTouch();
+    input.tick(0, false, 0, 0, false, false, false, t0 + 100);
+
+    input.tick(0, true, 60, 60, false, false, false, t0 + 500);
+    DialEvents eUp = input.tick(0, false, 0, 0, false, false, false, t0 + 600);
+    TEST_ASSERT_TRUE(eUp.tap);
+    TEST_ASSERT_EQUAL_INT(60, eUp.tapX);
+}
+
+// claimTouch() with no gesture in progress is a harmless no-op.
+static void test_claimTouch_withoutTouch_isNoOp(void)
+{
+    DialInput input;
+    input.claimTouch();
+    input.tick(0, true, 60, 60, false, false, false, 1000);
+    DialEvents eUp = input.tick(0, false, 0, 0, false, false, false, 1100);
+    TEST_ASSERT_TRUE(eUp.tap);
+}
+
+// ---------------------------------------------------------------------------
 // Wraparound-safe time maths
 // ---------------------------------------------------------------------------
 
@@ -639,6 +754,13 @@ int main(int argc, char **argv)
     RUN_TEST(test_swipe_whileDim_wakeOnly_noSwipe);
     RUN_TEST(test_swipe_39px_notASwipe_isADrag);
     RUN_TEST(test_backlight_dimAt120s_staysDimAt600s_activityResets);
+    RUN_TEST(test_touchHeld_reportsPositionEveryTickAndStartPoint);
+    RUN_TEST(test_touchHeld_falseWithNoTouch);
+    RUN_TEST(test_touchHeld_falseWhileWakeSwallowed);
+    RUN_TEST(test_claimTouch_mutesSwipeLongPressAndTap);
+    RUN_TEST(test_claimTouch_quickReleaseIsNotATap);
+    RUN_TEST(test_claimTouch_clearsOnRelease);
+    RUN_TEST(test_claimTouch_withoutTouch_isNoOp);
     RUN_TEST(test_time_wraparoundSafe);
 
     return UNITY_END();

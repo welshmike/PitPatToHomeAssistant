@@ -21,6 +21,16 @@ struct DialEvents
     int swipe = 0; // -1 left, +1 right, 0 none
     bool btnClick = false; // decided single click (from btnSingleClicked)
     bool btnHold = false;  // hold threshold reached (from btnHold)
+
+    // Finger report (spec 4.18 amendment, hue-ring scrub): true on every tick
+    // the finger is down and the gesture is not wake-swallowed, with this
+    // tick's position and the gesture's touch-down point. Reported for claimed
+    // gestures too — that is what a scrubber tracks.
+    bool touchHeld = false;
+    int touchX = 0;
+    int touchY = 0;
+    int touchStartX = 0;
+    int touchStartY = 0;
 };
 
 class DialInput
@@ -62,6 +72,13 @@ public:
     // ignores btnStop (belt idle), so the click stays the menu gesture there.
     void consumeClick(uint32_t nowMs);
 
+    // Called by the UI when it takes over the gesture in progress (a touch that
+    // began on the hue ring). From then until release the gesture still
+    // reports touchHeld/touchX/touchY but produces no swipe, no long press
+    // (holdProgress stays 0) and no tap. No-op when no gesture is in progress;
+    // cleared automatically on release.
+    void claimTouch();
+
     // Called by the UI on belt activity (e.g. a running walk) so the
     // backlight stays FULL without any encoder/touch/button input.
     void noteActivity(uint32_t nowMs);
@@ -82,6 +99,7 @@ private:
     bool m_touchIsDrag = false;
     bool m_longPressFired = false;
     bool m_swipeFired = false;
+    bool m_touchClaimed = false; // gesture taken over by the UI (claimTouch)
 
     bool m_swallowClick = false;       // one-shot: drop the next btnSingleClicked
     uint32_t m_swallowClickUntilMs = 0; // ...but only until this instant
