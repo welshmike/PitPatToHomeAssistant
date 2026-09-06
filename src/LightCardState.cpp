@@ -49,6 +49,7 @@ LightCardState::LightCardState(bool hasColour) : m_hasColour(hasColour)
 void LightCardState::resetPage()
 {
     m_page = Page::BRIGHT;
+    m_scrubActive = false; // a gesture cannot outlive the page
 }
 
 void LightCardState::swipe(int dir, uint32_t nowMs)
@@ -221,6 +222,7 @@ LightsModel::Command LightCardState::powerOff(uint32_t nowMs)
     // rather than sending a command that would turn the light back on.
     m_settling = false;
     m_pending = LightsModel::Command::Type::NONE;
+    m_scrubActive = false; // a gesture cannot outlive the page
     cmd.type = LightsModel::Command::Type::POWER;
     cmd.on = false;
     beginConfirmHold(cmd, nowMs);
@@ -292,6 +294,36 @@ void LightCardState::selectHue(float hue, uint32_t nowMs)
     m_lastEdit = nowMs;
     m_pageInputMs = nowMs;
     m_settling = true;
+}
+
+void LightCardState::scrub(float hue, uint32_t nowMs)
+{
+    if (!m_hasColour || m_page != Page::COLOUR || !editable())
+    {
+        return;
+    }
+    const float h = LightLayout::wrapHue(hue);
+    m_pageInputMs = nowMs; // a held finger is input: the page must not idle out
+    if (m_scrubActive)
+    {
+        float d = fabsf(h - m_scrubLastHue);
+        if (d > 180.0f)
+        {
+            d = 360.0f - d;
+        }
+        if (d < SCRUB_MIN_DEG)
+        {
+            return;
+        }
+    }
+    m_scrubActive = true;
+    m_scrubLastHue = h;
+    selectHue(h, nowMs);
+}
+
+void LightCardState::endScrub()
+{
+    m_scrubActive = false;
 }
 
 LightsModel::Command LightCardState::buildSettleCommand() const

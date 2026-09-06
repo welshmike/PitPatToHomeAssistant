@@ -31,6 +31,11 @@ struct DialEvents
     int touchY = 0;
     int touchStartX = 0;
     int touchStartY = 0;
+
+    // True on the first reported tick of a gesture (the touch-down tick, when
+    // it is not wake-swallowed). Lets the UI decide once per gesture whether
+    // to claim it, instead of re-deciding on every held tick.
+    bool touchBegan = false;
 };
 
 class DialInput

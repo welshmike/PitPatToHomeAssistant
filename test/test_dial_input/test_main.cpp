@@ -695,6 +695,34 @@ static void test_claimTouch_withoutTouch_isNoOp(void)
     TEST_ASSERT_TRUE(eUp.tap);
 }
 
+// touchBegan: the gesture-start edge (spec 4.18 amendment, hue-ring scrub).
+static void test_touchBegan_onlyOnTheDownTick(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+    DialEvents eDown = input.tick(0, true, 120, 20, false, false, false, t0);
+    TEST_ASSERT_TRUE(eDown.touchBegan);
+    TEST_ASSERT_TRUE(eDown.touchHeld);
+    DialEvents eHold = input.tick(0, true, 121, 20, false, false, false, t0 + 50);
+    TEST_ASSERT_FALSE(eHold.touchBegan);
+    TEST_ASSERT_TRUE(eHold.touchHeld);
+    DialEvents eUp = input.tick(0, false, 0, 0, false, false, false, t0 + 100);
+    TEST_ASSERT_FALSE(eUp.touchBegan);
+    // Next gesture begins again.
+    DialEvents eDown2 = input.tick(0, true, 60, 60, false, false, false, t0 + 500);
+    TEST_ASSERT_TRUE(eDown2.touchBegan);
+}
+static void test_touchBegan_falseWhenWakeSwallowed(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+    input.tick(0, false, 0, 0, false, false, false, t0);
+    input.tick(0, false, 0, 0, false, false, false, t0 + DialInput::DIM_AFTER_MS + 1);
+    DialEvents eDown = input.tick(0, true, 100, 100, false, false, false, t0 + DialInput::DIM_AFTER_MS + 10);
+    TEST_ASSERT_TRUE(eDown.wake);
+    TEST_ASSERT_FALSE(eDown.touchBegan);
+}
+
 // ---------------------------------------------------------------------------
 // Wraparound-safe time maths
 // ---------------------------------------------------------------------------
@@ -761,6 +789,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_claimTouch_quickReleaseIsNotATap);
     RUN_TEST(test_claimTouch_clearsOnRelease);
     RUN_TEST(test_claimTouch_withoutTouch_isNoOp);
+    RUN_TEST(test_touchBegan_onlyOnTheDownTick);
+    RUN_TEST(test_touchBegan_falseWhenWakeSwallowed);
     RUN_TEST(test_time_wraparoundSafe);
 
     return UNITY_END();

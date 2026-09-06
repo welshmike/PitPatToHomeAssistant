@@ -108,7 +108,6 @@ static void test_layout_pageConstants(void)
     TEST_ASSERT_EQUAL_INT(120, LightLayout::kHueHitOuterR);
     TEST_ASSERT_EQUAL_INT(72, LightLayout::kHueSegments);
     TEST_ASSERT_EQUAL_FLOAT(5.0f, LightLayout::kHueSegmentDeg);
-    TEST_ASSERT_EQUAL_INT(15, LightCardState::HUE_STEP);
     TEST_ASSERT_EQUAL_INT(30, LightLayout::kCentreDiscR);
 }
 
@@ -199,6 +198,11 @@ static void test_hitPowerGlyph_withinAndOutsideHitRadius(void)
 // ---------------------------------------------------------------------------
 // LightCardState: pages
 // ---------------------------------------------------------------------------
+
+static void test_hueStep_is15Degrees(void)
+{
+    TEST_ASSERT_EQUAL_INT(15, LightCardState::HUE_STEP);
+}
 
 static void test_pageCount_lampHasThreeOfficeHasTwo(void)
 {
@@ -593,6 +597,146 @@ static void test_selectHue_onDimColourPage_makesColourLive(void)
 }
 
 // ---------------------------------------------------------------------------
+// LightCardState: scrub (finger on the hue ring)
+// ---------------------------------------------------------------------------
+
+static void test_scrub_firstCallSelectsTheHue(void)
+{
+    LightCardState card = onColourPageCard();
+    card.scrub(90.0f, 1000);
+    TEST_ASSERT_TRUE(card.scrubbing());
+    TEST_ASSERT_TRUE(card.settling());
+    TEST_ASSERT_EQUAL_FLOAT(90.0f, card.editHue());
+    LightsModel::Command cmd = card.tick(1300);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::HUE == cmd.type);
+    TEST_ASSERT_EQUAL_FLOAT(90.0f, cmd.hue);
+}
+
+// A resting finger sends exactly one command: repeated scrub() calls at the
+// same hue after the send must not re-arm the settle.
+static void test_scrub_restingFingerSendsOnce(void)
+{
+    LightCardState card = onColourPageCard();
+    card.scrub(90.0f, 1000);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::HUE == card.tick(1300).type);
+    int sent = 0;
+    for (uint32_t t = 1310; t <= 4000; t += 30)
+    {
+        card.scrub(90.3f, t); // sub-degree jitter
+        if (card.tick(t).type != LightsModel::Command::Type::NONE) ++sent;
+    }
+    TEST_ASSERT_EQUAL_INT(0, sent);
+}
+
+// HA's echo of the sent hue (1.5 deg off, inside CONFIRM_HUE_TOL) confirms the
+// hold and must not make a still finger re-send.
+static void test_scrub_haEchoDoesNotRetrigger(void)
+{
+    LightCardState card = onColourPageCard();
+    card.scrub(275.0f, 1000);
+    (void)card.tick(1300);
+    card.sync(makeState(true, 50, LightsModel::ColorMode::HS, 0, 2000, 6500, 273.5f, 100, true), 1400);
+    TEST_ASSERT_FALSE(card.hueEditInFlight());
+    int sent = 0;
+    for (uint32_t t = 1410; t <= 4000; t += 30)
+    {
+        card.scrub(275.0f, t);
+        if (card.tick(t).type != LightsModel::Command::Type::NONE) ++sent;
+    }
+    TEST_ASSERT_EQUAL_INT(0, sent);
+}
+
+// The Hue bulb reports 258 for a commanded 275: after the hold expires the
+// marker follows HA, but a still finger must still not re-send.
+static void test_scrub_bulbReportingDifferentHueDoesNotRetrigger(void)
+{
+    LightCardState card = onColourPageCard();
+    card.scrub(275.0f, 1000);
+    (void)card.tick(1300);
+    const LightsModel::LightState bulbState =
+        makeState(true, 50, LightsModel::ColorMode::HS, 0, 2000, 6500, 258.0f, 100, true);
+    card.sync(bulbState, 1400);
+    int sent = 0;
+    for (uint32_t t = 1410; t <= 6000; t += 30)
+    {
+        card.scrub(275.0f, t);
+        if (card.tick(t).type != LightsModel::Command::Type::NONE) ++sent;
+    }
+    TEST_ASSERT_EQUAL_INT(0, sent);
+    // DialUi re-syncs every 250 ms regardless of the scrub; simulate the next
+    // one arriving once CONFIRM_HOLD_MS has passed. That is what actually
+    // lets go of the sent value and lets the marker show the bulb's truth --
+    // a still finger must not turn that into a resend either.
+    card.sync(bulbState, 6000);
+    TEST_ASSERT_EQUAL_FLOAT(258.0f, card.editHue());
+}
+
+static void test_scrub_movingFingerReselectsAndSendsOnceAfterItStops(void)
+{
+    LightCardState card = onColourPageCard();
+    int sent = 0;
+    uint32_t t = 1000;
+    for (float h = 90.0f; h <= 180.0f; h += 3.0f, t += 50) // 1.5 s sweep
+    {
+        card.scrub(h, t);
+        if (card.tick(t).type != LightsModel::Command::Type::NONE) ++sent;
+    }
+    TEST_ASSERT_EQUAL_INT(0, sent); // never still for 300 ms while moving
+    for (uint32_t u = t; u <= t + 1000; u += 50) // finger stops at 180
+    {
+        card.scrub(180.0f, u);
+        if (card.tick(u).type != LightsModel::Command::Type::NONE) ++sent;
+    }
+    TEST_ASSERT_EQUAL_INT(1, sent);
+}
+
+static void test_scrub_wrapAwareThreshold(void)
+{
+    LightCardState card = onColourPageCard();
+    card.scrub(359.5f, 1000);
+    (void)card.tick(1300);
+    card.scrub(0.2f, 1400); // 0.7 deg away across the seam: below threshold
+    TEST_ASSERT_FALSE(card.settling());
+    card.scrub(1.0f, 1500); // 1.5 deg away: re-select
+    TEST_ASSERT_TRUE(card.settling());
+}
+
+static void test_scrub_keepsThePageAliveUnderAHeldFinger(void)
+{
+    LightCardState card = onColourPageCard();
+    card.scrub(90.0f, 1000);
+    for (uint32_t t = 1000; t <= 1000 + LightCardState::PAGE_IDLE_MS + 5000; t += 500)
+    {
+        card.scrub(90.0f, t);
+        (void)card.tick(t);
+        TEST_ASSERT_TRUE(LightCardState::Page::COLOUR == card.page());
+    }
+}
+
+static void test_endScrub_nextGestureSelectsAgainEvenAtTheSameHue(void)
+{
+    LightCardState card = onColourPageCard();
+    card.scrub(90.0f, 1000);
+    (void)card.tick(1300);
+    card.endScrub();
+    TEST_ASSERT_FALSE(card.scrubbing());
+    card.scrub(90.0f, 5000); // a new tap on the same hue re-sends (harmless, expected)
+    TEST_ASSERT_TRUE(card.settling());
+}
+
+static void test_scrub_ignoredWhenOffPageOrOff(void)
+{
+    LightCardState card = onCard(); // BRIGHT page
+    card.scrub(90.0f, 1000);
+    TEST_ASSERT_FALSE(card.settling());
+    TEST_ASSERT_FALSE(card.scrubbing());
+    LightCardState off(true);
+    off.sync(colourState(), 1000);
+    off.scrub(90.0f, 1000);
+    TEST_ASSERT_FALSE(off.settling());
+}
+
+// ---------------------------------------------------------------------------
 // LightCardState: editHue(), kelvinLive(), colourLive(), ringFraction()
 // ---------------------------------------------------------------------------
 
@@ -873,6 +1017,7 @@ int main(int, char**)
     RUN_TEST(test_hueMarkerCentre_roundTripsThroughHueAt);
     RUN_TEST(test_hitPowerGlyph_withinAndOutsideHitRadius);
 
+    RUN_TEST(test_hueStep_is15Degrees);
     RUN_TEST(test_pageCount_lampHasThreeOfficeHasTwo);
     RUN_TEST(test_page_startsOnBrightness);
     RUN_TEST(test_swipe_forwardWalksPagesAndClampsAtColour);
@@ -913,6 +1058,16 @@ int main(int, char**)
     RUN_TEST(test_selectHue_offTheColourPage_isIgnored);
     RUN_TEST(test_selectHue_onACardWithoutColour_isIgnored);
     RUN_TEST(test_selectHue_onDimColourPage_makesColourLive);
+
+    RUN_TEST(test_scrub_firstCallSelectsTheHue);
+    RUN_TEST(test_scrub_restingFingerSendsOnce);
+    RUN_TEST(test_scrub_haEchoDoesNotRetrigger);
+    RUN_TEST(test_scrub_bulbReportingDifferentHueDoesNotRetrigger);
+    RUN_TEST(test_scrub_movingFingerReselectsAndSendsOnceAfterItStops);
+    RUN_TEST(test_scrub_wrapAwareThreshold);
+    RUN_TEST(test_scrub_keepsThePageAliveUnderAHeldFinger);
+    RUN_TEST(test_endScrub_nextGestureSelectsAgainEvenAtTheSameHue);
+    RUN_TEST(test_scrub_ignoredWhenOffPageOrOff);
 
     RUN_TEST(test_editHue_followsHaHueWhenIdle);
     RUN_TEST(test_editHue_isThePendingOneWhileSettling);

@@ -289,8 +289,9 @@ Kelvin and, on the Lamp, Colour. Swipe left or right to change page (the ends do
   hue; each knob detent moves 15° (24 detents per revolution, wrapping), or put a finger on the
   ring and drag it round: the marker follows live and the lamp gets one command 300 ms after the
   finger pauses or lifts. The marker outline turns amber while the command settles and until HA
-  echoes it. This page draws nothing but the ring, marker and disc: leave it by swiping back or
-  waiting for the 10 s page timeout.
+  echoes it. This page draws nothing but the ring, marker and disc: leave it by swiping back from
+  the centre disc (a swipe starting on the ring scrubs instead) or waiting for the 10 s page
+  timeout.
 
 The Lamp is in either temperature or hue mode at a time, so whichever of those two pages isn't
 live draws dim with `not active - turn to use`; the first detent on it sends that mode's command

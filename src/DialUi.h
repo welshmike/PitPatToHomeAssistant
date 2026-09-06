@@ -352,6 +352,10 @@ private:
     LightCardState m_lightCards[2];
     static_assert(static_cast<uint8_t>(LightsModel::LightKey::COUNT) == 2,
                   "m_lightCards is indexed by LightKey and sized for exactly two lights");
+    // True for the lifetime of a gesture claimed by the hue-ring scrub (spec
+    // 4.18 amendment) — decided once on the gesture's touchBegan tick, so the
+    // finger keeps scrubbing even if it later strays off the ring.
+    bool m_scrubbing = false;
     static constexpr uint32_t kLightsSnapIntervalMs = 250;
     // The fresh LightsSnapshot itself is written once by tickLights() (at
     // most every kLightsSnapIntervalMs) and consumed immediately, in the same

@@ -107,6 +107,7 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
 
     // Touch: down / continuing / release.
     if (touchDown) {
+        const bool began = !m_touchActive;
         if (!m_touchActive) {
             m_touchActive = true;
             m_touchSwallowed = false;
@@ -157,6 +158,7 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
             ev.touchY = touchY;
             ev.touchStartX = m_touchStartX;
             ev.touchStartY = m_touchStartY;
+            ev.touchBegan = began;
         }
     } else if (m_touchActive) {
         if (!m_touchSwallowed && !m_touchClaimed) {

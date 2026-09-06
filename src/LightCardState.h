@@ -130,6 +130,21 @@ public:
     // is ignored. The hue is normalised into [0, 360).
     void selectHue(float hue, uint32_t nowMs);
 
+    // Finger scrub on the hue ring (spec 4.18 amendment). scrub() is called on
+    // every tick a claimed gesture is held, with the hue under the finger.
+    // The first call of a gesture selects that hue (same as a tap); later
+    // calls select again only when the finger has moved >= SCRUB_MIN_DEG from
+    // the hue this gesture last selected -- never from editHue(), which HA's
+    // echo can move -- so a resting finger yields exactly one command 300 ms
+    // after it stops. Every call refreshes the page-idle timer so the Colour
+    // page cannot time out under a held finger. Gated like selectHue(): only
+    // the Colour page of an editable, colour-capable card. endScrub() closes
+    // the gesture; the next scrub() starts a new one.
+    void scrub(float hue, uint32_t nowMs);
+    void endScrub();
+    bool scrubbing() const { return m_scrubActive; }
+    static constexpr float SCRUB_MIN_DEG = 1.0f;
+
     // Polls the settle timer. If a settle is due (>=300 ms since the last
     // detent or ring tap), emits exactly one command for the edited field
     // and clears settling() (and the pending edit with it). Otherwise returns
@@ -192,6 +207,8 @@ private:
     uint32_t m_lastEdit = 0; // last detent/ring tap; drives the settle deadline
     uint32_t m_pageInputMs = 0; // last swipe/detent/ring tap; drives PAGE_IDLE_MS
     float m_editHue = 0.0f;  // hue being edited (only meaningful for a HUE edit/hold)
+    bool m_scrubActive = false;   // a finger-scrub gesture is in progress
+    float m_scrubLastHue = 0.0f;  // hue this gesture last selected
     // The command whose echo we're waiting for (type NONE == no hold), and
     // when it went out.
     LightsModel::Command m_confirmHold;

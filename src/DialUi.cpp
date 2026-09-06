@@ -281,31 +281,37 @@ void DialUi::handleInput(uint32_t nowMs)
 
     const Screen screen = currentScreen(isPausedState());
 
-    // Hue-ring scrub (spec 4.18 amendment): a touch that began inside the
-    // ring's annulus on the Lamp's Colour page is the ring's for the rest of
-    // the gesture. Every tick it is held, the hue under the finger becomes the
-    // edit hue (angle only — the finger may drift off the band), re-arming
-    // the 300 ms settle, so the marker and disc follow live and the lamp gets
-    // one command 300 ms after the finger pauses or lifts. claimTouch() mutes
-    // the swipe/long-press/tap the same motion would otherwise produce.
-    if (ev.touchHeld && screen == Screen::LIGHT_LAMP && lightCardLive(screen))
+    // Hue-ring scrub (spec 4.18 amendment). The claim is decided ONCE, on the
+    // gesture's first tick: a touch that begins inside the ring's annulus on
+    // the lit Lamp Colour page belongs to the ring until the finger lifts.
+    // Every held tick then feeds the hue under the finger to the card, which
+    // owns the send policy (LightCardState::scrub: first call selects, later
+    // calls only on >= 1 deg movement from the last selection, page-idle
+    // refreshed). claimTouch() mutes the swipe / long-press / tap the same
+    // motion would otherwise produce, so a swipe that merely ARRIVES on the
+    // Colour page is never hijacked, and the off face's tap-to-switch-on is
+    // untouched because the claim requires view().on.
+    if (ev.touchBegan && screen == Screen::LIGHT_LAMP && lightCardLive(screen))
     {
         LightCardState& card = lightCardFor(screen);
-        if (card.page() == LightCardState::Page::COLOUR && card.hasColour() &&
+        if (card.view().on && card.page() == LightCardState::Page::COLOUR &&
             LightLayout::hitHueRing(ev.touchStartX, ev.touchStartY))
         {
+            m_scrubbing = true;
             m_input.claimTouch();
-            const float hue = LightLayout::hueAt(ev.touchX, ev.touchY);
-            // Skip sub-degree jitter: selectHue() re-arms the settle every call.
-            float d = fabsf(hue - card.editHue());
-            if (d > 180.0f)
-            {
-                d = 360.0f - d;
-            }
-            if (d >= 1.0f || !card.settling())
-            {
-                card.selectHue(hue, nowMs);
-            }
+            playAcceptBeep(true); // one tone per gesture, as a tap used to give
+        }
+    }
+    if (m_scrubbing)
+    {
+        if (!ev.touchHeld || screen != Screen::LIGHT_LAMP)
+        {
+            m_scrubbing = false;
+            lightCardFor(Screen::LIGHT_LAMP).endScrub();
+        }
+        else
+        {
+            lightCardFor(screen).scrub(LightLayout::hueAt(ev.touchX, ev.touchY), nowMs);
         }
     }
 
@@ -583,9 +589,11 @@ void DialUi::handleInput(uint32_t nowMs)
 }
 
 // Tap on a light card (spec 4.12): the whole off face switches the light on;
-// on the lit face only the small power glyph and, on the Colour page, the
-// hue ring are live. Everything else is bare background — no beep, exactly
-// like the Clock card's tap.
+// on the lit face only the small power glyph is a tap target here. On the
+// Colour page a touch that starts on the hue ring is claimed by the scrub
+// path in handleInput() before a tap can ever reach this function (spec 4.18
+// amendment) — everything else is bare background — no beep, exactly like
+// the Clock card's tap.
 void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
 {
     // Hardware diagnostics (2026-09-06): taps on the bottom power glyph were
@@ -618,9 +626,10 @@ void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
         return;
     }
 
-    // Colour page: the hue ring is handled by the scrub path in update() (a
-    // tap is a one-tick scrub), and the power glyph is not drawn there.
-    // The glyph is not drawn on the Colour page, so it is not a target there.
+    // Colour page: the hue ring is claimed on the touch-down tick by the
+    // scrub path in handleInput(), so a ring touch never reaches here as a
+    // tap. The power glyph is not drawn on the Colour page, so it is not a
+    // target there either.
     if (card.page() != LightCardState::Page::COLOUR && LightLayout::hitPowerGlyph(x, y))
     {
         const LightsModel::Command cmd = card.powerOff(nowMs);

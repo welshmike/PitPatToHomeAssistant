@@ -317,8 +317,9 @@ void drawLightCard(LovyanGFX& gfx, const DialTheme& theme, const LightCardState&
     // The Colour page draws bare: no card name, no page dots. The hue ring
     // fills the outer 26 px of the face, so there is no room left for either
     // without crowding (Mike: "hide the background") — and no power glyph
-    // either: Mike wants nothing under the picker. Swipe back, or the 10 s
-    // page timeout, leaves it.
+    // either: Mike wants nothing under the picker. A swipe starting inside
+    // the centre disc (radius < 70; the ring itself scrubs instead, spec
+    // 4.18), or the 10 s page timeout, leaves it.
     const bool bareColourPage = mqttUp && v.valid && v.available && v.on &&
                                 card.page() == LightCardState::Page::COLOUR;
 
