@@ -1,5 +1,9 @@
 #pragma once
 
+// Plan 8 Task 3 removes this: the button face is gone in Lights v2 (geometry
+// lives in LightLayout.h now), but DialUi's lights view is not rewritten
+// until Task 3 and still draws and hit-tests through this header.
+//
 // Pure geometry + hit-testing for the Lights card's on-screen buttons.
 // Header-only, Arduino-free: DialUi draws with geom() and drives
 // LightCardState::tapButton() with whatever hitTest() returns for a tap

@@ -1,7 +1,7 @@
 #include <unity.h>
 
-#include "LightButtons.h"
 #include "LightCardState.h"
+#include "LightLayout.h"
 #include "LightsModel.h"
 
 void setUp(void) {}
@@ -36,907 +36,778 @@ static LightsModel::LightState colourState()
     return makeState(false, 50, LightsModel::ColorMode::TEMP, 4000, 2000, 6500, 0, 100, true);
 }
 
-// A plain (Office) light with no colour support.
-static LightsModel::LightState plainState()
+// The same light, switched on.
+static LightsModel::LightState colourOn()
 {
-    return makeState(false, 50, LightsModel::ColorMode::NONE, 0, 2000, 6500, 0, 100, false);
+    return makeState(true, 50, LightsModel::ColorMode::TEMP, 4000, 2000, 6500, 0, 100, true);
+}
+
+// A card sitting on an on, available, colour-capable light.
+static LightCardState onCard()
+{
+    LightCardState card(true);
+    card.sync(colourOn(), 1000);
+    return card;
 }
 
 // ---------------------------------------------------------------------------
-// LightButtons: geom() / LightButtons::hitTest() / LightButtons::label()
+// LightLayout: constants
 // ---------------------------------------------------------------------------
 
-static void test_geom_lamp_returnsSpecCentres(void)
+static void test_layout_offFaceConstants(void)
 {
-    LightButtons::Geom power = LightButtons::geom(LightButtons::Button::POWER, true);
-    LightButtons::Geom bright = LightButtons::geom(LightButtons::Button::BRIGHT, true);
-    LightButtons::Geom colour = LightButtons::geom(LightButtons::Button::COLOUR, true);
-    TEST_ASSERT_EQUAL_INT(60, power.cx);
-    TEST_ASSERT_EQUAL_INT(178, power.cy);
-    TEST_ASSERT_EQUAL_INT(21, power.r);
-    TEST_ASSERT_EQUAL_INT(120, bright.cx);
-    TEST_ASSERT_EQUAL_INT(196, bright.cy);
-    TEST_ASSERT_EQUAL_INT(180, colour.cx);
-    TEST_ASSERT_EQUAL_INT(178, colour.cy);
+    TEST_ASSERT_EQUAL_INT(120, LightLayout::kPowerCircleX);
+    TEST_ASSERT_EQUAL_INT(124, LightLayout::kPowerCircleY);
+    TEST_ASSERT_EQUAL_INT(44, LightLayout::kPowerCircleR);
 }
 
-static void test_geom_office_returnsSpecCentres(void)
+static void test_layout_onFaceConstants(void)
 {
-    LightButtons::Geom power = LightButtons::geom(LightButtons::Button::POWER, false);
-    LightButtons::Geom bright = LightButtons::geom(LightButtons::Button::BRIGHT, false);
-    TEST_ASSERT_EQUAL_INT(84, power.cx);
-    TEST_ASSERT_EQUAL_INT(190, power.cy);
-    TEST_ASSERT_EQUAL_INT(156, bright.cx);
-    TEST_ASSERT_EQUAL_INT(190, bright.cy);
+    TEST_ASSERT_EQUAL_INT(120, LightLayout::kPowerGlyphX);
+    TEST_ASSERT_EQUAL_INT(212, LightLayout::kPowerGlyphY);
+    TEST_ASSERT_EQUAL_INT(8, LightLayout::kPowerGlyphR);
+    TEST_ASSERT_EQUAL_INT(14, LightLayout::kPowerGlyphHitR);
+    TEST_ASSERT_EQUAL_INT(54, LightLayout::kPageDotY);
+    TEST_ASSERT_EQUAL_INT(12, LightLayout::kPageDotSpacing);
+    TEST_ASSERT_EQUAL_INT(3, LightLayout::kPageDotR);
 }
 
-static void test_geom_office_colourIsZero(void)
+static void test_layout_pageConstants(void)
 {
-    LightButtons::Geom colour = LightButtons::geom(LightButtons::Button::COLOUR, false);
-    TEST_ASSERT_EQUAL_INT(0, colour.cx);
-    TEST_ASSERT_EQUAL_INT(0, colour.cy);
-    TEST_ASSERT_EQUAL_INT(0, colour.r);
+    TEST_ASSERT_EQUAL_INT(160, LightLayout::kBrightCaptionY);
+    TEST_ASSERT_EQUAL_INT(112, LightLayout::kKelvinValueY);
+    TEST_ASSERT_EQUAL_INT(52, LightLayout::kKelvinBarX0);
+    TEST_ASSERT_EQUAL_INT(188, LightLayout::kKelvinBarX1);
+    TEST_ASSERT_EQUAL_INT(170, LightLayout::kKelvinBarY);
+    TEST_ASSERT_EQUAL_INT(8, LightLayout::kKelvinBarH);
+    TEST_ASSERT_EQUAL_INT(74, LightLayout::kSwatchRingR);
+    TEST_ASSERT_EQUAL_INT(12, LightLayout::kSwatchR);
+    TEST_ASSERT_EQUAL_INT(16, LightLayout::kSwatchRSelected);
+    TEST_ASSERT_EQUAL_INT(18, LightLayout::kSwatchHitR);
+    TEST_ASSERT_EQUAL_INT(30, LightLayout::kCentreDiscR);
 }
 
-static void test_hitTest_lamp_centreHitsEachButton(void)
+static void test_layout_presetHues(void)
 {
-    TEST_ASSERT_TRUE(LightButtons::Button::POWER == LightButtons::hitTest(60, 178, true));
-    TEST_ASSERT_TRUE(LightButtons::Button::BRIGHT == LightButtons::hitTest(120, 196, true));
-    TEST_ASSERT_TRUE(LightButtons::Button::COLOUR == LightButtons::hitTest(180, 178, true));
-}
-
-static void test_hitTest_lamp_edgeOfMarginHits(void)
-{
-    // r=21, margin=6 -> limit 27. Exactly on the limit still hits.
-    TEST_ASSERT_TRUE(LightButtons::Button::POWER == LightButtons::hitTest(60 + 27, 178, true));
-}
-
-static void test_hitTest_lamp_justPastMarginMisses(void)
-{
-    TEST_ASSERT_TRUE(LightButtons::Button::NONE == LightButtons::hitTest(60 + 28, 178, true));
-}
-
-static void test_hitTest_office_centresHit(void)
-{
-    TEST_ASSERT_TRUE(LightButtons::Button::POWER == LightButtons::hitTest(84, 190, false));
-    TEST_ASSERT_TRUE(LightButtons::Button::BRIGHT == LightButtons::hitTest(156, 190, false));
-}
-
-static void test_hitTest_office_colourNeverReturned(void)
-{
-    // The Lamp's COLOUR centre (180,178) now falls inside the Office BRIGHT
-    // button's 27px hit margin, so probe the invariant itself instead of one
-    // point: COLOUR is never returned for the Office layout, anywhere on the
-    // 240x240 display.
-    for (int y = 0; y < 240; y += 2)
+    TEST_ASSERT_EQUAL_UINT8(8, LightLayout::kPresetCount);
+    const float expected[8] = {0, 30, 60, 120, 180, 240, 275, 320};
+    for (uint8_t i = 0; i < 8; ++i)
     {
-        for (int x = 0; x < 240; x += 2)
-        {
-            TEST_ASSERT_TRUE(LightButtons::Button::COLOUR != LightButtons::hitTest(x, y, false));
-        }
+        TEST_ASSERT_EQUAL_FLOAT(expected[i], LightLayout::kPresetHues[i]);
     }
 }
 
-static void test_hitTest_farAway_returnsNone(void)
+// ---------------------------------------------------------------------------
+// LightLayout: swatch geometry + hit tests
+// ---------------------------------------------------------------------------
+
+static void test_swatchCentre_firstIsTwelveOClock(void)
 {
-    TEST_ASSERT_TRUE(LightButtons::Button::NONE == LightButtons::hitTest(0, 0, true));
+    int x = 0, y = 0;
+    LightLayout::swatchCentre(0, x, y);
+    TEST_ASSERT_EQUAL_INT(120, x);
+    TEST_ASSERT_EQUAL_INT(120 - 74, y);
 }
 
-static void test_hitTest_office_gapBetweenButtons_returnsNone(void)
+static void test_swatchCentre_goesClockwise(void)
 {
-    // (120,190) sits midway between Office's POWER (84,190) and BRIGHT
-    // (156,190) centres, 36px from each — outside both buttons' r=21+6=27
-    // hit margin, so this must miss.
-    TEST_ASSERT_TRUE(LightButtons::Button::NONE == LightButtons::hitTest(120, 190, false));
+    int x = 0, y = 0;
+    LightLayout::swatchCentre(2, x, y); // quarter turn clockwise: 3 o'clock
+    TEST_ASSERT_EQUAL_INT(120 + 74, x);
+    TEST_ASSERT_EQUAL_INT(120, y);
+    LightLayout::swatchCentre(4, x, y); // half turn: 6 o'clock
+    TEST_ASSERT_EQUAL_INT(120, x);
+    TEST_ASSERT_EQUAL_INT(120 + 74, y);
 }
 
-static void test_label_returnsExpectedStrings(void)
+static void test_hitSwatch_centresHitTheirOwnIndex(void)
 {
-    TEST_ASSERT_EQUAL_STRING("Power", LightButtons::label(LightButtons::Button::POWER));
-    TEST_ASSERT_EQUAL_STRING("Bright", LightButtons::label(LightButtons::Button::BRIGHT));
-    TEST_ASSERT_EQUAL_STRING("Colour", LightButtons::label(LightButtons::Button::COLOUR));
+    for (uint8_t i = 0; i < LightLayout::kPresetCount; ++i)
+    {
+        int x = 0, y = 0;
+        LightLayout::swatchCentre(i, x, y);
+        TEST_ASSERT_EQUAL_INT(i, LightLayout::hitSwatch(x, y));
+    }
+}
+
+static void test_hitSwatch_edgeOfHitRadiusHitsAndJustPastMisses(void)
+{
+    int x = 0, y = 0;
+    LightLayout::swatchCentre(0, x, y);
+    TEST_ASSERT_EQUAL_INT(0, LightLayout::hitSwatch(x, y - LightLayout::kSwatchHitR));
+    TEST_ASSERT_EQUAL_INT(-1, LightLayout::hitSwatch(x, y - LightLayout::kSwatchHitR - 1));
+}
+
+static void test_hitSwatch_centreOfFaceMisses(void)
+{
+    TEST_ASSERT_EQUAL_INT(-1, LightLayout::hitSwatch(120, 120));
+}
+
+static void test_hitPowerGlyph_withinAndOutsideHitRadius(void)
+{
+    TEST_ASSERT_TRUE(LightLayout::hitPowerGlyph(120, 212));
+    TEST_ASSERT_TRUE(LightLayout::hitPowerGlyph(120, 212 + LightLayout::kPowerGlyphHitR));
+    TEST_ASSERT_FALSE(LightLayout::hitPowerGlyph(120, 212 + LightLayout::kPowerGlyphHitR + 1));
+    TEST_ASSERT_FALSE(LightLayout::hitPowerGlyph(120, 120));
 }
 
 // ---------------------------------------------------------------------------
-// LightCardState: POWER
+// LightLayout: nearestPreset
 // ---------------------------------------------------------------------------
 
-static void test_tapPower_fromOff_setsOnAndReturnsPowerOnCommand(void)
+static void test_nearestPreset_exactHuesMapToThemselves(void)
 {
-    LightCardState card(true);
-    card.sync(colourState(), 0); // on = false
-    LightsModel::Command cmd = card.tapButton(LightButtons::Button::POWER, 1000);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::POWER == cmd.type);
-    TEST_ASSERT_TRUE(cmd.on);
-    TEST_ASSERT_TRUE(card.view().on);
+    for (uint8_t i = 0; i < LightLayout::kPresetCount; ++i)
+    {
+        TEST_ASSERT_EQUAL_UINT8(i, LightLayout::nearestPreset(LightLayout::kPresetHues[i]));
+    }
 }
 
-static void test_tapPower_whenInvalid_isIgnored(void)
+static void test_nearestPreset_roundsToNearest(void)
 {
-    LightCardState card(true);
-    LightsModel::LightState s; // valid = false (default)
-    card.sync(s, 0);
-    LightsModel::Command cmd = card.tapButton(LightButtons::Button::POWER, 1000);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == cmd.type);
+    TEST_ASSERT_EQUAL_UINT8(5, LightLayout::nearestPreset(250.0f));  // 240
+    TEST_ASSERT_EQUAL_UINT8(4, LightLayout::nearestPreset(200.0f));  // 180
+    TEST_ASSERT_EQUAL_UINT8(1, LightLayout::nearestPreset(25.0f));   // 30
 }
 
-static void test_tapPower_releasesEngagement(void)
+static void test_nearestPreset_wrapsRoundTheCircle(void)
 {
-    LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000); // engage
-    TEST_ASSERT_TRUE(LightCardState::Engaged::BRIGHT == card.engaged());
-    card.tapButton(LightButtons::Button::POWER, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
+    TEST_ASSERT_EQUAL_UINT8(0, LightLayout::nearestPreset(350.0f)); // nearer 0 than 320
+    TEST_ASSERT_EQUAL_UINT8(7, LightLayout::nearestPreset(335.0f)); // nearer 320 than 0
+    TEST_ASSERT_EQUAL_UINT8(0, LightLayout::nearestPreset(340.0f)); // exactly between: lowest index
+    TEST_ASSERT_EQUAL_UINT8(0, LightLayout::nearestPreset(-10.0f)); // out of range, normalised
+    TEST_ASSERT_EQUAL_UINT8(0, LightLayout::nearestPreset(720.0f));
 }
 
 // ---------------------------------------------------------------------------
-// LightCardState: BRIGHT engage/release + detents
+// LightCardState: pages
 // ---------------------------------------------------------------------------
 
-static void test_tapBright_engagesThenReleases(void)
+static void test_pageCount_lampHasThreeOfficeHasTwo(void)
 {
-    LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::BRIGHT == card.engaged());
-    LightsModel::Command cmd = card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == cmd.type);
+    LightCardState lamp(true);
+    LightCardState office(false);
+    TEST_ASSERT_EQUAL_UINT8(3, lamp.pageCount());
+    TEST_ASSERT_EQUAL_UINT8(2, office.pageCount());
 }
 
-static void test_tapBright_whenUnavailable_isIgnored(void)
+static void test_page_startsOnBrightness(void)
 {
     LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.available = false;
-    card.sync(s, 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
+    TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == card.page());
 }
 
-static void test_detents_bright_stepsBy5(void)
+static void test_swipe_forwardWalksPagesAndClampsAtColour(void)
 {
     LightCardState card(true);
-    card.sync(colourState(), 0); // pct = 50
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(2, 1000); // +10
+    card.swipe(1);
+    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
+    card.swipe(1);
+    TEST_ASSERT_TRUE(LightCardState::Page::COLOUR == card.page());
+    card.swipe(1);
+    TEST_ASSERT_TRUE(LightCardState::Page::COLOUR == card.page());
+}
+
+static void test_swipe_backwardClampsAtBrightness(void)
+{
+    LightCardState card(true);
+    card.swipe(1);
+    card.swipe(-1);
+    TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == card.page());
+    card.swipe(-1);
+    TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == card.page());
+}
+
+static void test_swipe_officeClampsAtKelvin(void)
+{
+    LightCardState card(false);
+    card.swipe(1);
+    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
+    card.swipe(1);
+    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
+}
+
+static void test_resetPage_returnsToBrightness(void)
+{
+    LightCardState card(true);
+    card.swipe(1);
+    card.swipe(1);
+    card.resetPage();
+    TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == card.page());
+}
+
+static void test_resetPage_leavesPendingSettleAlone(void)
+{
+    LightCardState card = onCard();
+    card.swipe(1); // KELVIN
+    card.detents(1, 1000);
+    TEST_ASSERT_TRUE(card.settling());
+    card.resetPage();
+    TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == card.page());
+    TEST_ASSERT_TRUE(card.settling());
+    // ...and the pending command is still the kelvin one the user dialled.
+    LightsModel::Command cmd = card.tick(1300);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::TEMP == cmd.type);
+    TEST_ASSERT_EQUAL_UINT16(4100, cmd.kelvin);
+}
+
+// ---------------------------------------------------------------------------
+// LightCardState: detents per page
+// ---------------------------------------------------------------------------
+
+static void test_detents_brightPage_stepsBy5AndArmsSettle(void)
+{
+    LightCardState card = onCard();
+    card.detents(2, 1000);
     TEST_ASSERT_EQUAL_UINT8(60, card.view().brightnessPct);
+    TEST_ASSERT_TRUE(card.settling());
 }
 
-static void test_detents_bright_clampsAt100(void)
+static void test_detents_brightPage_clampsTo1And100(void)
 {
-    LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(100, 1000);
+    LightCardState card = onCard();
+    card.detents(20, 1000);
     TEST_ASSERT_EQUAL_UINT8(100, card.view().brightnessPct);
-}
-
-static void test_detents_bright_clampsAt1(void)
-{
-    LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(-100, 1000);
+    card.detents(-40, 1100);
     TEST_ASSERT_EQUAL_UINT8(1, card.view().brightnessPct);
 }
 
-static void test_detents_whenNotEngaged_isNoOp(void)
+static void test_detents_kelvinPage_stepsBy100AndClampsToBounds(void)
+{
+    LightCardState card = onCard();
+    card.swipe(1);
+    card.detents(3, 1000);
+    TEST_ASSERT_EQUAL_UINT16(4300, card.view().kelvin);
+    card.detents(50, 1100);
+    TEST_ASSERT_EQUAL_UINT16(6500, card.view().kelvin);
+    card.detents(-100, 1200);
+    TEST_ASSERT_EQUAL_UINT16(2000, card.view().kelvin);
+}
+
+static void test_detents_colourPage_movesOnePresetPerDetent(void)
+{
+    LightCardState card = onCard(); // hue 0 -> preset 0
+    card.swipe(1);
+    card.swipe(1);
+    card.detents(1, 1000);
+    TEST_ASSERT_EQUAL_UINT8(1, card.preset());
+    TEST_ASSERT_EQUAL_FLOAT(30.0f, card.view().hue);
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, card.view().sat);
+}
+
+static void test_detents_colourPage_wrapsBothWays(void)
+{
+    LightCardState card = onCard();
+    card.swipe(1);
+    card.swipe(1);
+    card.detents(-1, 1000); // 0 -> 7
+    TEST_ASSERT_EQUAL_UINT8(7, card.preset());
+    card.detents(1, 1100); // 7 -> 0
+    TEST_ASSERT_EQUAL_UINT8(0, card.preset());
+}
+
+static void test_detents_colourPage_fromTempMode_startsAtNearestPresetToHue(void)
 {
     LightCardState card(true);
-    card.sync(colourState(), 0);
+    // TEMP mode, but HA still reports the last hue: 250 -> preset 5 (240).
+    card.sync(makeState(true, 50, LightsModel::ColorMode::TEMP, 4000, 2000, 6500, 250, 100, true),
+              1000);
+    card.swipe(1);
+    card.swipe(1);
+    card.detents(1, 1000);
+    TEST_ASSERT_EQUAL_UINT8(6, card.preset()); // 240 -> next preset, 275
+    TEST_ASSERT_EQUAL_FLOAT(275.0f, card.view().hue);
+}
+
+static void test_detents_whileOff_isIgnored(void)
+{
+    LightCardState card(true);
+    card.sync(colourState(), 1000); // off
     card.detents(2, 1000);
     TEST_ASSERT_EQUAL_UINT8(50, card.view().brightnessPct);
     TEST_ASSERT_FALSE(card.settling());
 }
 
-static void test_detents_setsOnLocallyAndArmsSettling(void)
+static void test_detents_whileUnavailable_isIgnored(void)
 {
     LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.on = false;
-    card.sync(s, 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(1, 1000);
-    TEST_ASSERT_TRUE(card.view().on);
-    TEST_ASSERT_TRUE(card.settling());
-}
-
-// ---------------------------------------------------------------------------
-// LightCardState: TEMP detents + clamp to HA min/max
-// ---------------------------------------------------------------------------
-
-static void test_detents_temp_clampsToLightsMinMax(void)
-{
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.kelvin = 6450;
-    s.minKelvin = 2200;
-    s.maxKelvin = 6500;
-    card.sync(s, 0);
-    card.tapButton(LightButtons::Button::COLOUR, 1000); // mode TEMP already -> engages TEMP
-    TEST_ASSERT_TRUE(LightCardState::Engaged::TEMP == card.engaged());
-    card.detents(1, 1000); // +100 -> 6550, clamp to 6500
-    TEST_ASSERT_EQUAL_UINT16(6500, card.view().kelvin);
-
-    card.detents(-100, 2000); // way below min, clamp to 2200
-    TEST_ASSERT_EQUAL_UINT16(2200, card.view().kelvin);
-}
-
-// ---------------------------------------------------------------------------
-// LightCardState: HUE detents + wrap
-// ---------------------------------------------------------------------------
-
-static void test_detents_hue_wrapsAt360(void)
-{
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.mode = LightsModel::ColorMode::HS; // so COLOUR engages HUE directly
-    s.hue = 350;
-    card.sync(s, 0);
-    card.tapButton(LightButtons::Button::COLOUR, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::HUE == card.engaged());
-    card.detents(2, 1000); // +20 -> 370 -> wraps to 10
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 10.0f, card.view().hue);
-}
-
-static void test_detents_hue_wrapsBelowZero(void)
-{
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.mode = LightsModel::ColorMode::HS; // so COLOUR engages HUE directly
-    s.hue = 5;
+    LightsModel::LightState s = colourOn();
+    s.available = false;
     card.sync(s, 1000);
-    card.tapButton(LightButtons::Button::COLOUR, 1000);
-    card.detents(-1, 1000); // 5 - 10 -> -5 -> wraps to 355
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 355.0f, card.view().hue);
-}
-
-// ---------------------------------------------------------------------------
-// LightCardState: COLOUR cycle + colour-support gating
-// ---------------------------------------------------------------------------
-
-static void test_colour_ignoredOnOfficeLayout(void)
-{
-    LightCardState card(false); // Office: hasColour = false
-    card.sync(colourState(), 0);   // even if the light itself supports colour
-    card.tapButton(LightButtons::Button::COLOUR, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
-}
-
-static void test_colour_ignoredWhenLightDoesNotSupportIt(void)
-{
-    LightCardState card(true); // Lamp
-    LightsModel::LightState s = colourState();
-    s.supportsColor = false;
-    card.sync(s, 0);
-    card.tapButton(LightButtons::Button::COLOUR, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
-}
-
-static void test_colour_cycle_tempMode_goesTempThenHueThenNone(void)
-{
-    LightCardState card(true);
-    card.sync(colourState(), 0); // mode = TEMP
-
-    card.tapButton(LightButtons::Button::COLOUR, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::TEMP == card.engaged());
-
-    card.tapButton(LightButtons::Button::COLOUR, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::HUE == card.engaged());
-
-    LightsModel::Command cmd = card.tapButton(LightButtons::Button::COLOUR, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == cmd.type);
-}
-
-static void test_colour_cycle_hsMode_engagesHueDirectlyFromNone(void)
-{
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.mode = LightsModel::ColorMode::HS;
-    card.sync(s, 0);
-
-    card.tapButton(LightButtons::Button::COLOUR, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::HUE == card.engaged());
-}
-
-static void test_colour_engageHue_zeroSaturation_seedsTo100(void)
-{
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.mode = LightsModel::ColorMode::HS;
-    s.sat = 0;
-    card.sync(s, 0);
-
-    card.tapButton(LightButtons::Button::COLOUR, 1000);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 100.0f, card.view().sat);
-}
-
-// ---------------------------------------------------------------------------
-// LightCardState: release tap flushes a pending settle
-// ---------------------------------------------------------------------------
-
-static void test_tapBright_reTapWithPendingSettle_flushesSettleCommand(void)
-{
-    LightCardState card(true);
-    card.sync(colourState(), 0); // pct = 50
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(1, 1000); // pct -> 55, settling
-
-    LightsModel::Command cmd = card.tapButton(LightButtons::Button::BRIGHT, 1100);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::BRIGHT == cmd.type);
-    TEST_ASSERT_EQUAL_UINT8(55, cmd.pct);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
+    card.detents(2, 1000);
+    TEST_ASSERT_EQUAL_UINT8(50, card.view().brightnessPct);
     TEST_ASSERT_FALSE(card.settling());
 }
 
-static void test_tapColour_thirdTapWithPendingSettle_flushesSettleCommand(void)
+static void test_detents_zero_isNoOp(void)
 {
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.mode = LightsModel::ColorMode::HS; // COLOUR engages HUE directly
-    card.sync(s, 0);
-    card.tapButton(LightButtons::Button::COLOUR, 1000); // engage HUE
-    card.detents(1, 1000);                // hue changes, settling
-
-    LightsModel::Command cmd = card.tapButton(LightButtons::Button::COLOUR, 1100); // third tap: release
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::HUE == cmd.type);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
+    LightCardState card = onCard();
+    card.detents(0, 1000);
+    TEST_ASSERT_EQUAL_UINT8(50, card.view().brightnessPct);
     TEST_ASSERT_FALSE(card.settling());
 }
 
-static void test_tapBright_reTapWithNoPendingSettle_returnsNone(void)
+// ---------------------------------------------------------------------------
+// LightCardState: power
+// ---------------------------------------------------------------------------
+
+static void test_tapOn_fromOff_switchesOnAndLandsOnBrightness(void)
 {
     LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000); // engage, no detent
+    card.sync(colourState(), 1000); // off
+    card.swipe(1);                  // sitting on KELVIN when it went off
+    LightsModel::Command cmd = card.tapOn(1000);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::POWER == cmd.type);
+    TEST_ASSERT_TRUE(cmd.on);
+    TEST_ASSERT_TRUE(card.view().on);
+    TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == card.page());
+}
 
-    LightsModel::Command cmd = card.tapButton(LightButtons::Button::BRIGHT, 1100); // release
+static void test_tapOn_whenAlreadyOn_isIgnored(void)
+{
+    LightCardState card = onCard();
+    card.swipe(1);
+    LightsModel::Command cmd = card.tapOn(1000);
     TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == cmd.type);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
+    TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
+}
+
+static void test_tapOn_whenNoStateYet_isIgnored(void)
+{
+    LightCardState card(true); // never synced: !valid
+    LightsModel::Command cmd = card.tapOn(1000);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == cmd.type);
+    TEST_ASSERT_FALSE(card.view().on);
+}
+
+static void test_powerOff_switchesOffAndReturnsPowerOffCommand(void)
+{
+    LightCardState card = onCard();
+    LightsModel::Command cmd = card.powerOff(1000);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::POWER == cmd.type);
+    TEST_ASSERT_FALSE(cmd.on);
+    TEST_ASSERT_FALSE(card.view().on);
+}
+
+static void test_powerOff_dropsAPendingSettle(void)
+{
+    LightCardState card = onCard();
+    card.detents(2, 1000);
+    TEST_ASSERT_TRUE(card.settling());
+    card.powerOff(1100);
+    TEST_ASSERT_FALSE(card.settling());
+    LightsModel::Command cmd = card.tick(1500);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == cmd.type);
 }
 
 // ---------------------------------------------------------------------------
-// LightCardState: settle timing
+// LightCardState: settle timing and command shapes
 // ---------------------------------------------------------------------------
 
 static void test_settle_noCommandBeforeDeadline(void)
 {
-    LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
+    LightCardState card = onCard();
     card.detents(1, 1000);
-    LightsModel::Command cmd = card.tick(1000 + 299);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == cmd.type);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == card.tick(1299).type);
     TEST_ASSERT_TRUE(card.settling());
 }
 
-static void test_settle_emitsExactlyOneCommandAtDeadline(void)
+static void test_settle_emitsExactlyOneBrightCommandAtDeadline(void)
 {
-    LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(1, 1000); // -> 55
-
-    LightsModel::Command cmd = card.tick(1000 + 300);
+    LightCardState card = onCard();
+    card.detents(1, 1000);
+    LightsModel::Command cmd = card.tick(1300);
     TEST_ASSERT_TRUE(LightsModel::Command::Type::BRIGHT == cmd.type);
+    TEST_ASSERT_TRUE(cmd.on);
     TEST_ASSERT_EQUAL_UINT8(55, cmd.pct);
     TEST_ASSERT_FALSE(card.settling());
-
-    // Engagement itself is not released by the settle.
-    TEST_ASSERT_TRUE(LightCardState::Engaged::BRIGHT == card.engaged());
-
-    // A further tick with no new detent doesn't re-emit.
-    LightsModel::Command cmd2 = card.tick(1000 + 301);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == cmd2.type);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == card.tick(1400).type);
 }
 
-static void test_settle_rearmsFromLastDetent(void)
+static void test_settle_rearmsFromTheLastDetent(void)
 {
-    LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(1, 1000);   // last detent at 1000
-    card.detents(1, 1200);   // last detent moves to 1200
-
-    // 300ms after the *first* detent (1300) should NOT have fired yet.
-    LightsModel::Command early = card.tick(1300);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == early.type);
-
-    // 300ms after the *last* detent (1500) fires.
-    LightsModel::Command late = card.tick(1500);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::BRIGHT == late.type);
-}
-
-// ---------------------------------------------------------------------------
-// LightCardState: idle release
-// ---------------------------------------------------------------------------
-
-static void test_idle_releasesSilentlyAt10s(void)
-{
-    LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-
-    LightsModel::Command cmd = card.tick(1000 + 10000);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == cmd.type);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
-}
-
-static void test_idle_notYetReleasedJustBeforeDeadline(void)
-{
-    LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-
-    card.tick(1000 + 9999);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::BRIGHT == card.engaged());
-}
-
-static void test_idle_detentRefreshesTimer(void)
-{
-    LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(1, 5000); // refreshes idle to 5000; settle also due at 5300
-
-    // Consume the settle first so it doesn't mask the idle assertion below.
-    card.tick(5300);
-
-    // 9999ms after the refreshed input time (5000) -> still engaged.
-    card.tick(5000 + 9999);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::BRIGHT == card.engaged());
-}
-
-// ---------------------------------------------------------------------------
-// LightCardState: sync() during / after settle
-// ---------------------------------------------------------------------------
-
-static void test_sync_duringSettle_keepsLocalEngagedValue(void)
-{
-    LightCardState card(true);
-    card.sync(colourState(), 0); // pct 50
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(1, 1000); // local pct -> 55, settling
-
-    LightsModel::LightState echo = colourState();
-    echo.brightnessPct = 50; // stale HA echo of the pre-command value
-    card.sync(echo, 1100);
-
-    TEST_ASSERT_EQUAL_UINT8(55, card.view().brightnessPct);
-}
-
-static void test_sync_duringSettle_adoptsOtherFields(void)
-{
-    LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
+    LightCardState card = onCard();
     card.detents(1, 1000);
+    card.detents(1, 1200);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == card.tick(1300).type);
+    LightsModel::Command cmd = card.tick(1500);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::BRIGHT == cmd.type);
+    TEST_ASSERT_EQUAL_UINT8(60, cmd.pct);
+}
 
-    LightsModel::LightState echo = colourState();
-    echo.brightnessPct = 50;
-    echo.kelvin = 5000; // some unrelated field HA updated
-    card.sync(echo, 1100);
+static void test_settle_kelvinPageEmitsTempCommand(void)
+{
+    LightCardState card = onCard();
+    card.swipe(1);
+    card.detents(-2, 1000);
+    LightsModel::Command cmd = card.tick(1300);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::TEMP == cmd.type);
+    TEST_ASSERT_TRUE(cmd.on);
+    TEST_ASSERT_EQUAL_UINT16(3800, cmd.kelvin);
+}
 
+static void test_settle_colourPageEmitsHueCommandWithPresetHueAndFullSaturation(void)
+{
+    LightCardState card = onCard();
+    card.swipe(1);
+    card.swipe(1);
+    card.detents(5, 1000); // preset 0 -> 5 (240)
+    LightsModel::Command cmd = card.tick(1300);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::HUE == cmd.type);
+    TEST_ASSERT_TRUE(cmd.on);
+    TEST_ASSERT_EQUAL_FLOAT(240.0f, cmd.hue);
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, cmd.sat);
+}
+
+static void test_settle_survivesAPageSwipeAndStillSendsTheEditedField(void)
+{
+    LightCardState card = onCard();
+    card.swipe(1); // KELVIN
+    card.detents(1, 1000);
+    card.swipe(-1); // user flicks back to brightness before it settles
+    LightsModel::Command cmd = card.tick(1300);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::TEMP == cmd.type);
+    TEST_ASSERT_EQUAL_UINT16(4100, cmd.kelvin);
+}
+
+// ---------------------------------------------------------------------------
+// LightCardState: selectPreset
+// ---------------------------------------------------------------------------
+
+static void test_selectPreset_armsSettleAndSendsThatPresetsHue(void)
+{
+    LightCardState card = onCard();
+    card.swipe(1);
+    card.swipe(1);
+    card.selectPreset(3, 1000);
+    TEST_ASSERT_EQUAL_UINT8(3, card.preset());
+    TEST_ASSERT_TRUE(card.settling());
+    LightsModel::Command cmd = card.tick(1300);
+    TEST_ASSERT_TRUE(LightsModel::Command::Type::HUE == cmd.type);
+    TEST_ASSERT_EQUAL_FLOAT(120.0f, cmd.hue);
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, cmd.sat);
+}
+
+static void test_selectPreset_whileOff_isIgnored(void)
+{
+    LightCardState card(true);
+    card.sync(colourState(), 1000); // off
+    card.selectPreset(3, 1000);
+    TEST_ASSERT_FALSE(card.settling());
+}
+
+static void test_selectPreset_outOfRangeIndex_isIgnored(void)
+{
+    LightCardState card = onCard();
+    card.selectPreset(8, 1000);
+    TEST_ASSERT_FALSE(card.settling());
+}
+
+// ---------------------------------------------------------------------------
+// LightCardState: preset(), kelvinLive(), colourLive(), ringFraction()
+// ---------------------------------------------------------------------------
+
+static void test_preset_followsHaHueWhenIdle(void)
+{
+    LightCardState card(true);
+    card.sync(makeState(true, 50, LightsModel::ColorMode::HS, 0, 2000, 6500, 350, 100, true), 1000);
+    TEST_ASSERT_EQUAL_UINT8(0, card.preset()); // 350 wraps to preset 0
+}
+
+static void test_preset_isThePendingOneWhileSettling(void)
+{
+    LightCardState card = onCard();
+    card.swipe(1);
+    card.swipe(1);
+    card.detents(2, 1000);
+    // A stale HA echo (still hue 0) mustn't drag the highlight back.
+    card.sync(colourOn(), 1050);
+    TEST_ASSERT_EQUAL_UINT8(2, card.preset());
+}
+
+static void test_kelvinLiveAndColourLive_followTheReportedMode(void)
+{
+    LightCardState card(true);
+    card.sync(colourOn(), 1000); // TEMP
+    TEST_ASSERT_TRUE(card.kelvinLive());
+    TEST_ASSERT_FALSE(card.colourLive());
+    card.sync(makeState(true, 50, LightsModel::ColorMode::HS, 0, 2000, 6500, 240, 100, true), 1100);
+    TEST_ASSERT_FALSE(card.kelvinLive());
+    TEST_ASSERT_TRUE(card.colourLive());
+}
+
+static void test_colourEdit_makesColourLiveImmediately(void)
+{
+    LightCardState card = onCard(); // TEMP mode
+    card.swipe(1);
+    card.swipe(1);
+    card.detents(1, 1000);
+    TEST_ASSERT_TRUE(card.colourLive());
+    TEST_ASSERT_FALSE(card.kelvinLive());
+}
+
+static void test_kelvinEdit_makesKelvinLiveImmediately(void)
+{
+    LightCardState card(true);
+    card.sync(makeState(true, 50, LightsModel::ColorMode::HS, 3000, 2000, 6500, 240, 100, true),
+              1000);
+    card.swipe(1);
+    card.detents(1, 1000);
+    TEST_ASSERT_TRUE(card.kelvinLive());
+    TEST_ASSERT_FALSE(card.colourLive());
+}
+
+static void test_ringFraction_isBrightnessOver100(void)
+{
+    LightCardState card = onCard();
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.5f, card.ringFraction());
+    card.detents(4, 1000);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.7f, card.ringFraction());
+}
+
+// ---------------------------------------------------------------------------
+// LightCardState: sync() during / after a settle
+// ---------------------------------------------------------------------------
+
+static void test_sync_duringSettle_keepsTheLocallyEditedField(void)
+{
+    LightCardState card = onCard();
+    card.detents(2, 1000); // 60 locally
+    card.sync(colourOn(), 1050); // HA still says 50
+    TEST_ASSERT_EQUAL_UINT8(60, card.view().brightnessPct);
+}
+
+static void test_sync_duringSettle_adoptsEverythingElse(void)
+{
+    LightCardState card = onCard();
+    card.detents(2, 1000);
+    LightsModel::LightState s = colourOn();
+    s.kelvin = 5000;
+    card.sync(s, 1050);
+    TEST_ASSERT_EQUAL_UINT8(60, card.view().brightnessPct);
     TEST_ASSERT_EQUAL_UINT16(5000, card.view().kelvin);
 }
 
-static void test_sync_afterSettled_adoptsEngagedFieldToo(void)
+static void test_sync_afterSettleConfirmed_adoptsHaAgain(void)
 {
-    LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(1, 1000);
-    card.tick(1000 + 300); // settle fires, settling() -> false
-
-    LightsModel::LightState confirmed = colourState();
-    confirmed.brightnessPct = 55; // HA confirms the new value
-    card.sync(confirmed, 1400);
-
-    TEST_ASSERT_EQUAL_UINT8(55, card.view().brightnessPct);
+    LightCardState card = onCard();
+    card.detents(2, 1000);
+    card.tick(1300);             // BRIGHT 60 goes out
+    LightsModel::LightState s = colourOn();
+    s.brightnessPct = 60;
+    card.sync(s, 1350);          // echo confirms, hold ends
+    s.brightnessPct = 33;        // someone else changed it
+    card.sync(s, 1400);
+    TEST_ASSERT_EQUAL_UINT8(33, card.view().brightnessPct);
 }
 
 static void test_sync_duringSettle_reclampsKelvinToNewBounds(void)
 {
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.kelvin = 6500;
-    s.minKelvin = 2000;
-    s.maxKelvin = 6500;
-    card.sync(s, 0);
-    card.tapButton(LightButtons::Button::COLOUR, 1000); // engages TEMP (mode == TEMP)
-    card.detents(1, 1000);                // arm settling; +100 clamps back to 6500
-
-    LightsModel::LightState echo = colourState();
-    echo.minKelvin = 2000;
-    echo.maxKelvin = 6000; // HA narrows the bulb's max kelvin
-    card.sync(echo, 1100);
-
-    TEST_ASSERT_EQUAL_UINT16(6000, card.view().kelvin);
-
-    LightsModel::Command cmd = card.tick(1000 + 300);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::TEMP == cmd.type);
-    TEST_ASSERT_EQUAL_UINT16(6000, cmd.kelvin);
+    LightCardState card = onCard();
+    card.swipe(1);
+    card.detents(30, 1000); // 7000 -> clamped to 6500 with the old bounds
+    TEST_ASSERT_EQUAL_UINT16(6500, card.view().kelvin);
+    LightsModel::LightState s = colourOn();
+    s.maxKelvin = 4500;
+    card.sync(s, 1050);
+    TEST_ASSERT_EQUAL_UINT16(4500, card.view().kelvin);
 }
 
 // ---------------------------------------------------------------------------
-// LightCardState: awaiting-confirmation hold (an emitted command's fields are
-// kept locally until HA echoes them back, or CONFIRM_HOLD_MS passes)
+// LightCardState: awaiting-confirmation hold (Plan 6 behaviour, kept)
 // ---------------------------------------------------------------------------
 
 static void test_confirmHold_power_staleEchoBeforeDeadline_keepsLocalOn(void)
 {
     LightCardState card(true);
-    card.sync(colourState(), 1000); // on = false
-    card.tapButton(LightButtons::Button::POWER, 1000);
+    card.sync(colourState(), 1000); // off
+    card.tapOn(1000);
     TEST_ASSERT_TRUE(card.view().on);
-
-    LightsModel::LightState stale = colourState(); // HA still reporting off
-    card.sync(stale, 1200);
-
+    card.sync(colourState(), 1500); // HA hasn't caught up: still off
     TEST_ASSERT_TRUE(card.view().on);
-}
-
-static void test_confirmHold_powerOffThenBrightEdit_keepsOptimisticOn(void)
-{
-    LightCardState card(true);
-    LightsModel::LightState on = colourState();
-    on.on = true;
-    on.brightnessPct = 40;
-    card.sync(on, 1000);
-    card.tapButton(LightButtons::Button::POWER, 1000); // off, hold armed
-    TEST_ASSERT_FALSE(card.view().on);
-
-    card.tapButton(LightButtons::Button::BRIGHT, 1100);
-    card.detents(1, 1200); // optimistic on, 45 %
-    TEST_ASSERT_TRUE(card.view().on);
-
-    card.sync(on, 1250); // HA echo still says on/40 -- irrelevant, but the
-                         // POWER-off hold must not clobber the edit's on
-    TEST_ASSERT_TRUE(card.view().on);
-    TEST_ASSERT_EQUAL_UINT8(45, card.view().brightnessPct);
 }
 
 static void test_confirmHold_power_staleEchoAfterDeadline_adoptsHa(void)
 {
     LightCardState card(true);
     card.sync(colourState(), 1000);
-    card.tapButton(LightButtons::Button::POWER, 1000);
-
-    LightsModel::LightState stale = colourState(); // still off
-    card.sync(stale, 1000 + 1600);
-
+    card.tapOn(1000);
+    card.sync(colourState(), 2500); // 1.5 s later, HA still says off: HA wins
     TEST_ASSERT_FALSE(card.view().on);
 }
 
-static void test_confirmHold_power_matchingEchoEndsHoldEarly(void)
+static void test_confirmHold_power_matchingEchoEndsTheHoldEarly(void)
 {
     LightCardState card(true);
     card.sync(colourState(), 1000);
-    card.tapButton(LightButtons::Button::POWER, 1000); // -> on
-
-    LightsModel::LightState echo = colourState();
-    echo.on = true; // HA confirms
-    card.sync(echo, 1200);
-    TEST_ASSERT_TRUE(card.view().on);
-
-    // Hold is over, so a genuine off (someone hit the wall switch) is adopted
-    // immediately rather than waiting out the deadline.
-    LightsModel::LightState off = colourState(); // on = false
-    card.sync(off, 1300);
+    card.tapOn(1000);
+    card.sync(colourOn(), 1100);    // echo: on
+    card.sync(colourState(), 1200); // then genuinely off again (wall switch)
     TEST_ASSERT_FALSE(card.view().on);
 }
 
 static void test_confirmHold_bright_keepsSentPctUntilEchoed(void)
 {
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.on = true;
-    s.brightnessPct = 30;
-    card.sync(s, 1000);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(2, 1000); // 30 -> 40
-    LightsModel::Command cmd = card.tick(1300);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::BRIGHT == cmd.type);
-    TEST_ASSERT_EQUAL_UINT8(40, cmd.pct);
-
-    LightsModel::LightState stale = s; // HA still says 30
-    card.sync(stale, 1400);
-    TEST_ASSERT_EQUAL_UINT8(40, card.view().brightnessPct);
-
-    LightsModel::LightState echo = s;
-    echo.brightnessPct = 40; // HA confirms
-    card.sync(echo, 1500);
-    TEST_ASSERT_EQUAL_UINT8(40, card.view().brightnessPct);
-
-    // Hold over: HA's value wins again.
-    card.sync(stale, 1600);
-    TEST_ASSERT_EQUAL_UINT8(30, card.view().brightnessPct);
+    LightCardState card = onCard();
+    card.detents(2, 1000);
+    card.tick(1300); // BRIGHT 60 sent
+    TEST_ASSERT_FALSE(card.settling());
+    card.sync(colourOn(), 1350); // stale echo, still 50
+    TEST_ASSERT_EQUAL_UINT8(60, card.view().brightnessPct);
+    card.sync(colourOn(), 2900); // past the 1.5 s deadline
+    TEST_ASSERT_EQUAL_UINT8(50, card.view().brightnessPct);
 }
 
 static void test_confirmHold_temp_kelvinWithinToleranceConfirms(void)
 {
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.on = true;
-    s.kelvin = 4000;
-    card.sync(s, 1000);
-    card.tapButton(LightButtons::Button::COLOUR, 1000); // TEMP (mode == TEMP)
-    card.detents(1, 1000);                // 4000 -> 4100
-    card.tick(1300);                      // emits TEMP 4100, starts the hold
-
-    // HA quantises to its own mired grid: within 50 K counts as confirmation.
-    LightsModel::LightState echo = s;
-    echo.kelvin = 4065;
-    card.sync(echo, 1400);
-    TEST_ASSERT_EQUAL_UINT16(4065, card.view().kelvin);
-
-    // ...and the hold really is over, so the next value is adopted too.
-    LightsModel::LightState later = s;
-    later.kelvin = 3000;
-    card.sync(later, 1500);
-    TEST_ASSERT_EQUAL_UINT16(3000, card.view().kelvin);
+    LightCardState card = onCard();
+    card.swipe(1);
+    card.detents(1, 1000); // 4100
+    card.tick(1300);
+    LightsModel::LightState s = colourOn();
+    s.kelvin = 4060; // within +-50: counts as the echo
+    card.sync(s, 1350);
+    TEST_ASSERT_EQUAL_UINT16(4060, card.view().kelvin);
 }
 
 static void test_confirmHold_temp_kelvinOutsideToleranceKeepsLocal(void)
 {
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.on = true;
-    s.kelvin = 4000;
-    card.sync(s, 1000);
-    card.tapButton(LightButtons::Button::COLOUR, 1000);
-    card.detents(1, 1000); // -> 4100
+    LightCardState card = onCard();
+    card.swipe(1);
+    card.detents(1, 1000); // 4100
     card.tick(1300);
-
-    LightsModel::LightState stale = s; // 4000 is 100 K away, not a confirmation
-    card.sync(stale, 1400);
+    LightsModel::LightState s = colourOn();
+    s.kelvin = 3000; // stale
+    card.sync(s, 1350);
     TEST_ASSERT_EQUAL_UINT16(4100, card.view().kelvin);
 }
 
 static void test_confirmHold_hue_withinToleranceConfirms(void)
 {
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.on = true;
+    LightCardState card = onCard();
+    card.swipe(1);
+    card.swipe(1);
+    card.detents(5, 1000); // preset 5, hue 240
+    card.tick(1300);
+    LightsModel::LightState s = colourOn();
     s.mode = LightsModel::ColorMode::HS;
-    s.hue = 200;
-    card.sync(s, 1000);
-    card.tapButton(LightButtons::Button::COLOUR, 1000); // HUE
-    card.detents(1, 1000);                // 200 -> 210
-    card.tick(1300);                      // emits HUE 210
-
-    LightsModel::LightState echo = s;
-    echo.hue = 211; // within 2 degrees
-    card.sync(echo, 1400);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 211.0f, card.view().hue);
-
-    LightsModel::LightState later = s;
-    later.hue = 100;
-    card.sync(later, 1500);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 100.0f, card.view().hue);
+    s.hue = 241.0f;
+    card.sync(s, 1350);
+    TEST_ASSERT_EQUAL_FLOAT(241.0f, card.view().hue);
 }
 
 static void test_confirmHold_hue_outsideToleranceKeepsLocal(void)
 {
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.on = true;
-    s.mode = LightsModel::ColorMode::HS;
-    s.hue = 200;
-    card.sync(s, 1000);
-    card.tapButton(LightButtons::Button::COLOUR, 1000);
-    card.detents(1, 1000); // -> 210
+    LightCardState card = onCard();
+    card.swipe(1);
+    card.swipe(1);
+    card.detents(5, 1000);
     card.tick(1300);
-
-    LightsModel::LightState stale = s; // 200, 10 degrees away
-    card.sync(stale, 1400);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 210.0f, card.view().hue);
+    card.sync(colourOn(), 1350); // stale: hue 0
+    TEST_ASSERT_EQUAL_FLOAT(240.0f, card.view().hue);
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, card.view().sat);
+    TEST_ASSERT_TRUE(card.colourLive());
 }
 
-static void test_confirmHold_flushedReleaseTapAlsoHolds(void)
+static void test_confirmHold_powerOffThenTapOn_keepsOptimisticOn(void)
 {
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.on = true;
-    s.brightnessPct = 30;
-    card.sync(s, 1000);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(2, 1000);                // -> 40, settling
-    card.tapButton(LightButtons::Button::BRIGHT, 1100); // release flushes BRIGHT 40
-
-    card.sync(s, 1200); // stale echo of 30
-    TEST_ASSERT_EQUAL_UINT8(40, card.view().brightnessPct);
+    LightCardState card = onCard();
+    card.powerOff(1000);
+    TEST_ASSERT_FALSE(card.view().on);
+    card.tapOn(1100);
+    TEST_ASSERT_TRUE(card.view().on);
+    card.sync(colourState(), 1150); // HA still reports off
+    TEST_ASSERT_TRUE(card.view().on);
 }
 
-// ---------------------------------------------------------------------------
-// LightCardState: switching engaged control flushes the old field's settle
-// ---------------------------------------------------------------------------
-
-static void test_tapColour_tempToHue_flushesPendingTempCommand(void)
+static void test_confirmHold_duringSettleAfterPowerOff_keepsOptimisticOn(void)
 {
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.kelvin = 4000;
-    card.sync(s, 1000);
-    card.tapButton(LightButtons::Button::COLOUR, 1000); // engages TEMP (mode == TEMP)
-    card.detents(1, 1000);                // 4000 -> 4100, settling
-
-    LightsModel::Command cmd = card.tapButton(LightButtons::Button::COLOUR, 1100);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::TEMP == cmd.type);
-    TEST_ASSERT_EQUAL_UINT16(4100, cmd.kelvin);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::HUE == card.engaged());
-    TEST_ASSERT_FALSE(card.settling());
+    LightCardState card = onCard();
+    card.powerOff(1000);   // POWER off hold armed
+    card.tapOn(1050);      // straight back on
+    card.detents(2, 1100); // and dial the brightness while it settles
+    card.sync(colourState(), 1150); // HA still says off
+    TEST_ASSERT_TRUE(card.view().on);
+    TEST_ASSERT_EQUAL_UINT8(60, card.view().brightnessPct);
 }
 
-static void test_tapBright_fromHue_flushesPendingHueCommand(void)
-{
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.mode = LightsModel::ColorMode::HS; // COLOUR engages HUE directly
-    s.hue = 200;
-    card.sync(s, 1000);
-    card.tapButton(LightButtons::Button::COLOUR, 1000);
-    card.detents(1, 1000); // 200 -> 210, settling
-
-    LightsModel::Command cmd = card.tapButton(LightButtons::Button::BRIGHT, 1100);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::HUE == cmd.type);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 210.0f, cmd.hue);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::BRIGHT == card.engaged());
-    TEST_ASSERT_FALSE(card.settling());
-}
-
-static void test_tapColour_brightToTemp_flushesPendingBrightCommand(void)
-{
-    LightCardState card(true);
-    card.sync(colourState(), 1000); // pct 50, mode TEMP
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(1, 1000); // 50 -> 55, settling
-
-    LightsModel::Command cmd = card.tapButton(LightButtons::Button::COLOUR, 1100);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::BRIGHT == cmd.type);
-    TEST_ASSERT_EQUAL_UINT8(55, cmd.pct);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::TEMP == card.engaged());
-    TEST_ASSERT_FALSE(card.settling());
-}
-
-// ---------------------------------------------------------------------------
-// LightCardState: ringFraction()
-// ---------------------------------------------------------------------------
-
-static void test_ringFraction_brightness50_isHalf(void)
-{
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.brightnessPct = 50;
-    card.sync(s, 0);
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.5f, card.ringFraction());
-}
-
-static void test_ringFraction_kelvinMidRange_isHalf(void)
-{
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.minKelvin = 2000;
-    s.maxKelvin = 6000;
-    s.kelvin = 4000; // midpoint
-    card.sync(s, 0);
-    card.tapButton(LightButtons::Button::COLOUR, 1000); // engages TEMP (mode == TEMP)
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.5f, card.ringFraction());
-}
-
-static void test_ringFraction_hueMode_isHueOver360(void)
-{
-    LightCardState card(true);
-    LightsModel::LightState s = colourState();
-    s.mode = LightsModel::ColorMode::HS; // COLOUR engages HUE directly
-    s.hue = 90;
-    card.sync(s, 1000);
-    card.tapButton(LightButtons::Button::COLOUR, 1000);
-    TEST_ASSERT_TRUE(LightCardState::Engaged::HUE == card.engaged());
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.25f, card.ringFraction());
-}
-
-// ---------------------------------------------------------------------------
-// LightCardState: explicit release() (DialUi calls this when the card ring
-// scrolls off the card)
-// ---------------------------------------------------------------------------
-
-static void test_release_dropsEngagementAndPendingSettleSilently(void)
-{
-    LightCardState card(true);
-    card.sync(colourState(), 0);
-    card.tapButton(LightButtons::Button::BRIGHT, 1000);
-    card.detents(1, 1000); // arms a settle for 1300
-    TEST_ASSERT_TRUE(card.settling());
-
-    card.release();
-    TEST_ASSERT_TRUE(LightCardState::Engaged::NONE == card.engaged());
-    TEST_ASSERT_FALSE(card.settling());
-
-    // The dropped settle never fires afterwards.
-    LightsModel::Command cmd = card.tick(1300);
-    TEST_ASSERT_TRUE(LightsModel::Command::Type::NONE == cmd.type);
-}
-
-int main(int argc, char** argv)
+int main(int, char**)
 {
     UNITY_BEGIN();
 
-    RUN_TEST(test_geom_lamp_returnsSpecCentres);
-    RUN_TEST(test_geom_office_returnsSpecCentres);
-    RUN_TEST(test_geom_office_colourIsZero);
-    RUN_TEST(test_hitTest_lamp_centreHitsEachButton);
-    RUN_TEST(test_hitTest_lamp_edgeOfMarginHits);
-    RUN_TEST(test_hitTest_lamp_justPastMarginMisses);
-    RUN_TEST(test_hitTest_office_centresHit);
-    RUN_TEST(test_hitTest_office_colourNeverReturned);
-    RUN_TEST(test_hitTest_farAway_returnsNone);
-    RUN_TEST(test_hitTest_office_gapBetweenButtons_returnsNone);
-    RUN_TEST(test_label_returnsExpectedStrings);
+    RUN_TEST(test_layout_offFaceConstants);
+    RUN_TEST(test_layout_onFaceConstants);
+    RUN_TEST(test_layout_pageConstants);
+    RUN_TEST(test_layout_presetHues);
 
-    RUN_TEST(test_tapPower_fromOff_setsOnAndReturnsPowerOnCommand);
-    RUN_TEST(test_tapPower_whenInvalid_isIgnored);
-    RUN_TEST(test_tapPower_releasesEngagement);
+    RUN_TEST(test_swatchCentre_firstIsTwelveOClock);
+    RUN_TEST(test_swatchCentre_goesClockwise);
+    RUN_TEST(test_hitSwatch_centresHitTheirOwnIndex);
+    RUN_TEST(test_hitSwatch_edgeOfHitRadiusHitsAndJustPastMisses);
+    RUN_TEST(test_hitSwatch_centreOfFaceMisses);
+    RUN_TEST(test_hitPowerGlyph_withinAndOutsideHitRadius);
 
-    RUN_TEST(test_tapBright_engagesThenReleases);
-    RUN_TEST(test_tapBright_whenUnavailable_isIgnored);
-    RUN_TEST(test_detents_bright_stepsBy5);
-    RUN_TEST(test_detents_bright_clampsAt100);
-    RUN_TEST(test_detents_bright_clampsAt1);
-    RUN_TEST(test_detents_whenNotEngaged_isNoOp);
-    RUN_TEST(test_detents_setsOnLocallyAndArmsSettling);
+    RUN_TEST(test_nearestPreset_exactHuesMapToThemselves);
+    RUN_TEST(test_nearestPreset_roundsToNearest);
+    RUN_TEST(test_nearestPreset_wrapsRoundTheCircle);
 
-    RUN_TEST(test_detents_temp_clampsToLightsMinMax);
+    RUN_TEST(test_pageCount_lampHasThreeOfficeHasTwo);
+    RUN_TEST(test_page_startsOnBrightness);
+    RUN_TEST(test_swipe_forwardWalksPagesAndClampsAtColour);
+    RUN_TEST(test_swipe_backwardClampsAtBrightness);
+    RUN_TEST(test_swipe_officeClampsAtKelvin);
+    RUN_TEST(test_resetPage_returnsToBrightness);
+    RUN_TEST(test_resetPage_leavesPendingSettleAlone);
 
-    RUN_TEST(test_detents_hue_wrapsAt360);
-    RUN_TEST(test_detents_hue_wrapsBelowZero);
+    RUN_TEST(test_detents_brightPage_stepsBy5AndArmsSettle);
+    RUN_TEST(test_detents_brightPage_clampsTo1And100);
+    RUN_TEST(test_detents_kelvinPage_stepsBy100AndClampsToBounds);
+    RUN_TEST(test_detents_colourPage_movesOnePresetPerDetent);
+    RUN_TEST(test_detents_colourPage_wrapsBothWays);
+    RUN_TEST(test_detents_colourPage_fromTempMode_startsAtNearestPresetToHue);
+    RUN_TEST(test_detents_whileOff_isIgnored);
+    RUN_TEST(test_detents_whileUnavailable_isIgnored);
+    RUN_TEST(test_detents_zero_isNoOp);
 
-    RUN_TEST(test_colour_ignoredOnOfficeLayout);
-    RUN_TEST(test_colour_ignoredWhenLightDoesNotSupportIt);
-    RUN_TEST(test_colour_cycle_tempMode_goesTempThenHueThenNone);
-    RUN_TEST(test_colour_cycle_hsMode_engagesHueDirectlyFromNone);
-    RUN_TEST(test_colour_engageHue_zeroSaturation_seedsTo100);
-
-    RUN_TEST(test_tapBright_reTapWithPendingSettle_flushesSettleCommand);
-    RUN_TEST(test_tapColour_thirdTapWithPendingSettle_flushesSettleCommand);
-    RUN_TEST(test_tapBright_reTapWithNoPendingSettle_returnsNone);
+    RUN_TEST(test_tapOn_fromOff_switchesOnAndLandsOnBrightness);
+    RUN_TEST(test_tapOn_whenAlreadyOn_isIgnored);
+    RUN_TEST(test_tapOn_whenNoStateYet_isIgnored);
+    RUN_TEST(test_powerOff_switchesOffAndReturnsPowerOffCommand);
+    RUN_TEST(test_powerOff_dropsAPendingSettle);
 
     RUN_TEST(test_settle_noCommandBeforeDeadline);
-    RUN_TEST(test_settle_emitsExactlyOneCommandAtDeadline);
-    RUN_TEST(test_settle_rearmsFromLastDetent);
+    RUN_TEST(test_settle_emitsExactlyOneBrightCommandAtDeadline);
+    RUN_TEST(test_settle_rearmsFromTheLastDetent);
+    RUN_TEST(test_settle_kelvinPageEmitsTempCommand);
+    RUN_TEST(test_settle_colourPageEmitsHueCommandWithPresetHueAndFullSaturation);
+    RUN_TEST(test_settle_survivesAPageSwipeAndStillSendsTheEditedField);
 
-    RUN_TEST(test_idle_releasesSilentlyAt10s);
-    RUN_TEST(test_idle_notYetReleasedJustBeforeDeadline);
-    RUN_TEST(test_idle_detentRefreshesTimer);
+    RUN_TEST(test_selectPreset_armsSettleAndSendsThatPresetsHue);
+    RUN_TEST(test_selectPreset_whileOff_isIgnored);
+    RUN_TEST(test_selectPreset_outOfRangeIndex_isIgnored);
 
-    RUN_TEST(test_sync_duringSettle_keepsLocalEngagedValue);
-    RUN_TEST(test_sync_duringSettle_adoptsOtherFields);
-    RUN_TEST(test_sync_afterSettled_adoptsEngagedFieldToo);
+    RUN_TEST(test_preset_followsHaHueWhenIdle);
+    RUN_TEST(test_preset_isThePendingOneWhileSettling);
+    RUN_TEST(test_kelvinLiveAndColourLive_followTheReportedMode);
+    RUN_TEST(test_colourEdit_makesColourLiveImmediately);
+    RUN_TEST(test_kelvinEdit_makesKelvinLiveImmediately);
+    RUN_TEST(test_ringFraction_isBrightnessOver100);
+
+    RUN_TEST(test_sync_duringSettle_keepsTheLocallyEditedField);
+    RUN_TEST(test_sync_duringSettle_adoptsEverythingElse);
+    RUN_TEST(test_sync_afterSettleConfirmed_adoptsHaAgain);
     RUN_TEST(test_sync_duringSettle_reclampsKelvinToNewBounds);
 
     RUN_TEST(test_confirmHold_power_staleEchoBeforeDeadline_keepsLocalOn);
     RUN_TEST(test_confirmHold_power_staleEchoAfterDeadline_adoptsHa);
-    RUN_TEST(test_confirmHold_power_matchingEchoEndsHoldEarly);
+    RUN_TEST(test_confirmHold_power_matchingEchoEndsTheHoldEarly);
     RUN_TEST(test_confirmHold_bright_keepsSentPctUntilEchoed);
-    RUN_TEST(test_confirmHold_powerOffThenBrightEdit_keepsOptimisticOn);
     RUN_TEST(test_confirmHold_temp_kelvinWithinToleranceConfirms);
     RUN_TEST(test_confirmHold_temp_kelvinOutsideToleranceKeepsLocal);
     RUN_TEST(test_confirmHold_hue_withinToleranceConfirms);
     RUN_TEST(test_confirmHold_hue_outsideToleranceKeepsLocal);
-    RUN_TEST(test_confirmHold_flushedReleaseTapAlsoHolds);
-
-    RUN_TEST(test_tapColour_tempToHue_flushesPendingTempCommand);
-    RUN_TEST(test_tapBright_fromHue_flushesPendingHueCommand);
-    RUN_TEST(test_tapColour_brightToTemp_flushesPendingBrightCommand);
-
-    RUN_TEST(test_release_dropsEngagementAndPendingSettleSilently);
-
-    RUN_TEST(test_ringFraction_brightness50_isHalf);
-    RUN_TEST(test_ringFraction_kelvinMidRange_isHalf);
-    RUN_TEST(test_ringFraction_hueMode_isHueOver360);
+    RUN_TEST(test_confirmHold_powerOffThenTapOn_keepsOptimisticOn);
+    RUN_TEST(test_confirmHold_duringSettleAfterPowerOff_keepsOptimisticOn);
 
     return UNITY_END();
 }

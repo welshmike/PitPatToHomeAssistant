@@ -2,6 +2,8 @@
 
 #include <math.h>
 
+#include "LightLayout.h"
+
 namespace
 {
 
@@ -42,6 +44,17 @@ int clampInt(int v, int lo, int hi)
 
 LightCardState::LightCardState(bool hasColour) : m_hasColour(hasColour)
 {
+}
+
+void LightCardState::resetPage()
+{
+    m_page = Page::BRIGHT;
+}
+
+void LightCardState::swipe(int dir)
+{
+    const int last = static_cast<int>(pageCount()) - 1;
+    m_page = static_cast<Page>(clampInt(static_cast<int>(m_page) + dir, 0, last));
 }
 
 bool LightCardState::confirmedBy(const LightsModel::LightState& s) const
@@ -103,7 +116,8 @@ void LightCardState::sync(const LightsModel::LightState& s, uint32_t nowMs)
     LightsModel::LightState merged = s;
 
     // Awaiting confirmation: keep the fields the in-flight command carried.
-    // BRIGHT/TEMP/HUE commands all set state:ON, so `on` is one of them.
+    // BRIGHT/TEMP/HUE commands all set state:ON, so `on` is one of them, and
+    // TEMP/HUE also decide the light's colour mode.
     switch (m_confirmHold.type)
     {
     case LightsModel::Command::Type::POWER:
@@ -115,11 +129,13 @@ void LightCardState::sync(const LightsModel::LightState& s, uint32_t nowMs)
         break;
     case LightsModel::Command::Type::TEMP:
         merged.on = m_confirmHold.on;
+        merged.mode = LightsModel::ColorMode::TEMP;
         merged.kelvin = static_cast<uint16_t>(
             clampInt(m_confirmHold.kelvin, merged.minKelvin, merged.maxKelvin));
         break;
     case LightsModel::Command::Type::HUE:
         merged.on = m_confirmHold.on;
+        merged.mode = LightsModel::ColorMode::HS;
         merged.hue = m_confirmHold.hue;
         merged.sat = m_confirmHold.sat;
         break;
@@ -133,25 +149,28 @@ void LightCardState::sync(const LightsModel::LightState& s, uint32_t nowMs)
     if (m_settling)
     {
         // The pending command carries "state":"ON", so keep the optimistic
-        // on too -- otherwise a still-live POWER-off hold (Power then Bright
-        // within 1.5 s) would paint OFF while the user is dialling.
+        // on too -- otherwise a still-live POWER-off hold (Power then a
+        // brightness edit within 1.5 s) would paint OFF while the user is
+        // dialling.
         merged.on = m_view.on;
-        switch (m_engaged)
+        switch (m_pending)
         {
-        case Engaged::BRIGHT:
+        case LightsModel::Command::Type::BRIGHT:
             merged.brightnessPct = m_view.brightnessPct;
             break;
-        case Engaged::TEMP:
+        case LightsModel::Command::Type::TEMP:
+            merged.mode = m_view.mode;
             // Re-clamp into the freshly-adopted [minKelvin, maxKelvin] in case
             // sync() narrowed the bulb's range out from under the pending edit.
             merged.kelvin = static_cast<uint16_t>(
                 clampInt(m_view.kelvin, merged.minKelvin, merged.maxKelvin));
             break;
-        case Engaged::HUE:
+        case LightsModel::Command::Type::HUE:
+            merged.mode = m_view.mode;
             merged.hue = m_view.hue;
             merged.sat = m_view.sat;
             break;
-        case Engaged::NONE:
+        default:
             break;
         }
     }
@@ -159,89 +178,40 @@ void LightCardState::sync(const LightsModel::LightState& s, uint32_t nowMs)
     m_view = merged;
 }
 
-void LightCardState::release()
-{
-    m_engaged = Engaged::NONE;
-    m_settling = false;
-}
-
-LightsModel::Command LightCardState::tapButton(LightButtons::Button b, uint32_t nowMs)
+LightsModel::Command LightCardState::tapOn(uint32_t nowMs)
 {
     LightsModel::Command cmd; // Type::NONE
-
-    switch (b)
+    // valid (not available) is the gate: LightsModel::parseLightState() never
+    // sets available without valid, and a light HA currently calls
+    // unavailable can still be worth a blind switch-on.
+    if (!m_view.valid || m_view.on)
     {
-    case LightButtons::Button::NONE:
-        break;
-
-    case LightButtons::Button::POWER:
-        if (!m_view.valid)
-        {
-            break;
-        }
-        m_view.on = !m_view.on;
-        release();
-        m_lastInput = nowMs;
-        cmd.type = LightsModel::Command::Type::POWER;
-        cmd.on = m_view.on;
-        break;
-
-    case LightButtons::Button::BRIGHT:
-    {
-        if (!m_view.available)
-        {
-            break;
-        }
-        m_lastInput = nowMs;
-        // Leaving a control -- releasing BRIGHT, or taking engagement over
-        // from TEMP/HUE -- flushes that control's pending settle rather than
-        // dropping it. m_settling is only ever set while engaged, so this
-        // always describes the *old* field.
-        if (m_settling)
-        {
-            cmd = buildSettleCommand();
-        }
-        const bool wasBright = (m_engaged == Engaged::BRIGHT);
-        release();
-        if (!wasBright)
-        {
-            m_engaged = Engaged::BRIGHT;
-        }
-        break;
+        return cmd;
     }
 
-    case LightButtons::Button::COLOUR:
+    m_view.on = true;
+    resetPage();
+    cmd.type = LightsModel::Command::Type::POWER;
+    cmd.on = true;
+    beginConfirmHold(cmd, nowMs);
+    return cmd;
+}
+
+LightsModel::Command LightCardState::powerOff(uint32_t nowMs)
+{
+    LightsModel::Command cmd; // Type::NONE
+    if (!m_view.valid)
     {
-        bool colourSupported = m_hasColour && m_view.supportsColor;
-        if (!colourSupported || !m_view.available)
-        {
-            break;
-        }
-        m_lastInput = nowMs;
-        // TEMP -> HUE flushes TEMP's pending settle exactly as the third-tap
-        // release flushes HUE's; only release() drops one silently.
-        if (m_settling)
-        {
-            cmd = buildSettleCommand();
-        }
-        const Engaged before = m_engaged;
-        release();
-        if (before == Engaged::TEMP)
-        {
-            m_engaged = Engaged::HUE;
-        }
-        else if (before != Engaged::HUE) // HUE: third tap, stay released
-        {
-            m_engaged = (m_view.mode != LightsModel::ColorMode::HS) ? Engaged::TEMP : Engaged::HUE;
-        }
-        if (m_engaged == Engaged::HUE && m_view.sat <= 0.0f)
-        {
-            m_view.sat = 100.0f;
-        }
-        break;
-    }
+        return cmd;
     }
 
+    m_view.on = false;
+    // Switching off wins over whatever was being dialled: drop the settle
+    // rather than sending a command that would turn the light back on.
+    m_settling = false;
+    m_pending = LightsModel::Command::Type::NONE;
+    cmd.type = LightsModel::Command::Type::POWER;
+    cmd.on = false;
     beginConfirmHold(cmd, nowMs);
     return cmd;
 }
@@ -249,69 +219,94 @@ LightsModel::Command LightCardState::tapButton(LightButtons::Button b, uint32_t 
 void LightCardState::detents(int n, uint32_t nowMs)
 {
     // n == 0 is no movement at all: nothing to change, and nothing worth
-    // arming a settle (or an idle refresh) for.
-    if (m_engaged == Engaged::NONE || n == 0)
+    // arming a settle for.
+    if (n == 0 || !editable())
     {
         return;
     }
 
-    m_lastInput = nowMs;
-    m_lastDetent = nowMs;
-    m_settling = true;
-    m_view.on = true;
-
-    switch (m_engaged)
+    switch (m_page)
     {
-    case Engaged::BRIGHT:
+    case Page::BRIGHT:
     {
-        int v = static_cast<int>(m_view.brightnessPct) + n * BRIGHT_STEP;
+        const int v = static_cast<int>(m_view.brightnessPct) + n * BRIGHT_STEP;
         m_view.brightnessPct = static_cast<uint8_t>(clampInt(v, 1, 100));
+        m_pending = LightsModel::Command::Type::BRIGHT;
         break;
     }
-    case Engaged::TEMP:
+    case Page::KELVIN:
     {
         int v = static_cast<int>(m_view.kelvin) + n * KELVIN_STEP;
         v = clampInt(v, static_cast<int>(m_view.minKelvin), static_cast<int>(m_view.maxKelvin));
         m_view.kelvin = static_cast<uint16_t>(v);
+        // The command about to go out puts the light in temperature mode, so
+        // the page stops drawing "not active" straight away.
+        m_view.mode = LightsModel::ColorMode::TEMP;
+        m_pending = LightsModel::Command::Type::TEMP;
         break;
     }
-    case Engaged::HUE:
+    case Page::COLOUR:
     {
-        float v = fmodf(m_view.hue + static_cast<float>(n) * HUE_STEP, 360.0f);
-        if (v < 0.0f)
+        // Start from the preset the light is already nearest (preset() falls
+        // back to nearestPreset(view().hue) when nothing is pending), then
+        // step, wrapping both ways.
+        const int count = static_cast<int>(LightLayout::kPresetCount);
+        int idx = (static_cast<int>(preset()) + n) % count;
+        if (idx < 0)
         {
-            v += 360.0f;
+            idx += count;
         }
-        m_view.hue = v;
+        m_preset = static_cast<uint8_t>(idx);
+        m_view.hue = LightLayout::kPresetHues[m_preset];
+        m_view.sat = 100.0f;
+        m_view.mode = LightsModel::ColorMode::HS;
+        m_pending = LightsModel::Command::Type::HUE;
         break;
     }
-    case Engaged::NONE:
-        break;
     }
+
+    m_lastEdit = nowMs;
+    m_settling = true;
+}
+
+void LightCardState::selectPreset(uint8_t i, uint32_t nowMs)
+{
+    if (i >= LightLayout::kPresetCount || !editable())
+    {
+        return;
+    }
+
+    m_preset = i;
+    m_view.hue = LightLayout::kPresetHues[i];
+    m_view.sat = 100.0f;
+    m_view.mode = LightsModel::ColorMode::HS;
+    m_pending = LightsModel::Command::Type::HUE;
+    m_lastEdit = nowMs;
+    m_settling = true;
 }
 
 LightsModel::Command LightCardState::buildSettleCommand() const
 {
     LightsModel::Command c;
-    switch (m_engaged)
+    switch (m_pending)
     {
-    case Engaged::BRIGHT:
+    case LightsModel::Command::Type::BRIGHT:
         c.type = LightsModel::Command::Type::BRIGHT;
         c.on = true;
         c.pct = m_view.brightnessPct;
         break;
-    case Engaged::TEMP:
+    case LightsModel::Command::Type::TEMP:
         c.type = LightsModel::Command::Type::TEMP;
         c.on = true;
         c.kelvin = m_view.kelvin;
         break;
-    case Engaged::HUE:
+    case LightsModel::Command::Type::HUE:
         c.type = LightsModel::Command::Type::HUE;
         c.on = true;
-        c.hue = m_view.hue;
-        c.sat = m_view.sat;
+        c.hue = LightLayout::kPresetHues[m_preset];
+        c.sat = 100.0f;
         break;
-    case Engaged::NONE:
+    default:
         break;
     }
     return c;
@@ -321,46 +316,43 @@ LightsModel::Command LightCardState::tick(uint32_t nowMs)
 {
     LightsModel::Command cmd; // Type::NONE
 
-    if (m_engaged == Engaged::NONE)
+    if (!m_settling || !elapsedAtLeast(nowMs, m_lastEdit, SETTLE_MS))
     {
         return cmd;
     }
 
-    if (m_settling && elapsedAtLeast(nowMs, m_lastDetent, SETTLE_MS))
-    {
-        cmd = buildSettleCommand();
-        m_settling = false;
-        beginConfirmHold(cmd, nowMs);
-        return cmd;
-    }
-
-    if (elapsedAtLeast(nowMs, m_lastInput, IDLE_RELEASE_MS))
-    {
-        release();
-    }
-
+    cmd = buildSettleCommand();
+    m_settling = false;
+    beginConfirmHold(cmd, nowMs);
     return cmd;
+}
+
+uint8_t LightCardState::preset() const
+{
+    const bool pendingHue = m_settling && m_pending == LightsModel::Command::Type::HUE;
+    const bool holdingHue = m_confirmHold.type == LightsModel::Command::Type::HUE;
+    if (pendingHue || holdingHue)
+    {
+        return m_preset;
+    }
+    return LightLayout::nearestPreset(m_view.hue);
 }
 
 float LightCardState::ringFraction() const
 {
-    switch (m_engaged)
-    {
-    case Engaged::TEMP:
-    {
-        float lo = static_cast<float>(m_view.minKelvin);
-        float hi = static_cast<float>(m_view.maxKelvin);
-        if (hi <= lo)
-        {
-            return 0.0f;
-        }
-        return clamp01((static_cast<float>(m_view.kelvin) - lo) / (hi - lo));
-    }
-    case Engaged::HUE:
-        return clamp01(m_view.hue / 360.0f);
-    case Engaged::BRIGHT:
-    case Engaged::NONE:
-    default:
-        return clamp01(static_cast<float>(m_view.brightnessPct) / 100.0f);
-    }
+    return clamp01(static_cast<float>(m_view.brightnessPct) / 100.0f);
 }
+
+// --- Plan 8 Task 3 removes this ------------------------------------------
+LightsModel::Command LightCardState::tapButton(LightButtons::Button b, uint32_t nowMs)
+{
+    // The old three-button face is gone; only power still has a v2 meaning,
+    // so the pre-rewrite DialUi keeps a working power button and nothing
+    // else until Task 3 replaces that view.
+    if (b != LightButtons::Button::POWER)
+    {
+        return LightsModel::Command();
+    }
+    return m_view.on ? powerOff(nowMs) : tapOn(nowMs);
+}
+// -------------------------------------------------------------------------
