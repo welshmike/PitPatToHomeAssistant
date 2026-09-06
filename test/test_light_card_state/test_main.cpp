@@ -50,6 +50,25 @@ static LightCardState onCard()
     return card;
 }
 
+// The Office card (no Colour page), on an on, available light.
+static LightCardState onOfficeCard()
+{
+    LightCardState card(false);
+    LightsModel::LightState s = colourOn();
+    s.supportsColor = false;
+    card.sync(s, 1000);
+    return card;
+}
+
+// An on colour card sitting on its Colour page.
+static LightCardState onColourPageCard()
+{
+    LightCardState card = onCard();
+    card.swipe(1);
+    card.swipe(1);
+    return card;
+}
+
 // ---------------------------------------------------------------------------
 // LightLayout: constants
 // ---------------------------------------------------------------------------
@@ -199,7 +218,7 @@ static void test_page_startsOnBrightness(void)
 
 static void test_swipe_forwardWalksPagesAndClampsAtColour(void)
 {
-    LightCardState card(true);
+    LightCardState card = onCard();
     card.swipe(1);
     TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
     card.swipe(1);
@@ -210,7 +229,7 @@ static void test_swipe_forwardWalksPagesAndClampsAtColour(void)
 
 static void test_swipe_backwardClampsAtBrightness(void)
 {
-    LightCardState card(true);
+    LightCardState card = onCard();
     card.swipe(1);
     card.swipe(-1);
     TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == card.page());
@@ -220,16 +239,26 @@ static void test_swipe_backwardClampsAtBrightness(void)
 
 static void test_swipe_officeClampsAtKelvin(void)
 {
-    LightCardState card(false);
+    LightCardState card = onOfficeCard();
     card.swipe(1);
     TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
     card.swipe(1);
     TEST_ASSERT_TRUE(LightCardState::Page::KELVIN == card.page());
 }
 
-static void test_resetPage_returnsToBrightness(void)
+// The off face is one switch-on target with no pages behind it, so a swipe
+// there must not leave the card parked on a page nobody can see.
+static void test_swipe_whileOff_isIgnored(void)
 {
     LightCardState card(true);
+    card.sync(colourState(), 1000); // off
+    card.swipe(1);
+    TEST_ASSERT_TRUE(LightCardState::Page::BRIGHT == card.page());
+}
+
+static void test_resetPage_returnsToBrightness(void)
+{
+    LightCardState card = onCard();
     card.swipe(1);
     card.swipe(1);
     card.resetPage();
@@ -476,9 +505,7 @@ static void test_settle_survivesAPageSwipeAndStillSendsTheEditedField(void)
 
 static void test_selectPreset_armsSettleAndSendsThatPresetsHue(void)
 {
-    LightCardState card = onCard();
-    card.swipe(1);
-    card.swipe(1);
+    LightCardState card = onColourPageCard();
     card.selectPreset(3, 1000);
     TEST_ASSERT_EQUAL_UINT8(3, card.preset());
     TEST_ASSERT_TRUE(card.settling());
@@ -492,13 +519,35 @@ static void test_selectPreset_whileOff_isIgnored(void)
 {
     LightCardState card(true);
     card.sync(colourState(), 1000); // off
+    card.selectPreset(3, 1000); // page is BRIGHT and the light is off: doubly ignored
+    TEST_ASSERT_FALSE(card.settling());
+}
+
+// Only the Colour page draws swatches: the same coordinates on the
+// Brightness or Kelvin page are bare background.
+static void test_selectPreset_offTheColourPage_isIgnored(void)
+{
+    LightCardState card = onCard(); // BRIGHT
+    card.selectPreset(3, 1000);
+    TEST_ASSERT_FALSE(card.settling());
+    card.swipe(1); // KELVIN
+    card.selectPreset(3, 1000);
+    TEST_ASSERT_FALSE(card.settling());
+}
+
+// Office has no Colour page at all, so no swatch tap can ever land.
+static void test_selectPreset_onACardWithoutColour_isIgnored(void)
+{
+    LightCardState card = onOfficeCard();
+    card.swipe(1);
+    card.swipe(1); // clamps at KELVIN
     card.selectPreset(3, 1000);
     TEST_ASSERT_FALSE(card.settling());
 }
 
 static void test_selectPreset_outOfRangeIndex_isIgnored(void)
 {
-    LightCardState card = onCard();
+    LightCardState card = onColourPageCard();
     card.selectPreset(8, 1000);
     TEST_ASSERT_FALSE(card.settling());
 }
@@ -756,6 +805,7 @@ int main(int, char**)
     RUN_TEST(test_swipe_forwardWalksPagesAndClampsAtColour);
     RUN_TEST(test_swipe_backwardClampsAtBrightness);
     RUN_TEST(test_swipe_officeClampsAtKelvin);
+    RUN_TEST(test_swipe_whileOff_isIgnored);
     RUN_TEST(test_resetPage_returnsToBrightness);
     RUN_TEST(test_resetPage_leavesPendingSettleAlone);
 
@@ -784,6 +834,8 @@ int main(int, char**)
 
     RUN_TEST(test_selectPreset_armsSettleAndSendsThatPresetsHue);
     RUN_TEST(test_selectPreset_whileOff_isIgnored);
+    RUN_TEST(test_selectPreset_offTheColourPage_isIgnored);
+    RUN_TEST(test_selectPreset_onACardWithoutColour_isIgnored);
     RUN_TEST(test_selectPreset_outOfRangeIndex_isIgnored);
 
     RUN_TEST(test_preset_followsHaHueWhenIdle);

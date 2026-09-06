@@ -2,7 +2,6 @@
 
 #include <stdint.h>
 
-#include "LightButtons.h" // Plan 8 Task 3 removes this
 #include "LightsModel.h"
 
 // Pure, Arduino-free interaction state machine for one Lights card (Office
@@ -61,7 +60,9 @@ public:
     void resetPage();
 
     // Moves `dir` pages (a left swipe is +1), clamped to [BRIGHT,
-    // pageCount()-1] — the ends do not wrap.
+    // pageCount()-1] — the ends do not wrap. Ignored while the light is off:
+    // the off face is a single switch-on target with no pages behind it, so a
+    // swipe there must not leave the card on a page nobody can see.
     void swipe(int dir);
 
     // Adopts HA's light state into view(), subject to two overlapping
@@ -115,14 +116,18 @@ public:
     // command that is about to go out.
     void detents(int n, uint32_t nowMs);
 
-    // Tap on swatch `i` on the Colour page. Same gating as detents(); an
-    // index outside 0..LightLayout::kPresetCount-1 is ignored.
+    // Tap on swatch `i` on the Colour page. Same gating as detents(), plus:
+    // only the Colour page of a colour-capable card has swatches at all, so a
+    // call while another page is showing (or on Office) is ignored. An index
+    // outside 0..LightLayout::kPresetCount-1 is ignored too.
     void selectPreset(uint8_t i, uint32_t nowMs);
 
     // Polls the settle timer. If a settle is due (>=300 ms since the last
     // detent or preset tap), emits exactly one command for the edited field
-    // and clears settling(). Otherwise returns a NONE command. There is no
-    // idle release: the pages are always live.
+    // and clears settling() (and the pending edit with it). Otherwise returns
+    // a NONE command. There is no idle release: the pages are always live.
+    // DialUi polls this on BOTH cards every frame, whatever is on screen, so
+    // an edit made a moment before the card was left still goes out.
     LightsModel::Command tick(uint32_t nowMs);
 
     bool settling() const { return m_settling; }
@@ -148,16 +153,6 @@ public:
 
     // 0..1 brightness, for the value ring on the Brightness page.
     float ringFraction() const;
-
-    // --- Plan 8 Task 3 removes this ------------------------------------
-    // Transitional shims so the not-yet-rewritten DialUi lights view keeps
-    // compiling against v2. Task 3 replaces that view (and LightButtons.h)
-    // with the page-based one, at which point all of this goes.
-    enum class Engaged : uint8_t { NONE, BRIGHT, TEMP, HUE };
-    Engaged engaged() const { return Engaged::NONE; }
-    LightsModel::Command tapButton(LightButtons::Button b, uint32_t nowMs);
-    void release() { resetPage(); }
-    // -------------------------------------------------------------------
 
 private:
     LightsModel::Command buildSettleCommand() const;

@@ -1,10 +1,4 @@
-// Must precede "DialUi.h" (which pulls in M5Dial.h -> M5Unified.h -> M5GFX.h):
 #include <math.h>
-// M5GFX's platforms/esp32/common.hpp only compiles in the
-// DataWrapperT<fs::LittleFSFS> specialization that drawPngFile(LittleFS, ...)
-// needs (M1) when _LITTLEFS_H_ is already defined at the point it's
-// processed — LittleFS.h has to be included before that chain, not after it.
-#include <LittleFS.h>
 #include "DialUi.h"
 #if HAS_DIAL_UI
 
@@ -15,29 +9,14 @@
 
 #include "DialFormat.h"
 #include "TreadmillData.h"
-#include "ClockFace.h"
-#include "Geo.h"
+#include "DialClockView.h"
+#include "DialFlightsView.h"
+#include "DialGlyphs.h"
+#include "DialLightsView.h"
+#include "DialMenuView.h"
+#include "LightLayout.h"
 
 namespace {
-// Thick line without alpha blending: LovyanGFX's anti-aliased wide-line
-// routine reads pixels back through the palette, which faults on a 4-bit
-// palette sprite (LoadProhibited in copy_palette_affine, 2026-09-04). Draws
-// `widthPx` parallel 1-px lines offset along the perpendicular instead.
-void thickLine(LovyanGFX& gfx, int x0, int y0, int x1, int y1, int widthPx, uint32_t color)
-{
-    if (widthPx <= 1) { gfx.drawLine(x0, y0, x1, y1, color); return; }
-    const float dx = (float)(x1 - x0), dy = (float)(y1 - y0);
-    const float len = sqrtf(dx * dx + dy * dy);
-    if (len < 0.5f) { gfx.fillCircle(x0, y0, widthPx / 2, color); return; }
-    const float px = -dy / len, py = dx / len; // unit perpendicular
-    const float half = (widthPx - 1) / 2.0f;
-    for (int i = 0; i < widthPx; ++i)
-    {
-        const float o = -half + i;
-        gfx.drawLine((int)lroundf(x0 + px * o), (int)lroundf(y0 + py * o),
-                     (int)lroundf(x1 + px * o), (int)lroundf(y1 + py * o), color);
-    }
-}
 
 // Three 8px status dots along the top: BLE, WiFi, MQTT, left to right.
 constexpr int32_t kDotY      = 14;
@@ -45,57 +24,6 @@ constexpr int32_t kDotRadius = 4; // 8px diameter
 constexpr int32_t kBleDotX   = 96;
 constexpr int32_t kWifiDotX  = 120;
 constexpr int32_t kMqttDotX  = 144;
-
-// Clock card layout (spec 4.8), centred on the same 240x240 canvas as the
-// speed ring.
-constexpr int32_t kClockR0        = 104; // tick inner radius
-constexpr int32_t kClockR1        = 112; // tick outer radius (r0=100 at 12/3/6/9, longer ticks)
-constexpr int32_t kClockR0Long    = 100;
-constexpr int32_t kHourHandLen    = 56;
-constexpr int32_t kMinuteHandLen  = 82;
-constexpr int32_t kSecondHandLen  = 96;
-constexpr float    kHourHandW      = 5.0f;
-constexpr float    kMinuteHandW    = 3.0f;
-constexpr float    kSecondHandW    = 1.0f;
-constexpr int32_t kClockCentreDotR = 4;
-constexpr int32_t kClockSecondDotR = 2;
-constexpr int32_t kClockDateY      = 168; // date when valid, "waiting for time" hint when not
-
-// Flights card layout (spec 4.9), centred on the same 240x240 canvas
-// (centre x=120, reusing kRingCx/kRingCy where a row sits on that centre).
-constexpr int32_t kFlightsLogoX         = 60;  // (240 - 120-wide sprite) / 2
-// The top of the card is a white band (0..kFlightsBandH) so airline logos —
-// transparent PNGs drawn for light backgrounds — sit on white edge to edge
-// (Mike, 2026-09-06). The logo sprite is white-backed and lands inside it.
-constexpr int32_t kFlightsBandH         = 58;
-constexpr int32_t kFlightsLogoY         = 8;   // sprite is 48 tall -> bottom at 56, inside the band
-constexpr int32_t kFlightsFallbackY     = 30;  // operatorName/callsign (dark on the white band) when there's no logo
-constexpr int32_t kFlightsCallsignY     = 76;  // "callsign - type"
-constexpr int32_t kFlightsRouteY        = 112; // "LHR -> JFK" / "route unknown"
-constexpr int32_t kFlightsCityY         = 134; // "London -> New York" (fc/tc), when known
-constexpr int32_t kFlightsAltY          = 152; // "12,000 ft - 450 kt"
-constexpr int32_t kFlightsDistY         = 172; // "3.1 mi NE"
-constexpr int32_t kFlightsHintY         = 214; // page dots row (one per aircraft, up to 6)
-constexpr int32_t kFlightsEmptyCaptionY = 150; // "within N mi" under "no aircraft nearby"
-constexpr int32_t kFlightsStaleDotX     = 120;
-constexpr int32_t kFlightsStaleDotY     = 63;  // just under the white band, above the callsign row
-constexpr int32_t kFlightsStaleDotR     = 3;
-constexpr int32_t kFlightsDotR          = 3;  // page dot radius
-constexpr int32_t kFlightsDotSpacing    = 12; // centre-to-centre spacing between page dots
-
-// Lights card layout (Plan 6, spec 4.10) on the same 240x240 canvas: the
-// title sits above the centred value/state, the caption just under it, and
-// the on-screen buttons come from LightButtons::geom() (which is sized to
-// clear the value ring's 108-118 track). The big value reuses the ring
-// centre rather than kCentreY so it sits inside the ring, not above it.
-constexpr int32_t kLightTitleY   = 40;
-constexpr int32_t kLightCaptionY = 160;
-// Gap between the Font7 brightness digits and the Font4 "%" drawn beside
-// them: Font7 is a 7-segment font whose only glyphs are space, 0-9, ':',
-// '.' and '-' (see Font7srle.h), so a '%' inside a Font7 string would print
-// as a blank 12px cell. The digits and the percent sign are therefore drawn
-// as two strings in two fonts, together centred on kRingCx.
-constexpr int32_t kLightPctGap   = 4;
 
 // Speed ring geometry, centred on the 240x240 canvas.
 constexpr int32_t kRingCx    = 120;
@@ -144,33 +72,6 @@ constexpr int32_t kSelectorTitleY = 60;
 constexpr int32_t kSelectorMphY   = 140;
 constexpr int32_t kSelectorHint1Y = 196;
 constexpr int32_t kSelectorHint2Y = 214;
-
-// Formats a non-negative integer with comma thousands separators by hand
-// (spec 4.9: "12,000 ft", not "12000 ft") — no locale, no String, no heap.
-// Truncates safely if `out` is too small; always NUL-terminates within n.
-void formatThousands(int value, char* out, size_t n)
-{
-    if (value < 0)
-    {
-        value = 0;
-    }
-    char digits[12];
-    const int len = snprintf(digits, sizeof(digits), "%d", value);
-    int outPos = 0;
-    for (int i = 0; i < len && outPos < static_cast<int>(n) - 1; ++i)
-    {
-        if (i > 0 && (len - i) % 3 == 0)
-        {
-            out[outPos++] = ',';
-            if (outPos >= static_cast<int>(n) - 1)
-            {
-                break;
-            }
-        }
-        out[outPos++] = digits[i];
-    }
-    out[outPos] = '\0';
-}
 
 } // namespace
 
@@ -263,13 +164,14 @@ void DialUi::tick(uint32_t nowMs)
     // — which is exactly what FlightsAutoShow's beltIdle argument means.
     {
         // One Screen per desk card, plus DISCONNECTED (the Treadmill card
-        // with no belt): adding a card to the ring means adding its screen
-        // here, or the belt-idle test silently stops covering it.
+        // with no belt) and MENU (a card-level overlay, not a belt screen):
+        // adding a card to the ring means adding its screen here, or the
+        // belt-idle test silently stops covering it.
         static_assert(static_cast<int>(CardId::COUNT) == 5, "update beltIdle card list in DialUi::tick");
         const bool beltIdle =
             (screenNow == Screen::DISCONNECTED || screenNow == Screen::CLOCK ||
              screenNow == Screen::FLIGHTS || screenNow == Screen::LIGHT_OFFICE ||
-             screenNow == Screen::LIGHT_LAMP);
+             screenNow == Screen::LIGHT_LAMP || screenNow == Screen::MENU);
         // The count is only evidence while the snapshot is actually live:
         // stale (HA quiet) or offline (MQTT down) data is passed as
         // dataValid=false, which the state machine treats as zero aircraft.
@@ -308,23 +210,10 @@ void DialUi::tick(uint32_t nowMs)
         tickFlights();
     }
 
-    // Lights cards (Plan 6): same shape as the flights housekeeping above —
-    // pull HA state at most every kLightsSnapIntervalMs and let the visible
-    // card's settle/idle timers run.
-    if (screenNow == Screen::LIGHT_OFFICE || screenNow == Screen::LIGHT_LAMP)
-    {
-        tickLights(nowMs);
-    }
-    else
-    {
-        // Some other screen (CONNECTING/STARTING/RUNNING/SELECTOR/another
-        // card) has taken over: drop any engagement on both light cards so a
-        // pending settle can't fire a stale command long after the card left
-        // the screen. releaseLightCards() is cheap and a no-op when nothing
-        // is engaged/settling, so paying for it on every non-light tick is
-        // fine.
-        releaseLightCards();
-    }
+    // Lights cards (Plan 6, spec 4.12): same shape as pollFlights() above —
+    // runs on every tick, whatever is on screen, so an edit made a moment
+    // before the ring left the card still goes out 300 ms later.
+    tickLights(nowMs);
 
     if (nowMs - m_lastRenderMs < kRenderIntervalMs)
     {
@@ -338,15 +227,18 @@ void DialUi::handleInput(uint32_t nowMs)
 {
     const long encoderCount = M5Dial.Encoder.read();
     const auto touch = M5Dial.Touch.getDetail();
-    // BtnA wraps the Dial's single side button; wasClicked() is a one-tick
-    // edge (auto-clears), which is what DialInput's btnClicked parameter
-    // expects.
+    // BtnA wraps the Dial's single side button. wasClicked() is the instant
+    // press-and-release edge, which is what the belt's emergency stop wants
+    // (btnStop). wasSingleClicked() is the same press decided only after
+    // M5Unified's multi-click window (~350 ms) and wasHold() fires at 500 ms
+    // — the pair that drives the card menu and the jump home (spec 4.12).
+    // All three are one-tick edges that auto-clear.
     const bool btnClicked = M5Dial.BtnA.wasClicked();
+    const bool btnSingleClicked = M5Dial.BtnA.wasSingleClicked();
+    const bool btnHeld = M5Dial.BtnA.wasHold();
 
-    // Task 3 wires the real single-click/hold reads; for now these two new
-    // inputs are always false so the device build keeps compiling.
     const DialEvents ev = m_input.tick(encoderCount, touch.isPressed(), touch.x, touch.y,
-                                        btnClicked, false, false, nowMs);
+                                        btnClicked, btnSingleClicked, btnHeld, nowMs);
     m_holdProgress = ev.holdProgress;
 
     // Keep the screen awake through an active walk even with no touch/encoder
@@ -358,21 +250,27 @@ void DialUi::handleInput(uint32_t nowMs)
 
     applyBrightness();
 
-    // Selector housekeeping (spec 4.7): Connecting/Starting/Running(paused)
-    // always win over an open selector, so close it as soon as any of those
-    // becomes true — silently, no beep — before resolving the screen below.
-    // Otherwise a stale selector (opened before a start elsewhere, e.g. HA)
-    // could resurface once the belt stops again.
-    if (m_selector.isOpen() &&
+    // Selector/menu housekeeping (spec 4.7, 4.12): Connecting/Starting/Running
+    // (paused included) always win over both, so close them as soon as any of
+    // those becomes true — silently, no beep — before resolving the screen
+    // below. Otherwise a stale selector or menu (opened before a start
+    // elsewhere, e.g. HA) could resurface once the belt stops again.
+    const bool beltScreen =
         (m_snapshot.status == TreadMillData::RUNNING || isPausedState() ||
-         m_snapshot.status == TreadMillData::COUNTDOWN || m_controller.isConnecting()))
+         m_snapshot.status == TreadMillData::COUNTDOWN || m_controller.isConnecting());
+    if (beltScreen)
     {
-        m_selector.close();
+        if (m_selector.isOpen())
+        {
+            m_selector.close();
+        }
+        m_menu.close();
     }
-    // Inactivity timeout: returns true (and closes) exactly once on the tick
-    // that crosses SELECTOR_TIMEOUT_MS. The close is silent (no beep), so
-    // the return value isn't needed here.
+    // Inactivity timeouts: each returns true (and closes) exactly once on the
+    // tick that crosses its threshold. Both closes are silent, so neither
+    // return value is needed here.
     m_selector.tick(nowMs);
+    m_menu.tick(nowMs);
 
     const Screen screen = currentScreen(isPausedState());
 
@@ -384,6 +282,17 @@ void DialUi::handleInput(uint32_t nowMs)
         {
             const bool cancelled = m_controller.requestDisconnect();
             playStopBeep(nowMs, cancelled);
+        }
+        else if (screen == Screen::MENU)
+        {
+            // A tap on a glyph picks that card; anywhere else takes the
+            // highlighted one, so the menu is never a dead end (spec 4.12).
+            const int8_t hit = CardMenu::hitTest(ev.tapX, ev.tapY);
+            const CardId target =
+                (hit >= 0) ? static_cast<CardId>(hit) : m_menu.highlight();
+            m_menu.close();
+            navigateToCard(target);
+            playAcceptBeep(true);
         }
         else if (screen == Screen::SELECTOR)
         {
@@ -419,35 +328,7 @@ void DialUi::handleInput(uint32_t nowMs)
         }
         else if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
         {
-            // Lights card (Plan 6): only the on-screen buttons are live —
-            // a tap on bare card background is a no-op with no beep, the
-            // same as the Clock card's tap.
-            const LightsModel::LightKey lightKey = (screen == Screen::LIGHT_LAMP)
-                                                       ? LightsModel::LightKey::LAMP
-                                                       : LightsModel::LightKey::OFFICE;
-            LightCardState& card = lightCardFor(screen);
-            const LightButtons::Button b =
-                LightButtons::hitTest(ev.tapX, ev.tapY, card.hasColour());
-            // MQTT down ("waiting for HA") means every button is drawn inert
-            // (drawLightButtons() gates all three on mqttUp), and there is no
-            // path for a command to reach HA anyway — so a hit on one is a
-            // no-op with no beep, exactly like a tap on bare background.
-            if (b != LightButtons::Button::NONE && m_netStatus == NetStatus::MQTT_UP)
-            {
-                // LightCardState silently ignores a tap it can't act on
-                // (no data yet, colour on a light that has none), and
-                // returns a command only for POWER or a flushed settle —
-                // so "did something" is an engagement change or a command.
-                const LightCardState::Engaged engagedBefore = card.engaged();
-                const LightsModel::Command cmd = card.tapButton(b, nowMs);
-                const bool acted = (card.engaged() != engagedBefore) ||
-                                   (cmd.type != LightsModel::Command::Type::NONE);
-                playAcceptBeep(acted);
-                if (cmd.type != LightsModel::Command::Type::NONE)
-                {
-                    publishLightCommand(lightKey, cmd);
-                }
-            }
+            handleLightTap(screen, ev.tapX, ev.tapY, nowMs);
         }
         else
         {
@@ -488,11 +369,25 @@ void DialUi::handleInput(uint32_t nowMs)
             const bool accepted = (m_snapshot.status != statusBefore);
             playAcceptBeep(accepted);
         }
-        else if (screen == Screen::CLOCK || screen == Screen::FLIGHTS ||
-                 screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
+        else if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
         {
-            // None of the desk cards owns a value to skip/confirm — hold is a
-            // no-op, no beep (spec 4.8, spec 4.9, Plan 6).
+            // Hold anywhere on a lit light card switches it off (spec 4.12);
+            // on the off face there is nothing to hold for.
+            LightCardState& card = lightCardFor(screen);
+            if (card.view().on && m_netStatus == NetStatus::MQTT_UP)
+            {
+                const LightsModel::Command cmd = card.powerOff(nowMs);
+                if (cmd.type != LightsModel::Command::Type::NONE)
+                {
+                    publishLightCommand(lightKeyFor(screen), cmd);
+                    playAcceptBeep(true);
+                }
+            }
+        }
+        else if (screen == Screen::CLOCK || screen == Screen::FLIGHTS || screen == Screen::MENU)
+        {
+            // Neither card owns a value to skip/confirm, and the menu is
+            // driven by the knob and taps — hold is a no-op, no beep.
         }
         else
         {
@@ -503,118 +398,119 @@ void DialUi::handleInput(uint32_t nowMs)
 
     if (ev.btnStop)
     {
+        // Emergency stop: the instant click edge stops the belt while it is
+        // running/paused/counting down, and on Connecting it is unchanged —
+        // it does NOT cancel the connect there (only tap/hold do); the write
+        // is simply refused because the link is down, and that plays the
+        // refused tone via the same feedback path (I1). On every other screen
+        // the click is left to btnClick below, which decides it only after
+        // M5Unified's multi-click window (spec 4.12).
         if (screen == Screen::RUNNING || screen == Screen::STARTING || screen == Screen::CONNECTING)
         {
-            // Emergency stop: the side button sends stop() while the belt is
-            // running/paused/counting down, and unchanged on Connecting —
-            // it does NOT cancel the connect there (only tap/hold do); the
-            // write is simply refused because the link is down, and that
-            // plays the refused tone via the same feedback path (I1).
             const bool stopped = m_controller.stop();
             playStopBeep(nowMs, stopped);
         }
-        else
+    }
+
+    if (ev.btnHold)
+    {
+        // Home: holding the side button always returns to the Treadmill card,
+        // closing any menu or selector first (spec 4.12). Nothing is running
+        // on the screens this can be seen on, so there is no belt command to
+        // send; while the belt IS running the belt screens simply win over
+        // whichever card the ring is left parked on.
+        m_menu.close();
+        if (m_selector.isOpen())
         {
-            // Home: side button always returns to the Treadmill card (spec
-            // 4.8), closing the selector first if it was open. Nothing is
-            // running yet on any of these screens (Disconnected/Clock/
-            // Selector), so there's no belt command to send.
-            if (m_selector.isOpen())
-            {
-                m_selector.close();
-            }
-            // Leaving whatever card was showing: a light card parked
-            // mid-edit must not come back engaged (Plan 6).
-            releaseLightCards();
-            // The user is driving the ring themselves — an auto-show in
-            // progress must not later yank the card back to Clock (4.11).
-            m_autoShow.noteManualNavigation();
-            m_cards.set(CardId::TREADMILL);
+            m_selector.close();
+        }
+        navigateToCard(CardId::TREADMILL);
+        playAcceptBeep(true);
+    }
+
+    if (ev.btnClick)
+    {
+        // Belt idle: the decided single click opens the card menu, and a
+        // second one takes the highlighted card (spec 4.12).
+        if (screen == Screen::MENU)
+        {
+            navigateToCard(m_menu.select());
+            playAcceptBeep(true);
+        }
+        else if (screen == Screen::DISCONNECTED || screen == Screen::CLOCK ||
+                 screen == Screen::FLIGHTS || screen == Screen::LIGHT_OFFICE ||
+                 screen == Screen::LIGHT_LAMP)
+        {
+            m_menu.open(m_cards.current(), nowMs);
             playAcceptBeep(true);
         }
     }
 
     if (ev.detents != 0)
     {
-        if (screen == Screen::SELECTOR)
+        if (screen == Screen::MENU)
+        {
+            // The knob moves the highlight round the ring (wrapping) and
+            // refreshes the menu's own idle timer.
+            m_menu.detents(ev.detents, nowMs);
+        }
+        else if (screen == Screen::SELECTOR)
         {
             // The selector consumes detents itself; they must not reach
             // nudgeSpeed while it's open (4.7).
             m_selector.step(ev.detents, nowMs);
         }
-        else
+        else if ((m_snapshot.status == TreadMillData::RUNNING) && !isPausedState())
         {
-            // Rotation adjusts speed while the belt is actually running
-            // (unchanged). Otherwise, while parked on a card screen with no
-            // selector open, it spins the card ring — one detent, one card
-            // (spec 4.8). Connecting/Starting get neither: the knob is
-            // ignored there.
-            const bool beltRunning =
-                (m_snapshot.status == TreadMillData::RUNNING) && !isPausedState();
-            if (beltRunning)
-            {
-                // nudgeSpeed() synchronously fires onTargetSpeed(mph, pending=true)
-                // via the controller's observer callback, so m_targetPending/
-                // m_targetSpeedMph are already current by the time this returns —
-                // arm the overlay deadline from the nowMs this call actually has.
-                m_controller.nudgeSpeed(ev.detents, nowMs);
-                m_speedOverlayUntilMs = nowMs + DIAL_SPEED_OVERLAY_MS;
-            }
-            else if (screen == Screen::DISCONNECTED || screen == Screen::CLOCK ||
-                     screen == Screen::FLIGHTS || screen == Screen::LIGHT_OFFICE ||
-                     screen == Screen::LIGHT_LAMP)
-            {
-                // On a light card with a control engaged the knob adjusts
-                // that control rather than scrolling the ring (Plan 6); the
-                // command follows 300 ms after the last detent, from
-                // tickLights().
-                LightCardState* engagedLight = nullptr;
-                if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
-                {
-                    LightCardState& card = lightCardFor(screen);
-                    if (card.engaged() != LightCardState::Engaged::NONE)
-                    {
-                        engagedLight = &card;
-                    }
-                }
-
-                if (engagedLight != nullptr)
-                {
-                    engagedLight->detents(ev.detents, nowMs);
-                }
-                else
-                {
-                    // The ring is about to move: drop any engagement first so
-                    // a card left mid-edit doesn't come back engaged.
-                    releaseLightCards();
-                    // Manual navigation in either direction cancels any
-                    // auto-show episode, so a later drop to zero aircraft
-                    // doesn't fight the user's own scrolling (spec 4.11).
-                    m_autoShow.noteManualNavigation();
-                    if (ev.detents > 0)
-                    {
-                        for (int i = 0; i < ev.detents; ++i)
-                        {
-                            m_cards.next();
-                        }
-                    }
-                    else
-                    {
-                        for (int i = 0; i < -ev.detents; ++i)
-                        {
-                            m_cards.prev();
-                        }
-                    }
-                }
-            }
+            // nudgeSpeed() synchronously fires onTargetSpeed(mph, pending=true)
+            // via the controller's observer callback, so m_targetPending/
+            // m_targetSpeedMph are already current by the time this returns —
+            // arm the overlay deadline from the nowMs this call actually has.
+            m_controller.nudgeSpeed(ev.detents, nowMs);
+            m_speedOverlayUntilMs = nowMs + DIAL_SPEED_OVERLAY_MS;
         }
+        else if (screen == Screen::FLIGHTS)
+        {
+            // The knob never scrolls cards any more (spec 4.12): here it
+            // cycles aircraft, wrapping both ways.
+            const int count = (m_flightsSnap.count > 0) ? m_flightsSnap.count : 1;
+            int idx = (static_cast<int>(m_flightIdx) + ev.detents) % count;
+            if (idx < 0)
+            {
+                idx += count;
+            }
+            m_flightIdx = static_cast<uint8_t>(idx);
+            // Reading the card counts as driving it: an auto-show episode
+            // must not yank it back to Clock underneath the user (4.11).
+            m_autoShow.noteManualNavigation();
+        }
+        else if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
+        {
+            // The knob adjusts the page that is showing — brightness, kelvin
+            // or colour preset. LightCardState ignores it while the light is
+            // off or unavailable, and the command follows 300 ms after the
+            // last detent, from tickLights().
+            lightCardFor(screen).detents(ev.detents, nowMs);
+        }
+        // Clock, Disconnected, Connecting and Starting own no value the knob
+        // could turn: nothing happens there.
     }
 
-    if (ev.swipe != 0 && screen == Screen::SELECTOR)
+    if (ev.swipe != 0)
     {
-        // Horizontal swipe is an alternate way to step the candidate speed
-        // (right = +1 = faster), same grid as a detent (4.7).
-        m_selector.step(ev.swipe, nowMs);
+        if (screen == Screen::SELECTOR)
+        {
+            // Horizontal swipe is an alternate way to step the candidate speed
+            // (right = +1 = faster), same grid as a detent (4.7).
+            m_selector.step(ev.swipe, nowMs);
+        }
+        else if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
+        {
+            // Carousel sense: dragging the face to the left (ev.swipe == -1)
+            // brings the next page in, which is LightCardState's +1. Ignored
+            // while the light is off — the off face has no pages.
+            lightCardFor(screen).swipe(-ev.swipe);
+        }
     }
 
     // ev.wake needs no handling beyond the brightness change already applied
@@ -627,6 +523,90 @@ void DialUi::handleInput(uint32_t nowMs)
         m_secondBeepPending = false;
     }
 #endif
+}
+
+// Tap on a light card (spec 4.12): the whole off face switches the light on;
+// on the lit face only the small power glyph and, on the Colour page, the
+// eight swatches are live. Everything else is bare background — no beep,
+// exactly like the Clock card's tap.
+void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
+{
+    LightCardState& card = lightCardFor(screen);
+    const LightsModel::LightState& v = card.view();
+
+    if (m_netStatus != NetStatus::MQTT_UP)
+    {
+        // "waiting for HA": the face is inert and there is no path for a
+        // command to reach HA anyway, so say so rather than doing nothing.
+        playAcceptBeep(false);
+        return;
+    }
+    if (!v.valid || !v.available)
+    {
+        return; // "no data" face: nothing to switch, nothing to say
+    }
+
+    if (!v.on)
+    {
+        const LightsModel::Command cmd = card.tapOn(nowMs);
+        if (cmd.type != LightsModel::Command::Type::NONE)
+        {
+            // The light comes back on where it left off, on the Brightness
+            // page (LightCardState::tapOn() resets it), and so does the other
+            // card if the ring visits it next.
+            resetLightPages();
+            publishLightCommand(lightKeyFor(screen), cmd);
+            playAcceptBeep(true);
+        }
+        return;
+    }
+
+    if (LightLayout::hitPowerGlyph(x, y))
+    {
+        const LightsModel::Command cmd = card.powerOff(nowMs);
+        if (cmd.type != LightsModel::Command::Type::NONE)
+        {
+            publishLightCommand(lightKeyFor(screen), cmd);
+            playAcceptBeep(true);
+        }
+        return;
+    }
+
+    if (card.page() == LightCardState::Page::COLOUR && card.hasColour())
+    {
+        const int8_t swatch = LightLayout::hitSwatch(x, y);
+        if (swatch >= 0)
+        {
+            // Same settle path as a detent: the command goes out 300 ms later
+            // from tickLights(), so a quick second choice replaces the first.
+            card.selectPreset(static_cast<uint8_t>(swatch), nowMs);
+            playAcceptBeep(true);
+        }
+    }
+}
+
+// Menu selection and the hold-home gesture (spec 4.12). Both are the user
+// driving the ring themselves, so both cancel any auto-show episode in
+// progress (4.11), and both land the light cards back on their first page.
+void DialUi::navigateToCard(CardId id)
+{
+    m_autoShow.noteManualNavigation();
+    resetLightPages();
+    m_cards.set(id);
+}
+
+void DialUi::resetLightPages()
+{
+    for (uint8_t i = 0; i < static_cast<uint8_t>(LightsModel::LightKey::COUNT); ++i)
+    {
+        m_lightCards[i].resetPage();
+    }
+}
+
+LightsModel::LightKey DialUi::lightKeyFor(Screen screen)
+{
+    return (screen == Screen::LIGHT_LAMP) ? LightsModel::LightKey::LAMP
+                                          : LightsModel::LightKey::OFFICE;
 }
 
 void DialUi::pollFlights(uint32_t nowMs)
@@ -670,8 +650,8 @@ void DialUi::tickFlights()
 
 void DialUi::tickLights(uint32_t nowMs)
 {
-    // Same rhythm as tickFlights(): snapshot() is a Guarded copy — cheap,
-    // but no reason to pay for it on every loop() iteration. Both cards are
+    // Same rhythm as pollFlights(): snapshot() is a Guarded copy — cheap, but
+    // no reason to pay for it on every loop() iteration. Both cards are
     // sync()ed from each fresh snapshot (not just the visible one) so the
     // other card is already current the moment the ring reaches it.
     if (!m_haveLightsSnap || (nowMs - m_lastLightsSnapMs) >= kLightsSnapIntervalMs)
@@ -683,21 +663,18 @@ void DialUi::tickLights(uint32_t nowMs)
         m_lightCards[static_cast<uint8_t>(LightsModel::LightKey::LAMP)].sync(snap.lamp, nowMs);
     }
 
-    // Only the visible card can be engaged (handleInput() releases a card as
-    // the ring leaves it), so only the visible card's settle/idle timers need
-    // pumping — and tick() is a no-op on a card that isn't engaged anyway.
-    // tickLights() only runs while tick() has already established the screen
-    // is a light card, so m_cards.current() and that screen agree.
-    const Screen lightScreen = (m_cards.current() == CardId::LIGHT_LAMP)
-                                   ? Screen::LIGHT_LAMP
-                                   : Screen::LIGHT_OFFICE;
-    const LightsModel::LightKey key = (lightScreen == Screen::LIGHT_LAMP)
-                                          ? LightsModel::LightKey::LAMP
-                                          : LightsModel::LightKey::OFFICE;
-    const LightsModel::Command cmd = lightCardFor(lightScreen).tick(nowMs);
-    if (cmd.type != LightsModel::Command::Type::NONE)
+    // Both cards' settle timers are polled every tick, whatever is showing:
+    // an edit is committed 300 ms after the last detent even if the user has
+    // walked the ring on to another card in the meantime (spec 4.12 — there
+    // is no engage/release state left to discard it). tick() is a no-op on a
+    // card with nothing pending.
+    for (uint8_t i = 0; i < static_cast<uint8_t>(LightsModel::LightKey::COUNT); ++i)
     {
-        publishLightCommand(key, cmd);
+        const LightsModel::Command cmd = m_lightCards[i].tick(nowMs);
+        if (cmd.type != LightsModel::Command::Type::NONE)
+        {
+            publishLightCommand(static_cast<LightsModel::LightKey>(i), cmd);
+        }
     }
 }
 
@@ -717,28 +694,14 @@ void DialUi::publishLightCommand(LightsModel::LightKey key, const LightsModel::C
     m_net.enqueuePublish(item);
 }
 
-void DialUi::releaseLightCards()
-{
-    for (uint8_t i = 0; i < static_cast<uint8_t>(LightsModel::LightKey::COUNT); ++i)
-    {
-        m_lightCards[i].release();
-    }
-}
-
 LightCardState& DialUi::lightCardFor(Screen screen)
 {
-    const LightsModel::LightKey key = (screen == Screen::LIGHT_LAMP)
-                                          ? LightsModel::LightKey::LAMP
-                                          : LightsModel::LightKey::OFFICE;
-    return m_lightCards[static_cast<uint8_t>(key)];
+    return m_lightCards[static_cast<uint8_t>(lightKeyFor(screen))];
 }
 
 const LightCardState& DialUi::lightCardFor(Screen screen) const
 {
-    const LightsModel::LightKey key = (screen == Screen::LIGHT_LAMP)
-                                          ? LightsModel::LightKey::LAMP
-                                          : LightsModel::LightKey::OFFICE;
-    return m_lightCards[static_cast<uint8_t>(key)];
+    return m_lightCards[static_cast<uint8_t>(lightKeyFor(screen))];
 }
 
 void DialUi::playStopBeep(uint32_t nowMs, bool accepted)
@@ -846,11 +809,19 @@ DialUi::Screen DialUi::currentScreen(bool paused) const
     {
         return Screen::RUNNING;
     }
-    // handleInput() closes the selector as soon as any of the screens above
-    // becomes true, but currentScreen() is also called from draw()/
-    // buildFrameKey() before that housekeeping runs on a given tick (e.g.
-    // the very first render), so the ordering above is what actually makes
-    // those screens win, not just the close call.
+    // handleInput() closes the selector and the menu as soon as any of the
+    // screens above becomes true, but currentScreen() is also called from
+    // draw()/buildFrameKey() before that housekeeping runs on a given tick
+    // (e.g. the very first render), so the ordering above is what actually
+    // makes those screens win, not just the close calls.
+    //
+    // The menu and the selector are never open at once: opening the menu
+    // closes the selector (handleInput()'s btnClick path), and confirming or
+    // cancelling the selector closes it.
+    if (m_menu.isOpen())
+    {
+        return Screen::MENU;
+    }
     if (m_selector.isOpen())
     {
         return Screen::SELECTOR;
@@ -899,6 +870,10 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
     key.selectorOpen   = m_selector.isOpen();
     key.selectorTenths = static_cast<int32_t>(m_selector.value() * 10.0f);
     key.cardId          = static_cast<uint8_t>(m_cards.current());
+    // Card menu (spec 4.12): open/closed and which item is highlighted are
+    // everything drawCardMenu() reads.
+    key.menuOpen        = m_menu.isOpen();
+    key.menuHighlight   = static_cast<uint8_t>(m_menu.highlight());
 
     // Clock card redraw-once-a-second (spec 4.8): -1 while TimeService isn't
     // valid yet so the --:-- face doesn't redraw every tick; a real
@@ -953,45 +928,54 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
         key.flightHash = 0;
     }
 
-    // Lights cards (Plan 6): one FNV-1a over everything drawLight() reads off
-    // the card that's actually showing — the drawn value, the engaged/settling
-    // highlight and the button enable states all live in there. 0 when no
+    // Lights cards (spec 4.12): the page decides which face is drawn, so it
+    // gets its own field alongside a FNV-1a over the light state the face
+    // reads (key, valid, available, brightnessPct, kelvin, its min/max bounds,
+    // hue, supportsColor, mode). preset/settling drive the Colour page's selected
+    // swatch and every "an edit is in flight" amber, and `on` is the
+    // off-face/on-face split — all cheap to compare directly. Zeroed when no
     // light card is showing, so the other screens never redraw on light state.
     key.lightMqttUp = (m_netStatus == NetStatus::MQTT_UP);
     const Screen lightScreen = static_cast<Screen>(key.screen);
     if (lightScreen == Screen::LIGHT_OFFICE || lightScreen == Screen::LIGHT_LAMP)
     {
-        const LightsModel::LightKey lk = (lightScreen == Screen::LIGHT_LAMP)
-                                             ? LightsModel::LightKey::LAMP
-                                             : LightsModel::LightKey::OFFICE;
         const LightCardState& card = lightCardFor(lightScreen);
         const LightsModel::LightState& v = card.view();
         uint32_t h = 2166136261u;
         const uint32_t fields[10] = {
-            static_cast<uint32_t>(lk),
+            static_cast<uint32_t>(lightKeyFor(lightScreen)),
             static_cast<uint32_t>(v.valid),
             static_cast<uint32_t>(v.available),
-            static_cast<uint32_t>(v.on),
             static_cast<uint32_t>(v.brightnessPct),
             static_cast<uint32_t>(v.kelvin),
+            // The Kelvin page's bar marker and range caption move with the
+            // bulb's own bounds, so a narrowed range has to redraw too.
+            static_cast<uint32_t>(v.minKelvin),
+            static_cast<uint32_t>(v.maxKelvin),
             static_cast<uint32_t>(static_cast<int>(v.hue)),
-            static_cast<uint32_t>(card.engaged()),
-            static_cast<uint32_t>(card.settling()),
             static_cast<uint32_t>(v.supportsColor),
+            // mode picks the live page (and the "not active" faces), so it
+            // belongs in the hash too.
+            static_cast<uint32_t>(v.mode),
         };
         for (uint32_t f : fields)
         {
             h ^= f;
             h *= 16777619u;
         }
-        // mode picks the caption (kelvin vs hue), so it belongs in the hash too.
-        h ^= static_cast<uint32_t>(v.mode);
-        h *= 16777619u;
-        key.lightHash = static_cast<uint16_t>(h ^ (h >> 16));
+        key.lightHash     = static_cast<uint16_t>(h ^ (h >> 16));
+        key.lightPage     = static_cast<uint8_t>(card.page());
+        key.lightPreset   = card.preset();
+        key.lightSettling = card.settling();
+        key.lightOn       = v.on;
     }
     else
     {
-        key.lightHash = 0;
+        key.lightHash     = 0;
+        key.lightPage     = 0;
+        key.lightPreset   = 0;
+        key.lightSettling = false;
+        key.lightOn       = false;
     }
 
     return key;
@@ -1015,23 +999,36 @@ void DialUi::render(uint32_t nowMs)
     m_lastFrameDrawMs = nowMs;
 
     m_logoToDraw[0] = '\0';
+    // The Colour page's swatches and centre disc are true colour, which a
+    // 16-entry palette cannot hold: the canvas leaves them as TRANSPARENT
+    // holes and they are painted straight onto the display below.
+    const Screen screen = static_cast<Screen>(key.screen);
+    const bool lightTrueColour =
+        (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP) &&
+        lightTrueColourVisible(lightCardFor(screen), m_netStatus == NetStatus::MQTT_UP);
+
     if (m_theme.useCanvas)
     {
         draw(m_canvas, nowMs);
         // Explicit destination: m_canvas has no parent bound at construction
         // (see the m_canvas declaration in DialUi.h for why), so pushSprite()
         // needs to be told where to push rather than relying on one.
-        if (m_logoToDraw[0] != '\0')
+        if (m_logoToDraw[0] != '\0' || lightTrueColour)
         {
-            // drawFlights() filled the logo rectangle with the TRANSPARENT
-            // index, so this push leaves whatever is on the display there —
-            // the full-colour logo decoded earlier — untouched. No flicker.
+            // The frame left the logo rectangle (drawFlights) or the colour
+            // swatches (drawLight) filled with the TRANSPARENT index, so this
+            // push leaves whatever is on the display there untouched — the
+            // full-colour logo decoded earlier, or last frame's swatches,
+            // which paintLightTrueColour() repaints below. No flicker.
             m_canvas.pushSprite(&M5Dial.Display, 0, 0, static_cast<uint32_t>(Col::TRANSPARENT));
         }
         else
         {
             m_canvas.pushSprite(&M5Dial.Display, 0, 0);
-            m_logoOnScreen[0] = '\0'; // opaque push wiped any logo
+        }
+        if (m_logoToDraw[0] == '\0')
+        {
+            m_logoOnScreen[0] = '\0'; // nothing reserved the logo rectangle this frame
         }
     }
     else
@@ -1039,6 +1036,16 @@ void DialUi::render(uint32_t nowMs)
         draw(M5Dial.Display, nowMs);
         m_logoOnScreen[0] = '\0'; // direct draw repaints everything each frame
     }
+
+    // Eight preset hues plus the selected colour in the middle, in true colour
+    // rather than the palette's 16 (spec 4.12). Nine fillCircle calls, only on
+    // the frames the Colour page is actually up. The direct-to-display
+    // fallback painted them itself (there is no push to work around).
+    if (lightTrueColour && m_theme.useCanvas)
+    {
+        paintLightTrueColour(M5Dial.Display, lightCardFor(screen));
+    }
+
     // Airline logo in full colour, drawn straight onto the display (the palette
     // canvas would posterise it), and only when the airline changed.
     if (m_logoToDraw[0] != '\0' && strncmp(m_logoToDraw, m_logoOnScreen, 2) != 0)
@@ -1053,52 +1060,7 @@ void DialUi::render(uint32_t nowMs)
         // moment (no TLS session open on the net task) before decoding.
         if (largest >= 48 * 1024 && freeHeap >= 80 * 1024)
         {
-            char path[24];
-            snprintf(path, sizeof(path), "/logos/%s.png", m_logoToDraw);
-            // Decode into a temporary 16-bit sprite (black background, so the
-            // PNG's transparent pixels do not show whatever was under them),
-            // push it, free it. Decoding straight onto the display was found to
-            // hold ~43 KB of heap afterwards (2026-09-04).
-            const uint32_t heapBefore = ESP.getFreeHeap();
-            bool pngOk = false;
-            size_t dbgFsz = 0, dbgGot = 0; int dbgSprite = -1;
-            {
-                // Read the PNG ourselves (<= 8 KB) and decode from memory: the
-                // drawPngFile(fs, path) wrapper was found to hold ~43 KB after
-                // a successful display decode (2026-09-04).
-                File f = LittleFS.open(path, "r");
-                const size_t fsz = f ? (size_t)f.size() : 0;
-                uint8_t* png = (f && fsz > 8 && fsz <= 8192) ? (uint8_t*)malloc(fsz) : nullptr;
-                size_t got = 0;
-                if (png) { got = f.read(png, fsz); }
-                if (f) f.close();
-                dbgFsz = fsz; dbgGot = got;
-                if (png && got == fsz)
-                {
-                    M5Canvas tmp;
-                    tmp.setColorDepth(16);
-                    dbgSprite = tmp.createSprite(120, 48) ? 1 : 0;
-                    if (dbgSprite == 1)
-                    {
-                        // Airline logos from pics.avs.io are transparent PNGs
-                        // drawn for light backgrounds, so they are painted on
-                        // white — the same white as the card's top band that
-                        // drawFlights() lays down around them.
-                        tmp.fillSprite(TFT_WHITE); // matches the card's white top band
-                        // Scale the 120x48 PNG to 90 % (108x43) and centre it so
-                        // the badge keeps ~6 px of white either side and ~2 px
-                        // top/bottom instead of the artwork touching the edges.
-                        pngOk = tmp.drawPng(png, fsz, 6, 2, 108, 43, 0, 0, 0.9f, 0.9f);
-                        if (pngOk) tmp.pushSprite(&M5Dial.Display, kFlightsLogoX, kFlightsLogoY);
-                        // LovyanGFX keeps its ~45 KB pngle workspace allocated
-                        // for reuse; release it or every decode leaks it.
-                        tmp.releasePngMemory();
-                        tmp.deleteSprite();
-                    }
-                }
-                if (png) free(png);
-            }
-            log_i("DialUi: logo %s decode heap %u -> %u ok=%d file=%u read=%u sprite=%d", m_logoToDraw, (unsigned)heapBefore, (unsigned)ESP.getFreeHeap(), (int)pngOk, (unsigned)dbgFsz, (unsigned)dbgGot, (int)dbgSprite);
+            const bool pngOk = dialDrawAirlineLogo(m_logoToDraw);
             if (pngOk)
             {
                 strncpy(m_logoOnScreen, m_logoToDraw, 2);
@@ -1156,7 +1118,8 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     // Flights (spec 4.8, spec 4.9).
     const bool showDots = !(screen == Screen::RUNNING && !paused) &&
                           screen != Screen::CLOCK && screen != Screen::FLIGHTS &&
-                          screen != Screen::LIGHT_OFFICE && screen != Screen::LIGHT_LAMP;
+                          screen != Screen::LIGHT_OFFICE && screen != Screen::LIGHT_LAMP &&
+                          screen != Screen::MENU;
     if (showDots)
     {
         drawStatusDots(gfx);
@@ -1187,6 +1150,9 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     case Screen::LIGHT_LAMP:
         drawLight(gfx, LightsModel::LightKey::LAMP);
         break;
+    case Screen::MENU:
+        drawCardMenu(gfx, m_theme, m_menu);
+        break;
     case Screen::DISCONNECTED:
     default:
         drawDisconnected(gfx);
@@ -1206,10 +1172,17 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
         drawSpeedOverlay(gfx, paused);
     }
 
-    // Long-press-to-stop progress (I4): drawn on top of whichever screen
-    // just painted, for as long as a hold is in progress — not just while
-    // Running/Paused (e.g. holding to cancel from Connecting).
-    if (m_holdProgress > 0.0f)
+    // Long-press progress (I4): drawn on top of whichever screen just
+    // painted, for as long as a hold is in progress — not just while
+    // Running/Paused (e.g. holding to cancel from Connecting, or holding a
+    // lit light card off, spec 4.12). Not on the menu, whose ring sits where
+    // the arc would draw and which a hold does nothing on; and not on a light
+    // card that is already off, where the hold has nothing to switch.
+    const bool holdDoesSomething =
+        screen != Screen::MENU &&
+        !((screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP) &&
+          !lightCardFor(screen).view().on);
+    if (m_holdProgress > 0.0f && holdDoesSomething)
     {
         drawHoldArc(gfx);
     }
@@ -1256,233 +1229,37 @@ void DialUi::drawDisconnected(LovyanGFX& gfx)
     gfx.drawString("tap: speed   hold: start", kCentreX, kDiscHintY, &fonts::Font2);
 }
 
-// Clock card (spec 4.8): analogue face — 12 tick marks, hour/minute/second
-// hands from TimeService's wall clock (NTP over WiFi, backed by the Dial's
-// RTC so it reads correctly before WiFi comes up), small date at the 6
-// o'clock position. Redrawn once a second via the clockSec field in
-// FrameKey. When TimeService isn't valid yet (fresh device, no WiFi, empty
-// RTC) draws the ticks with no hands and "--:--" instead of a time.
+// Clock card (spec 4.8): the analogue face is drawn by DialClockView from the
+// live TimeService — see there for the layout and the invalid-time state.
 void DialUi::drawClock(LovyanGFX& gfx)
 {
-    // 12 tick marks; the four cardinal ones (12/3/6/9) run from a slightly
-    // larger radius so they read as longer/bolder without a second draw call.
-    for (int i = 0; i < 12; ++i)
-    {
-        const bool cardinal = (i % 3) == 0;
-        const HandLine t = ClockFace::tick(i, kRingCx, kRingCy,
-                                            cardinal ? kClockR0Long : kClockR0,
-                                            kClockR1);
-        thickLine(gfx, t.x0, t.y0, t.x1, t.y1, cardinal ? 3 : 2, col(Col::DIM));
-    }
-
-    struct tm t;
-    if (!m_time.localTime(t))
-    {
-        gfx.setTextColor(col(Col::TEXT), col(Col::BG));
-        gfx.drawString("--:--", kRingCx, kRingCy, &fonts::Font4);
-        gfx.setTextColor(col(Col::DIM), col(Col::BG));
-        gfx.drawString("waiting for time", kRingCx, kClockDateY, &fonts::Font2);
-        return;
-    }
-
-    const HandLine hh = ClockFace::hand(ClockFace::hourAngle(t.tm_hour, t.tm_min),
-                                         kRingCx, kRingCy, kHourHandLen);
-    const HandLine mm = ClockFace::hand(ClockFace::minuteAngle(t.tm_min, t.tm_sec),
-                                         kRingCx, kRingCy, kMinuteHandLen);
-    const HandLine ss = ClockFace::hand(ClockFace::secondAngle(t.tm_sec),
-                                         kRingCx, kRingCy, kSecondHandLen);
-
-    thickLine(gfx, hh.x0, hh.y0, hh.x1, hh.y1, kHourHandW, col(Col::TEXT));
-    thickLine(gfx, mm.x0, mm.y0, mm.x1, mm.y1, kMinuteHandW, col(Col::TEXT));
-    thickLine(gfx, ss.x0, ss.y0, ss.x1, ss.y1, kSecondHandW, col(Col::SECOND));
-
-    gfx.fillCircle(kRingCx, kRingCy, kClockCentreDotR, col(Col::TEXT));
-    gfx.fillCircle(kRingCx, kRingCy, kClockSecondDotR, col(Col::SECOND));
-
-    // "Mon 3 Sep" — %-e (no leading zero/space) isn't universally supported
-    // by newlib's strftime, so use %e (space-padded to width 2) instead. On
-    // a single-digit day that leaves "Mon  3 Sep" — the literal space in the
-    // format plus %e's own pad space — so collapse that one double space.
-    char dateBuf[16];
-    strftime(dateBuf, sizeof(dateBuf), "%a %e %b", &t);
-    for (char* p = dateBuf; *p != '\0'; ++p)
-    {
-        if (p[0] == ' ' && p[1] == ' ')
-        {
-            memmove(p, p + 1, strlen(p + 1) + 1);
-            break;
-        }
-    }
-    gfx.setTextColor(col(Col::DIM), col(Col::BG));
-    gfx.drawString(dateBuf, kCentreX, kClockDateY, &fonts::Font2);
+    drawClockCard(gfx, m_theme, m_time);
 }
 
-// Flights card (spec 4.9): nearest aircraft, nearest-first, cycled by tap
-// (see handleInput()/tickFlights()). m_flightsSnap is written only by
+// Flights card (spec 4.9): decides whether the airline logo will be pushed
+// onto the display after this frame (and remembers which one for render()),
+// then hands the drawing to DialFlightsView. m_flightsSnap is written only by
 // pollFlights() and m_flightIdx only by handleInput()/tickFlights()/tick()
-// (all on the loop task), so this is a plain read — no locking needed on
-// top of Guarded's own.
+// (all on the loop task), so this is a plain read — no locking needed on top
+// of Guarded's own.
 void DialUi::drawFlights(LovyanGFX& gfx)
 {
-    if (m_flightsSnap.stale)
+    bool haveLogo = false;
+    if (!m_flightsSnap.offline && m_flightsSnap.count > 0)
     {
-        gfx.fillCircle(kFlightsStaleDotX, kFlightsStaleDotY, kFlightsStaleDotR, col(Col::DIM));
-    }
-
-    if (m_flightsSnap.offline)
-    {
-        gfx.setTextColor(col(Col::TEXT), col(Col::BG));
-        gfx.drawString("waiting for HA", kRingCx, kRingCy, &fonts::Font4);
-        return;
-    }
-
-    if (m_flightsSnap.count == 0)
-    {
-        gfx.setTextColor(col(Col::TEXT), col(Col::BG));
-        gfx.drawString("no aircraft nearby", kRingCx, kRingCy, &fonts::Font4);
-        // The search radius is Home Assistant's business now (spec 4.11) —
-        // the Dial no longer has FLIGHTS_RADIUS_MI to name here.
-        gfx.setTextColor(col(Col::DIM), col(Col::BG));
-        gfx.drawString("none in range", kCentreX, kFlightsEmptyCaptionY, &fonts::Font2);
-        return;
-    }
-
-    const uint8_t idx = (m_flightIdx < m_flightsSnap.count) ? m_flightIdx : 0;
-    const FlightsModel::Aircraft& ac = m_flightsSnap.ac[idx];
-
-    // Logo, else operatorName, else callsign (spec 4.9). Only (re)decode the
-    // sprite when the current aircraft's airline differs from what's
-    // resident and FlightsService actually has that logo ready — decoding is
-    // a real PNG parse, not something to redo every frame. M1 (spec review
-    // 2026-09-04): the logo is decoded straight off LittleFS — no PNG byte
-    // buffer lives in either DialUi or FlightsService any more. LittleFS
-    // reads are safe from the loop task (LittleFS is internally locked).
-    // Decode the PNG straight from LittleFS onto this frame (a ~6 KB PNG at
-    // <= 4 Hz is cheap on the S3); remember decode failures per session so a
-    // bad file is not retried every frame. LittleFS reads are safe from the
-    // loop task (internally locked).
-    // The canvas is a 16-colour palette, which would posterise the PNG, so
-    // the logo is drawn straight onto M5Dial.Display in render() after the
-    // frame is pushed. Here we only decide whether there is a logo to draw.
-    const bool wantLogo = ac.airlineIata[0] != '\0' && !isLogoDecodeFailed(ac.airlineIata);
-    const bool haveLogo = wantLogo && m_flights.logoReady(ac.airlineIata);
-    // White band across the top of the card (the round bezel clips the
-    // corners). With a logo, the logo rectangle inside it is reserved as
-    // TRANSPARENT so the white-backed sprite pushed in render() shows through
-    // seamlessly; without one, the operator name is drawn dark on the band.
-    gfx.fillRect(0, 0, 240, kFlightsBandH, col(Col::TEXT));
-    if (haveLogo)
-    {
-        strncpy(m_logoToDraw, ac.airlineIata, 2);
-        m_logoToDraw[2] = '\0';
-        // Reserve the logo rectangle: on the canvas the TRANSPARENT index keeps
-        // the display's logo pixels through the push (see render()).
-        gfx.fillRect(kFlightsLogoX, kFlightsLogoY, 120, 48,
-                     m_theme.useCanvas ? static_cast<uint32_t>(Col::TRANSPARENT) : col(Col::BG));
-    }
-    else
-    {
-        gfx.setTextColor(col(Col::BG), col(Col::TEXT));
-        const char* fallback = (ac.operatorKnown && ac.operatorName[0] != '\0') ? ac.operatorName : ac.callsign;
-        gfx.drawString(fallback, kCentreX, kFlightsFallbackY, &fonts::Font2);
-    }
-
-    // "BA123 - A320": the flight number is what a passenger (or a plane
-    // spotter with a phone) would recognise, so it wins over the raw ATC
-    // callsign whenever HA has resolved one; "BAW123 - A320" is the
-    // fallback when it hasn't (spec 4.11, final review 2026-09-05).
-    const char* headline = (ac.flightNumber[0] != '\0') ? ac.flightNumber : ac.callsign;
-    char line1[32];
-    if (ac.type[0] != '\0')
-    {
-        snprintf(line1, sizeof(line1), "%s - %s", headline, ac.type);
-    }
-    else
-    {
-        snprintf(line1, sizeof(line1), "%s", headline);
-    }
-    gfx.setTextColor(col(Col::TEXT), col(Col::BG));
-    gfx.drawString(line1, kCentreX, kFlightsCallsignY, &fonts::Font2);
-
-    // Route, large: "LHR -> JFK" (ASCII arrow — Font4 may lack the real one)
-    // or "route unknown" when not yet enriched.
-    if (ac.routeKnown && ac.fromIata[0] != '\0' && ac.toIata[0] != '\0')
-    {
-        char routeBuf[16];
-        snprintf(routeBuf, sizeof(routeBuf), "%s -> %s", ac.fromIata, ac.toIata);
-        gfx.setTextColor(col(Col::TEXT), col(Col::BG));
-        gfx.drawString(routeBuf, kCentreX, kFlightsRouteY, &fonts::Font4);
-    }
-    else
-    {
-        gfx.setTextColor(col(Col::DIM), col(Col::BG));
-        gfx.drawString("route unknown", kCentreX, kFlightsRouteY, &fonts::Font2);
-    }
-
-    // City names, small, under the route line: "London -> New York" when
-    // both ends are known, just the known one when only one is, nothing
-    // when HA hasn't got either yet (fc/tc, spec 4.11 amendment).
-    if (ac.fromCity[0] != '\0' || ac.toCity[0] != '\0')
-    {
-        char cityBuf[12 + 4 + 12 + 1];
-        if (ac.fromCity[0] != '\0' && ac.toCity[0] != '\0')
+        const uint8_t idx = (m_flightIdx < m_flightsSnap.count) ? m_flightIdx : 0;
+        const FlightsModel::Aircraft& ac = m_flightsSnap.ac[idx];
+        // Only (re)decode a logo the net task actually has cached and that
+        // hasn't already failed to decode this session (I4).
+        const bool wantLogo = ac.airlineIata[0] != '\0' && !isLogoDecodeFailed(ac.airlineIata);
+        haveLogo = wantLogo && m_flights.logoReady(ac.airlineIata);
+        if (haveLogo)
         {
-            snprintf(cityBuf, sizeof(cityBuf), "%s -> %s", ac.fromCity, ac.toCity);
-        }
-        else if (ac.fromCity[0] != '\0')
-        {
-            snprintf(cityBuf, sizeof(cityBuf), "%s", ac.fromCity);
-        }
-        else
-        {
-            snprintf(cityBuf, sizeof(cityBuf), "%s", ac.toCity);
-        }
-        gfx.setTextColor(col(Col::DIM), col(Col::BG));
-        gfx.drawString(cityBuf, kCentreX, kFlightsCityY, &fonts::Font2);
-    }
-
-    // Altitude/speed: "12,000 ft - 450 kt", or "on ground" for an aircraft
-    // HA flagged with gnd — "0 ft - 0 kt" reads like missing data rather
-    // than a taxiing aircraft (final review 2026-09-05).
-    char altSpeedBuf[32];
-    if (ac.onGround)
-    {
-        snprintf(altSpeedBuf, sizeof(altSpeedBuf), "on ground");
-    }
-    else
-    {
-        char altBuf[12];
-        formatThousands(ac.altFt, altBuf, sizeof(altBuf));
-        snprintf(altSpeedBuf, sizeof(altSpeedBuf), "%s ft - %d kt", altBuf, ac.gsKt);
-    }
-    gfx.setTextColor(col(Col::TEXT), col(Col::BG));
-    gfx.drawString(altSpeedBuf, kCentreX, kFlightsAltY, &fonts::Font2);
-
-    // Distance/compass: "3.1 mi NE" (no index suffix — the page dots below
-    // show position in the list instead).
-    char distBuf[32];
-    snprintf(distBuf, sizeof(distBuf), "%.1f mi %s", static_cast<double>(ac.distMi),
-             Geo::compass8(static_cast<float>(ac.bearing)));
-    gfx.setTextColor(col(Col::TEXT), col(Col::BG));
-    gfx.drawString(distBuf, kCentreX, kFlightsDistY, &fonts::Font2);
-
-    // Page dots: one per aircraft (up to 6, the list is never larger),
-    // centred on kFlightsHintY — filled for the one currently shown, hollow
-    // outlines for the rest. Replaces the old "tap: next" hint text.
-    const int32_t dotsW = static_cast<int32_t>(m_flightsSnap.count - 1) * kFlightsDotSpacing;
-    const int32_t firstDotX = kCentreX - dotsW / 2;
-    for (uint8_t i = 0; i < m_flightsSnap.count; ++i)
-    {
-        const int32_t dotX = firstDotX + static_cast<int32_t>(i) * kFlightsDotSpacing;
-        if (i == idx)
-        {
-            gfx.fillCircle(dotX, kFlightsHintY, kFlightsDotR, col(Col::TEXT));
-        }
-        else
-        {
-            gfx.drawCircle(dotX, kFlightsHintY, kFlightsDotR, col(Col::DIM));
+            strncpy(m_logoToDraw, ac.airlineIata, 2);
+            m_logoToDraw[2] = '\0';
         }
     }
+    drawFlightsCard(gfx, m_theme, m_flightsSnap, m_flightIdx, haveLogo);
 }
 
 // I4: see m_logoFailed's comment in DialUi.h. `iata` is compared with
@@ -1515,183 +1292,16 @@ void DialUi::markLogoDecodeFailed(const char* iata)
     }
 }
 
-// Lights card (Plan 6, spec 4.10). One HA light: title, the value ring
-// reused from the speed/selector screens, a centred value or state string,
-// a caption for the colour field, and the Power/Bright(/Colour) buttons.
+// Lights card (spec 4.12). Everything on the face comes from the card's own
+// state and LightLayout's geometry — see DialLightsView.cpp. The Colour page's
+// swatches are left as TRANSPARENT holes here and filled in true colour by
+// render() after the push.
 void DialUi::drawLight(LovyanGFX& gfx, LightsModel::LightKey key)
 {
     const LightCardState& card = m_lightCards[static_cast<uint8_t>(key)];
-    const bool hasColour = card.hasColour();
-    const LightsModel::LightState& v = card.view();
-    const LightCardState::Engaged engaged = card.engaged();
-
-    gfx.setTextColor(col(Col::TEXT), col(Col::BG));
-    gfx.drawString(hasColour ? "Lamp" : "Office", kRingCx, kLightTitleY, &fonts::Font4);
-
-    // MQTT is the only path HA light state arrives on, so without it there is
-    // nothing to show and nothing worth ringing.
-    const bool mqttUp   = (m_netStatus == NetStatus::MQTT_UP);
-    const bool haveData = v.valid && v.available;
-
-    if (mqttUp && haveData)
-    {
-        // Same two-arc idiom as drawSelector(): DIM track, then the value arc
-        // from the same start angle. Amber while a control is engaged (the
-        // knob is live and a command is coming), cyan otherwise.
-        gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
-                    kRingStartDeg + kRingSweepDeg, col(Col::DIM));
-        const float sweep = card.ringFraction() * kRingSweepDeg;
-        if (sweep > 0.0f)
-        {
-            gfx.fillArc(kRingCx, kRingCy, kRingOuter, kRingInner, kRingStartDeg,
-                        kRingStartDeg + sweep,
-                        col(engaged != LightCardState::Engaged::NONE ? Col::PENDING : Col::SPEED));
-        }
-    }
-
-    if (!mqttUp)
-    {
-        gfx.setTextColor(col(Col::DIM), col(Col::BG));
-        gfx.drawString("waiting for HA", kRingCx, kRingCy, &fonts::Font4);
-    }
-    else if (!haveData)
-    {
-        // No retained state yet (or HA reports the light unavailable). Power
-        // stays live: LightCardState allows a blind switch-on once the state
-        // topic has at least parsed.
-        gfx.setTextColor(col(Col::DIM), col(Col::BG));
-        gfx.drawString("no data", kRingCx, kRingCy, &fonts::Font4);
-    }
-    else
-    {
-        if (v.on)
-        {
-            // Font7 has no '%' glyph (see kLightPctGap), so the digits and
-            // the percent sign are two strings centred together.
-            char pctBuf[8];
-            snprintf(pctBuf, sizeof(pctBuf), "%u", (unsigned)v.brightnessPct);
-            const int32_t digitsW = gfx.textWidth(pctBuf, &fonts::Font7);
-            const int32_t signW   = gfx.textWidth("%", &fonts::Font4);
-            const int32_t left    = kRingCx - (digitsW + kLightPctGap + signW) / 2;
-
-            gfx.setTextColor(
-                col(engaged == LightCardState::Engaged::BRIGHT ? Col::PENDING : Col::TEXT),
-                col(Col::BG));
-            gfx.setTextDatum(middle_left);
-            gfx.drawString(pctBuf, left, kRingCy, &fonts::Font7);
-            gfx.drawString("%", left + digitsW + kLightPctGap, kRingCy, &fonts::Font4);
-            gfx.setTextDatum(middle_center);
-        }
-        else
-        {
-            gfx.setTextColor(col(Col::DIM), col(Col::BG));
-            gfx.drawString("OFF", kRingCx, kRingCy, &fonts::Font4);
-        }
-
-        // Colour caption: kelvin unless HA is reporting the light in hue/sat
-        // mode. Amber while that field is the engaged one.
-        char caption[16];
-        Col captionCol = Col::DIM;
-        if (v.mode == LightsModel::ColorMode::HS)
-        {
-            snprintf(caption, sizeof(caption), "hue %d", static_cast<int>(v.hue));
-            if (engaged == LightCardState::Engaged::HUE)
-            {
-                captionCol = Col::PENDING;
-            }
-        }
-        else
-        {
-            if (v.kelvin == 0)
-            {
-                snprintf(caption, sizeof(caption), "--K");
-            }
-            else
-            {
-                snprintf(caption, sizeof(caption), "%uK", (unsigned)v.kelvin);
-            }
-            if (engaged == LightCardState::Engaged::TEMP)
-            {
-                captionCol = Col::PENDING;
-            }
-        }
-        gfx.setTextColor(col(captionCol), col(Col::BG));
-        gfx.drawString(caption, kRingCx, kLightCaptionY, &fonts::Font2);
-    }
-
-    drawLightButtons(gfx, card, hasColour, mqttUp);
-}
-
-void DialUi::drawLightButtons(LovyanGFX& gfx, const LightCardState& card, bool hasColour,
-                              bool mqttUp)
-{
-    const LightsModel::LightState& v = card.view();
-    const LightCardState::Engaged engaged = card.engaged();
-    const bool haveData = v.valid && v.available;
-
-    const LightButtons::Button buttons[3] = {LightButtons::Button::POWER,
-                                            LightButtons::Button::BRIGHT,
-                                            LightButtons::Button::COLOUR};
-    for (LightButtons::Button b : buttons)
-    {
-        if (b == LightButtons::Button::COLOUR && !hasColour)
-        {
-            continue;
-        }
-
-        // Engaged wins over active: it's the one control the knob is driving.
-        bool isEngaged = false;
-        bool isActive  = false;
-        switch (b)
-        {
-        case LightButtons::Button::POWER:
-            // Power stays live through "no data" (available == false) — a
-            // blind switch-on is allowed (LightCardState::tapButton()) — but
-            // LightCardState::tapButton(POWER) still refuses when !v.valid
-            // (no retained state has parsed at all yet), so the button must
-            // not be drawn active before that. v.valid is strictly weaker
-            // than the BRIGHT/COLOUR gate below (haveData == valid &&
-            // available), so this can't light up more than they do.
-            isActive = mqttUp && v.valid;
-            break;
-        case LightButtons::Button::BRIGHT:
-            isEngaged = (engaged == LightCardState::Engaged::BRIGHT);
-            isActive  = mqttUp && haveData;
-            break;
-        case LightButtons::Button::COLOUR:
-        default:
-            isEngaged = (engaged == LightCardState::Engaged::TEMP ||
-                         engaged == LightCardState::Engaged::HUE);
-            isActive  = mqttUp && haveData && v.supportsColor;
-            break;
-        }
-
-        const LightButtons::Geom g = LightButtons::geom(b, hasColour);
-        Col labelCol;
-        Col labelBg = Col::BG;
-        if (isEngaged)
-        {
-            gfx.fillCircle(g.cx, g.cy, g.r, col(Col::PENDING));
-            // Text background must be the fill, not the screen background, or
-            // each glyph's background rect punches a black box in the circle.
-            labelCol = Col::BG;
-            labelBg  = Col::PENDING;
-        }
-        else if (isActive)
-        {
-            gfx.drawCircle(g.cx, g.cy, g.r, col(Col::DIM));
-            labelCol = Col::TEXT;
-        }
-        else
-        {
-            gfx.drawCircle(g.cx, g.cy, g.r, col(Col::DIM_DIM));
-            labelCol = Col::DIM_DIM;
-        }
-        // Label inside the circle: below it would fall off the round display
-        // for the lowest button (cy + r + 12 = 229 > 226).
-        gfx.setTextColor(col(labelCol), col(labelBg));
-        gfx.drawString(LightButtons::label(b), g.cx, g.cy, &fonts::Font2);
-    }
+    drawLightCard(gfx, m_theme, card,
+                  (key == LightsModel::LightKey::LAMP) ? "Lamp" : "Office",
+                  m_netStatus == NetStatus::MQTT_UP);
 }
 
 void DialUi::drawConnecting(LovyanGFX& gfx)

@@ -55,7 +55,8 @@ public:
     // way, e.g. the belt started) — no RETURN_TO_CLOCK follows.
     Action update(uint32_t nowMs, uint8_t aircraftCount, CardId currentCard, bool beltIdle, bool dataValid);
 
-    // Call when the user manually navigates (knob scroll, side-button home)
+    // Call when the user manually navigates (a card-menu selection, the
+    // side button's hold-home, or the knob/a tap on the Flights card itself)
     // while an auto-show is in progress: cancels the automatic return so a
     // later count drop to 0 doesn't fight the user's own navigation.
     void noteManualNavigation();

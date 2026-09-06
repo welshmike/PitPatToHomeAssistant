@@ -18,7 +18,7 @@
 #include "LightsService.h"
 #include "LightsModel.h"
 #include "LightCardState.h"
-#include "LightButtons.h"
+#include "CardMenu.h"
 #include "NetTask.h"
 
 // Loop-task ISnapshotObserver that renders treadmill/net state to the Dial's
@@ -83,20 +83,18 @@ private:
     void draw(LovyanGFX& gfx, uint32_t nowMs);
     void drawStatusDots(LovyanGFX& gfx);
     void drawDisconnected(LovyanGFX& gfx);
+    // Clock card (spec 4.8): the analogue face, drawn by DialClockView.
     void drawClock(LovyanGFX& gfx);
     void drawConnecting(LovyanGFX& gfx);
     void drawStarting(LovyanGFX& gfx, uint32_t nowMs);
     void drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs);
-    // Flights card (spec 4.9): nearest aircraft, logo/route/altitude/speed.
+    // Flights card (spec 4.9): nearest aircraft, logo/route/altitude/speed —
+    // drawn by DialFlightsView; this decides which airline logo (if any)
+    // render() should push onto the display afterwards.
     void drawFlights(LovyanGFX& gfx);
-    // Lights cards (Plan 6, spec 4.10): title, value ring, brightness/colour
-    // readout and the two/three on-screen buttons for one HA light.
+    // Lights cards (spec 4.12): the off face, or the page the card is on,
+    // drawn by DialLightsView from the card's own state.
     void drawLight(LovyanGFX& gfx, LightsModel::LightKey key);
-    // The Power/Bright/Colour circles for drawLight(): one filled PENDING
-    // circle for the engaged control, DIM outlines for the ones that can be
-    // tapped, DIM_DIM outlines for the ones that can't.
-    void drawLightButtons(LovyanGFX& gfx, const LightCardState& card, bool hasColour,
-                          bool mqttUp);
     // Start-speed picker (spec 4.7), opened by a tap on Disconnected.
     void drawSelector(LovyanGFX& gfx);
     // Centre speed overlay (target speed in Font7 amber + "mph" caption, and
@@ -114,7 +112,9 @@ private:
     // controller publish an optimistic COUNTDOWN even though nothing is
     // actually counting down yet, so Connecting must win that race or the
     // Starting screen shows with no way to cancel it); COUNTDOWN -> Starting;
-    // (RUNNING or paused) -> Running/Paused; m_selector.isOpen() -> Selector;
+    // (RUNNING or paused) -> Running/Paused; m_menu.isOpen() -> Menu (spec
+    // 4.12); m_selector.isOpen() -> Selector (never both: opening the menu
+    // closes the selector);
     // else the current card (m_cards.current(), spec 4.8): TREADMILL ->
     // Disconnected (the Treadmill card), CLOCK -> Clock, FLIGHTS -> Flights
     // (spec 4.9). Connecting/Starting/Running all win over an open selector —
@@ -125,10 +125,24 @@ private:
     // already have it (draw(), handleInput()) don't pay for isPausedState()
     // twice in the same tick.
     enum class Screen : uint8_t { DISCONNECTED, CLOCK, FLIGHTS, CONNECTING, STARTING, RUNNING,
-                                  SELECTOR, LIGHT_OFFICE, LIGHT_LAMP };
+                                  SELECTOR, LIGHT_OFFICE, LIGHT_LAMP, MENU };
     Screen currentScreen(bool paused) const;
 
     void handleInput(uint32_t nowMs);
+    // The tap handler for a light card (spec 4.12), split out of
+    // handleInput(): switch-on anywhere on the off face, the small power
+    // glyph and the Colour page's swatches on the lit face, nothing else.
+    void handleLightTap(Screen screen, int x, int y, uint32_t nowMs);
+    // Moves the card ring to `id` the way the user asked for it (menu
+    // selection or the hold-home gesture): counts as manual navigation for
+    // FlightsAutoShow and lands the light cards on their first page.
+    void navigateToCard(CardId id);
+    // Both light cards back to the Brightness page — on arrival at a light
+    // card and on switch-on, so a card is never picked up mid-stack.
+    void resetLightPages();
+    // LightKey behind a light Screen. Undefined for any other Screen; every
+    // caller checks first.
+    static LightsModel::LightKey lightKeyFor(Screen screen);
     // Pulls a fresh FlightsSnapshot at most every kFlightsSnapIntervalMs.
     // Called from tick() on EVERY call, whatever screen is showing (spec
     // 4.11): the auto-show state machine needs the aircraft count while the
@@ -142,11 +156,12 @@ private:
     // snapshot itself is pulled by pollFlights() above, which runs whether
     // or not this card is showing.
     void tickFlights();
-    // Lights card housekeeping (Plan 6), called from tick() every call while
-    // the screen is a light card: pulls a fresh LightsSnapshot at most every
-    // kLightsSnapIntervalMs and sync()s BOTH cards from it, then polls the
-    // visible card's settle/idle timers and publishes whatever command
-    // tick() hands back.
+    // Lights card housekeeping (Plan 6, spec 4.12), called from tick() on
+    // EVERY call whatever the screen: pulls a fresh LightsSnapshot at most
+    // every kLightsSnapIntervalMs and sync()s BOTH cards from it, then polls
+    // BOTH cards' settle timers and publishes whatever command either hands
+    // back — an edit made a moment before the ring left the card still goes
+    // out 300 ms later.
     void tickLights(uint32_t nowMs);
     // Looks up the LightCardState for a light screen (LIGHT_OFFICE or
     // LIGHT_LAMP) — centralises the screen/CardId -> LightKey -> m_lightCards[]
@@ -158,12 +173,6 @@ private:
     // Formats `cmd` into a LIGHT_CMD PublishItem and hands it to the net
     // task; the loop task never touches MQTT itself.
     void publishLightCommand(LightsModel::LightKey key, const LightsModel::Command& cmd);
-    // Drops any engagement on both light cards, silently (a pending settle is
-    // discarded, not sent). Called whenever the card ring leaves a light card
-    // — by a knob scroll or the side button's home gesture — so a card left
-    // mid-edit doesn't come back engaged, and no command fires later for an
-    // edit the user walked away from.
-    void releaseLightCards();
     void applyBrightness();
     // Plays the accepted/refused tone pair for a stop-or-cancel gesture
     // (Connecting-screen cancel, hold-to-stop, side button). No-op when
@@ -203,6 +212,9 @@ private:
         bool     selectorOpen   = false;
         int32_t  selectorTenths = 0;
         uint8_t  cardId         = 0; // CardId of m_cards.current() (spec 4.8)
+        // Card menu (spec 4.12): open/closed, and the highlighted item.
+        bool     menuOpen       = false;
+        uint8_t  menuHighlight  = 0;
         // Seconds-of-day from the clock card's local time (hh*3600+mm*60+ss),
         // or -1 when TimeService isn't valid yet — makes drawClock() redraw
         // once a second while the second hand is moving, and once when
@@ -221,15 +233,22 @@ private:
         bool     flightOffline  = false;
         uint16_t flightHash     = 0;
 
-        // Lights cards (Plan 6): lightHash is a 16-bit FNV-1a over
-        // everything drawLight() reads off the *visible* card (key, valid,
-        // available, on, brightnessPct, kelvin, hue, engaged, settling,
-        // supportsColor) — same idiom as flightHash above; 0 while no light
-        // card is showing. lightMqttUp gates the "waiting for HA" state,
-        // which netStatus already covers, but is cheap and keeps the
-        // dependency explicit.
+        // Lights cards (spec 4.12): lightHash is a 16-bit FNV-1a over the
+        // light state the *visible* card's face reads (key, valid,
+        // available, brightnessPct, kelvin and its min/max bounds, hue,
+        // supportsColor, mode) — same
+        // idiom as flightHash above; 0 while no light card is showing. The
+        // page, the selected preset, the settling highlight and on/off decide
+        // which face is drawn at all, so they are compared directly rather
+        // than hashed. lightMqttUp gates the "waiting for HA" state, which
+        // netStatus already covers, but is cheap and keeps the dependency
+        // explicit.
         uint16_t lightHash      = 0;
         bool     lightMqttUp    = false;
+        uint8_t  lightPage      = 0;
+        uint8_t  lightPreset    = 0;
+        bool     lightSettling  = false;
+        bool     lightOn        = false;
 
         bool operator==(const FrameKey& o) const
         {
@@ -245,10 +264,13 @@ private:
                    sessionSteps == o.sessionSteps &&
                    selectorOpen == o.selectorOpen && selectorTenths == o.selectorTenths &&
                    cardId == o.cardId && clockSec == o.clockSec &&
+                   menuOpen == o.menuOpen && menuHighlight == o.menuHighlight &&
                    flightIdx == o.flightIdx && flightCount == o.flightCount &&
                    flightStale == o.flightStale && flightOffline == o.flightOffline &&
                    flightHash == o.flightHash &&
-                   lightHash == o.lightHash && lightMqttUp == o.lightMqttUp;
+                   lightHash == o.lightHash && lightMqttUp == o.lightMqttUp &&
+                   lightPage == o.lightPage && lightPreset == o.lightPreset &&
+                   lightSettling == o.lightSettling && lightOn == o.lightOn;
         }
     };
     FrameKey buildFrameKey(uint32_t nowMs) const;
@@ -268,8 +290,13 @@ private:
     DialInput m_input;
     SpeedSelector m_selector;
     // Which desk-mode card is showing while the belt is idle (spec 4.8);
-    // boots on CLOCK and is driven by knob detents in handleInput().
+    // boots on CLOCK and is driven by the card menu and the hold-home
+    // gesture in handleInput() (the knob stopped scrolling cards in 4.12).
     CardRing m_cards;
+    // The side button's ring menu (spec 4.12): opened by a decided single
+    // click while the belt is idle, closed by a selection, the hold-home
+    // gesture, a belt screen taking over, or 8 s of no input.
+    CardMenu m_menu;
     DialInput::Backlight m_lastBacklight = DialInput::Backlight::FULL;
     float m_holdProgress = 0.0f; // last tick's hold-in-progress fraction [0,1]; drives the long-press ring
 

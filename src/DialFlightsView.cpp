@@ -1,0 +1,285 @@
+// Must precede "DialFlightsView.h" (which pulls in M5Dial.h -> M5Unified.h ->
+// M5GFX.h): M5GFX's platforms/esp32/common.hpp only compiles the
+// DataWrapperT<fs::LittleFSFS> specialization the LittleFS PNG path needs when
+// _LITTLEFS_H_ is already defined at the point it is processed.
+#include <LittleFS.h>
+#include "DialFlightsView.h"
+#if HAS_DIAL_UI
+
+#include <Arduino.h>
+#include <esp_log.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "Geo.h"
+
+namespace
+{
+
+constexpr int32_t kCentreX = 120;
+constexpr int32_t kRingCx  = 120;
+constexpr int32_t kRingCy  = 120;
+
+// Flights card layout (spec 4.9), centred on the same 240x240 canvas
+// (centre x=120, reusing kRingCx/kRingCy where a row sits on that centre).
+constexpr int32_t kFlightsLogoX         = 60;  // (240 - 120-wide sprite) / 2
+// The top of the card is a white band (0..kFlightsBandH) so airline logos —
+// transparent PNGs drawn for light backgrounds — sit on white edge to edge
+// (Mike, 2026-09-06). The logo sprite is white-backed and lands inside it.
+constexpr int32_t kFlightsBandH         = 58;
+constexpr int32_t kFlightsLogoY         = 8;   // sprite is 48 tall -> bottom at 56, inside the band
+constexpr int32_t kFlightsFallbackY     = 30;  // operatorName/callsign (dark on the white band) when there's no logo
+constexpr int32_t kFlightsCallsignY     = 76;  // "callsign - type"
+constexpr int32_t kFlightsRouteY        = 112; // "LHR -> JFK" / "route unknown"
+constexpr int32_t kFlightsCityY         = 134; // "London -> New York" (fc/tc), when known
+constexpr int32_t kFlightsAltY          = 152; // "12,000 ft - 450 kt"
+constexpr int32_t kFlightsDistY         = 172; // "3.1 mi NE"
+constexpr int32_t kFlightsHintY         = 214; // page dots row (one per aircraft, up to 6)
+constexpr int32_t kFlightsEmptyCaptionY = 150; // "within N mi" under "no aircraft nearby"
+constexpr int32_t kFlightsStaleDotX     = 120;
+constexpr int32_t kFlightsStaleDotY     = 63;  // just under the white band, above the callsign row
+constexpr int32_t kFlightsStaleDotR     = 3;
+constexpr int32_t kFlightsDotR          = 3;  // page dot radius
+constexpr int32_t kFlightsDotSpacing    = 12; // centre-to-centre spacing between page dots
+
+// Formats a non-negative integer with comma thousands separators by hand
+// (spec 4.9: "12,000 ft", not "12000 ft") — no locale, no String, no heap.
+// Truncates safely if `out` is too small; always NUL-terminates within n.
+void formatThousands(int value, char* out, size_t n)
+{
+    if (value < 0)
+    {
+        value = 0;
+    }
+    char digits[12];
+    const int len = snprintf(digits, sizeof(digits), "%d", value);
+    int outPos = 0;
+    for (int i = 0; i < len && outPos < static_cast<int>(n) - 1; ++i)
+    {
+        if (i > 0 && (len - i) % 3 == 0)
+        {
+            out[outPos++] = ',';
+            if (outPos >= static_cast<int>(n) - 1)
+            {
+                break;
+            }
+        }
+        out[outPos++] = digits[i];
+    }
+    out[outPos] = '\0';
+}
+
+} // namespace
+
+// Flights card (spec 4.9): nearest aircraft, nearest-first, cycled by the
+// knob or a tap. `snap` is DialUi's own copy (written only by pollFlights()
+// on the loop task) and `haveLogo` is its decision about whether the airline
+// logo will be pushed after the frame — this draws what that implies, and
+// reserves the logo rectangle when it will be.
+void drawFlightsCard(LovyanGFX& gfx, const DialTheme& theme,
+                     const FlightsModel::FlightsSnapshot& snap, uint8_t flightIdx,
+                     bool haveLogo)
+{
+    if (snap.stale)
+    {
+        gfx.fillCircle(kFlightsStaleDotX, kFlightsStaleDotY, kFlightsStaleDotR, theme.col(Col::DIM));
+    }
+
+    if (snap.offline)
+    {
+        gfx.setTextColor(theme.col(Col::TEXT), theme.col(Col::BG));
+        gfx.drawString("waiting for HA", kRingCx, kRingCy, &fonts::Font4);
+        return;
+    }
+
+    if (snap.count == 0)
+    {
+        gfx.setTextColor(theme.col(Col::TEXT), theme.col(Col::BG));
+        gfx.drawString("no aircraft nearby", kRingCx, kRingCy, &fonts::Font4);
+        // The search radius is Home Assistant's business now (spec 4.11) —
+        // the Dial no longer has FLIGHTS_RADIUS_MI to name here.
+        gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
+        gfx.drawString("none in range", kCentreX, kFlightsEmptyCaptionY, &fonts::Font2);
+        return;
+    }
+
+    const uint8_t idx = (flightIdx < snap.count) ? flightIdx : 0;
+    const FlightsModel::Aircraft& ac = snap.ac[idx];
+
+    // Logo, else operatorName, else callsign (spec 4.9). Only (re)decode the
+    // sprite when the current aircraft's airline differs from what's
+    // resident and FlightsService actually has that logo ready — decoding is
+    // a real PNG parse, not something to redo every frame. M1 (spec review
+    // 2026-09-04): the logo is decoded straight off LittleFS — no PNG byte
+    // buffer lives in either DialUi or FlightsService any more. LittleFS
+    // reads are safe from the loop task (LittleFS is internally locked).
+    // Decode the PNG straight from LittleFS onto this frame (a ~6 KB PNG at
+    // <= 4 Hz is cheap on the S3); remember decode failures per session so a
+    // bad file is not retried every frame. LittleFS reads are safe from the
+    // loop task (internally locked).
+    // The canvas is a 16-colour palette, which would posterise the PNG, so
+    // the logo is drawn straight onto M5Dial.Display in render() after the
+    // frame is pushed. Here we only decide whether there is a logo to draw.
+    // White band across the top of the card (the round bezel clips the
+    // corners). With a logo, the logo rectangle inside it is reserved as
+    // TRANSPARENT so the white-backed sprite pushed in render() shows through
+    // seamlessly; without one, the operator name is drawn dark on the band.
+    gfx.fillRect(0, 0, 240, kFlightsBandH, theme.col(Col::TEXT));
+    if (haveLogo)
+    {
+        // Reserve the logo rectangle: on the canvas the TRANSPARENT index keeps
+        // the display's logo pixels through the push (see DialUi::render()).
+        gfx.fillRect(kFlightsLogoX, kFlightsLogoY, 120, 48,
+                     theme.useCanvas ? static_cast<uint32_t>(Col::TRANSPARENT) : theme.col(Col::BG));
+    }
+    else
+    {
+        gfx.setTextColor(theme.col(Col::BG), theme.col(Col::TEXT));
+        const char* fallback = (ac.operatorKnown && ac.operatorName[0] != '\0') ? ac.operatorName : ac.callsign;
+        gfx.drawString(fallback, kCentreX, kFlightsFallbackY, &fonts::Font2);
+    }
+
+    // "BA123 - A320": the flight number is what a passenger (or a plane
+    // spotter with a phone) would recognise, so it wins over the raw ATC
+    // callsign whenever HA has resolved one; "BAW123 - A320" is the
+    // fallback when it hasn't (spec 4.11, final review 2026-09-05).
+    const char* headline = (ac.flightNumber[0] != '\0') ? ac.flightNumber : ac.callsign;
+    char line1[32];
+    if (ac.type[0] != '\0')
+    {
+        snprintf(line1, sizeof(line1), "%s - %s", headline, ac.type);
+    }
+    else
+    {
+        snprintf(line1, sizeof(line1), "%s", headline);
+    }
+    gfx.setTextColor(theme.col(Col::TEXT), theme.col(Col::BG));
+    gfx.drawString(line1, kCentreX, kFlightsCallsignY, &fonts::Font2);
+
+    // Route, large: "LHR -> JFK" (ASCII arrow — Font4 may lack the real one)
+    // or "route unknown" when not yet enriched.
+    if (ac.routeKnown && ac.fromIata[0] != '\0' && ac.toIata[0] != '\0')
+    {
+        char routeBuf[16];
+        snprintf(routeBuf, sizeof(routeBuf), "%s -> %s", ac.fromIata, ac.toIata);
+        gfx.setTextColor(theme.col(Col::TEXT), theme.col(Col::BG));
+        gfx.drawString(routeBuf, kCentreX, kFlightsRouteY, &fonts::Font4);
+    }
+    else
+    {
+        gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
+        gfx.drawString("route unknown", kCentreX, kFlightsRouteY, &fonts::Font2);
+    }
+
+    // City names, small, under the route line: "London -> New York" when
+    // both ends are known, just the known one when only one is, nothing
+    // when HA hasn't got either yet (fc/tc, spec 4.11 amendment).
+    if (ac.fromCity[0] != '\0' || ac.toCity[0] != '\0')
+    {
+        char cityBuf[12 + 4 + 12 + 1];
+        if (ac.fromCity[0] != '\0' && ac.toCity[0] != '\0')
+        {
+            snprintf(cityBuf, sizeof(cityBuf), "%s -> %s", ac.fromCity, ac.toCity);
+        }
+        else if (ac.fromCity[0] != '\0')
+        {
+            snprintf(cityBuf, sizeof(cityBuf), "%s", ac.fromCity);
+        }
+        else
+        {
+            snprintf(cityBuf, sizeof(cityBuf), "%s", ac.toCity);
+        }
+        gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
+        gfx.drawString(cityBuf, kCentreX, kFlightsCityY, &fonts::Font2);
+    }
+
+    // Altitude/speed: "12,000 ft - 450 kt", or "on ground" for an aircraft
+    // HA flagged with gnd — "0 ft - 0 kt" reads like missing data rather
+    // than a taxiing aircraft (final review 2026-09-05).
+    char altSpeedBuf[32];
+    if (ac.onGround)
+    {
+        snprintf(altSpeedBuf, sizeof(altSpeedBuf), "on ground");
+    }
+    else
+    {
+        char altBuf[12];
+        formatThousands(ac.altFt, altBuf, sizeof(altBuf));
+        snprintf(altSpeedBuf, sizeof(altSpeedBuf), "%s ft - %d kt", altBuf, ac.gsKt);
+    }
+    gfx.setTextColor(theme.col(Col::TEXT), theme.col(Col::BG));
+    gfx.drawString(altSpeedBuf, kCentreX, kFlightsAltY, &fonts::Font2);
+
+    // Distance/compass: "3.1 mi NE" (no index suffix — the page dots below
+    // show position in the list instead).
+    char distBuf[32];
+    snprintf(distBuf, sizeof(distBuf), "%.1f mi %s", static_cast<double>(ac.distMi),
+             Geo::compass8(static_cast<float>(ac.bearing)));
+    gfx.setTextColor(theme.col(Col::TEXT), theme.col(Col::BG));
+    gfx.drawString(distBuf, kCentreX, kFlightsDistY, &fonts::Font2);
+
+    // Page dots: one per aircraft (up to 6, the list is never larger),
+    // centred on kFlightsHintY — filled for the one currently shown, hollow
+    // outlines for the rest. Replaces the old "tap: next" hint text.
+    const int32_t dotsW = static_cast<int32_t>(snap.count - 1) * kFlightsDotSpacing;
+    const int32_t firstDotX = kCentreX - dotsW / 2;
+    for (uint8_t i = 0; i < snap.count; ++i)
+    {
+        const int32_t dotX = firstDotX + static_cast<int32_t>(i) * kFlightsDotSpacing;
+        if (i == idx)
+        {
+            gfx.fillCircle(dotX, kFlightsHintY, kFlightsDotR, theme.col(Col::TEXT));
+        }
+        else
+        {
+            gfx.drawCircle(dotX, kFlightsHintY, kFlightsDotR, theme.col(Col::DIM));
+        }
+    }
+}
+
+// Airline logos from pics.avs.io are transparent PNGs drawn for light
+// backgrounds, so the sprite is white-backed — the same white as the card's
+// top band that drawFlightsCard() lays down around it. Decoding straight onto
+// the display was found to hold ~43 KB of heap afterwards, and so was the
+// drawPngFile(fs, path) wrapper, so the file (<= 8 KB) is read here and
+// decoded from memory into a sprite that is freed immediately (2026-09-04).
+bool dialDrawAirlineLogo(const char* iata)
+{
+    char path[24];
+    snprintf(path, sizeof(path), "/logos/%s.png", iata);
+
+    File f = LittleFS.open(path, "r");
+    const size_t fsz = f ? (size_t)f.size() : 0;
+    uint8_t* png = (f && fsz > 8 && fsz <= 8192) ? (uint8_t*)malloc(fsz) : nullptr;
+    size_t got = 0;
+    if (png) { got = f.read(png, fsz); }
+    if (f) f.close();
+
+    bool pngOk = false;
+    int spriteOk = -1;
+    if (png && got == fsz)
+    {
+        M5Canvas tmp;
+        tmp.setColorDepth(16);
+        spriteOk = tmp.createSprite(120, 48) ? 1 : 0;
+        if (spriteOk == 1)
+        {
+            tmp.fillSprite(TFT_WHITE); // matches the card's white top band
+            // Scale the 120x48 PNG to 90 % (108x43) and centre it so the badge
+            // keeps ~6 px of white either side and ~2 px top/bottom instead of
+            // the artwork touching the edges.
+            pngOk = tmp.drawPng(png, fsz, 6, 2, 108, 43, 0, 0, 0.9f, 0.9f);
+            if (pngOk) { tmp.pushSprite(&M5Dial.Display, kFlightsLogoX, kFlightsLogoY); }
+            // LovyanGFX keeps its ~45 KB pngle workspace allocated for reuse;
+            // release it or every decode leaks it.
+            tmp.releasePngMemory();
+            tmp.deleteSprite();
+        }
+    }
+    if (png) { free(png); }
+    log_i("DialFlightsView: logo %s ok=%d file=%u read=%u sprite=%d", iata, (int)pngOk,
+          (unsigned)fsz, (unsigned)got, (int)spriteOk);
+    return pngOk;
+}
+
+#endif // HAS_DIAL_UI

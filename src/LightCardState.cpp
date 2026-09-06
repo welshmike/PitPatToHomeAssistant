@@ -53,6 +53,10 @@ void LightCardState::resetPage()
 
 void LightCardState::swipe(int dir)
 {
+    if (!m_view.on)
+    {
+        return;
+    }
     const int last = static_cast<int>(pageCount()) - 1;
     m_page = static_cast<Page>(clampInt(static_cast<int>(m_page) + dir, 0, last));
 }
@@ -170,7 +174,11 @@ void LightCardState::sync(const LightsModel::LightState& s, uint32_t nowMs)
             merged.hue = m_view.hue;
             merged.sat = m_view.sat;
             break;
-        default:
+        case LightsModel::Command::Type::NONE:
+        case LightsModel::Command::Type::POWER:
+            // Nothing is pending (NONE), and powerOff() drops the settle
+            // rather than leaving a POWER edit pending — neither can reach
+            // here, and neither has a field to keep.
             break;
         }
     }
@@ -271,7 +279,11 @@ void LightCardState::detents(int n, uint32_t nowMs)
 
 void LightCardState::selectPreset(uint8_t i, uint32_t nowMs)
 {
-    if (i >= LightLayout::kPresetCount || !editable())
+    // Only the Colour page draws swatches, and only a colour-capable card has
+    // that page — a tap that lands on those coordinates on any other page is
+    // a tap on bare background.
+    if (i >= LightLayout::kPresetCount || !m_hasColour || m_page != Page::COLOUR ||
+        !editable())
     {
         return;
     }
@@ -306,7 +318,10 @@ LightsModel::Command LightCardState::buildSettleCommand() const
         c.hue = LightLayout::kPresetHues[m_preset];
         c.sat = 100.0f;
         break;
-    default:
+    case LightsModel::Command::Type::NONE:
+    case LightsModel::Command::Type::POWER:
+        // Only a detent/preset edit arms a settle, and those only ever set
+        // BRIGHT/TEMP/HUE — there is no settle command for either of these.
         break;
     }
     return c;
@@ -323,6 +338,7 @@ LightsModel::Command LightCardState::tick(uint32_t nowMs)
 
     cmd = buildSettleCommand();
     m_settling = false;
+    m_pending = LightsModel::Command::Type::NONE;
     beginConfirmHold(cmd, nowMs);
     return cmd;
 }
@@ -342,17 +358,3 @@ float LightCardState::ringFraction() const
 {
     return clamp01(static_cast<float>(m_view.brightnessPct) / 100.0f);
 }
-
-// --- Plan 8 Task 3 removes this ------------------------------------------
-LightsModel::Command LightCardState::tapButton(LightButtons::Button b, uint32_t nowMs)
-{
-    // The old three-button face is gone; only power still has a v2 meaning,
-    // so the pre-rewrite DialUi keeps a working power button and nothing
-    // else until Task 3 replaces that view.
-    if (b != LightButtons::Button::POWER)
-    {
-        return LightsModel::Command();
-    }
-    return m_view.on ? powerOff(nowMs) : tapOn(nowMs);
-}
-// -------------------------------------------------------------------------

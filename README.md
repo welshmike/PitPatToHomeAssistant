@@ -135,8 +135,8 @@ configuration screen for this and similar settings is planned.
 * **Selector** ("START SPEED"): the candidate speed shown large, with an `mph` caption and an
   amber speed ring at that value, and hints "tap to start" / "hold: default". Opens (from
   Disconnected) at the configured default speed; closes back to Disconnected on tap (starts the
-  belt), hold (starts at default), the side button (cancels, no belt command), or 20 seconds of
-  inactivity
+  belt), hold (starts at default), a hold of the side button (cancels, no belt command, and jumps
+  home), or 20 seconds of inactivity
 * **Connecting**: shown whenever a connect is in progress — including right after tapping start
   while the belt is unreachable, before the belt itself is counting down. "Connecting… attempt
   N" (attempt count only shown once there's been one) with a note that belt beeps are normal,
@@ -188,14 +188,19 @@ blocked while the belt is still active).
 
 Away from the belt, the Dial is a small desk gadget: cards sit in a ring — Treadmill, Clock,
 Flights, Office (light), Lamp (light), with more (Calendar, Music) coming in later sub-projects.
-While the belt is idle and no selector is open, the knob scrolls the ring one card per detent, in
-either direction, and the side button always jumps back to the Treadmill card (still an emergency
-stop when the belt is actually running). Connecting/Starting/Running/Paused screens override
-whichever card is showing, exactly as today, and the ring picks back up on the last card once the
-belt returns to idle.
+While the belt is idle, a **single click of the side button opens a card menu**: the five cards as
+glyphs on a ring, the current one highlighted in amber with its name in the middle. Turn the knob
+to move the highlight, tap a glyph (or click again to take the highlighted one) to go there; eight
+seconds without input closes it unchanged. **Holding** the side button jumps straight back to the
+Treadmill card from anywhere, closing the menu or the speed picker on the way. While the belt is
+actually running the side button is still the emergency stop, on the instant press rather than
+after the click window. The knob never scrolls cards: it always adjusts whatever the card showing
+owns (see each card below). Connecting/Starting/Running/Paused screens override whichever card is
+showing, exactly as today, and the ring picks back up on the last card once the belt returns to
+idle.
 
 **The Dial boots into the Clock card**, not Disconnected — there is no idle return to a "home"
-card, so the Treadmill card is reached explicitly via the side button. The Clock is an analogue
+card, so the Treadmill card is reached explicitly via the menu or by holding the side button. The Clock is an analogue
 face on the round display: 12 tick marks, hour/minute/second hands, and a small date (`Mon 3 Sep`)
 at the 6 o'clock position, redrawn once a second. Time comes from NTP over WiFi, using the POSIX TZ
 string `TIMEZONE_TZ` from `config.h` (default `Europe/London`), and is also kept in the Dial's
@@ -212,12 +217,13 @@ city names underneath when Home Assistant knows them (`London -> New York`), the
 ground speed (`12,000 ft - 450 kt`) and distance and compass bearing (`3.1 mi NE`). Separators render as a
 plain `-`/`->` rather than real dashes/arrows, since the Dial's built-in bitmap fonts are
 ASCII-only. Below that, a row of small page dots — one per aircraft, filled for the one currently
-shown — shows position in the list instead of a text index. Tapping the screen cycles to the next
-aircraft. When the ring is idle on the Clock card and an aircraft comes into range, the Flights
-card **auto-shows** itself over the Clock, and returns to the Clock on its own once the last
-aircraft leaves range — unless you've scrolled or pressed the side button in the meantime, which
-cancels the automatic return. This is the `Flights Auto-show` switch in Home Assistant (default
-on); turn it off there to keep Flights purely knob-scrolled, like any other card.
+shown — shows position in the list instead of a text index. Turning the knob or tapping the screen
+cycles to the next aircraft. When the ring is idle on the Clock card and an aircraft comes into
+range, the Flights card **auto-shows** itself over the Clock, and returns to the Clock on its own
+once the last aircraft leaves range — unless you've cycled aircraft or navigated yourself in the
+meantime, which cancels the automatic return. This is the `Flights Auto-show` switch in Home
+Assistant (default on); turn it off there to reach Flights only from the card menu, like any
+other card.
 
 A second Home Assistant toggle, `PaceKeeper Dial airline flights only` (default on), hides
 aircraft with no airline code — private planes, flying schools, most helicopters — so the card
@@ -254,40 +260,42 @@ dot appears near the top while that list keeps showing; if MQTT itself is down t
 range".
 
 **Lights** are two cards, **Office** and **Lamp**, each controlling one Home Assistant light over
-MQTT — nothing goes through HA's REST/WebSocket API, only plain topics (see below). Each card
-shows the light's title, its brightness large in the middle when on (`65%`) or `OFF` dimmed when
-off, a caption underneath for colour temperature (`2700K`) or hue (`hue 210`), and a value ring
-around the edge in the same style as the speed ring. Three small on-screen buttons along the
-bottom replace the belt cards' tap/hold gestures:
+MQTT — nothing goes through HA's REST/WebSocket API, only plain topics (see below).
 
-* **Power** toggles the light on/off immediately — it stays live even before any brightness/colour
-  data has arrived (a "blind" switch-on), as long as MQTT is up and at least one state message has
-  been seen since boot
-* **Bright** engages brightness: once engaged (the button fills amber) the knob adjusts it ±5% per
-  detent, clamped 1–100%; tapping **Bright** again releases it, sending immediately whatever change
-  hadn't yet settled
-* **Colour** (Lamp only — Office is colour-temperature-only): first tap engages colour temperature
-  or hue (whichever HA currently reports), second tap switches to the other, third tap releases the
-  same way **Bright**'s second tap does. Knob: ±100 K per detent clamped to the light's own
-  min/max kelvin (2000–6535 K for the Lamp), or ±10° per detent wrapping 0–360° for hue
+When the light is **off** the whole card is one switch-on target: a large power circle with
+`tap to switch on` underneath. Tap anywhere and the light comes back on at whatever brightness it
+was last at (the Dial sends `{"state":"ON"}` and lets the light restore itself); the knob and a
+touch-hold do nothing there.
 
-While a value is engaged, rotating the knob adjusts it instead of scrolling the card ring; a
-command is sent once, 300 ms after the last detent, the same debounce the treadmill's own speed
-control uses — spinning several clicks quickly still only produces one MQTT publish. Engagement
-also releases itself automatically after 10 seconds with no tap or detent, and silently (dropping
-any not-yet-sent change) the moment the card ring scrolls away, the side button homes, or a
-belt/connection screen takes over. Switching straight from one control to another (`Bright` while
-colour is engaged, or `Colour` while brightness is) sends the change you had made rather than
-dropping it. After a command goes out the card keeps showing the value it just sent for up to 1.5
-seconds, so the reading doesn't flick back to HA's old state while the echo is still in flight.
-With nothing engaged, the knob scrolls the card ring exactly
-like the other desk cards.
+When it is **on** the card is a small stack of pages, shown by the dots near the top — Brightness,
+Kelvin and, on the Lamp, Colour. Swipe left or right to change page (the ends don't wrap), and
+**the knob always adjusts the page you're looking at**:
+
+* **Brightness**: the value ring around the edge plus the percentage in the middle; ±5 % per
+  detent, clamped 1–100 %. The caption underneath shows the light's live colour state (`2700K` or
+  `hue 240`).
+* **Kelvin**: the value large in the middle over a warm→cool bar with a marker at where this light
+  sits inside its own min/max range; ±100 K per detent, clamped to that range.
+* **Colour** (Lamp only — Office is colour-temperature-only): eight preset hues on a ring in true
+  colour, the selected one larger with a white outline, and the chosen colour filling the middle.
+  One preset per detent (wrapping), or tap a swatch directly.
+
+The Lamp is in either temperature or hue mode at a time, so whichever of those two pages isn't
+live draws dim with `not active - turn to use`; the first detent on it sends that mode's command
+and makes it live. A small power glyph at the bottom switches the light off (as does holding
+anywhere on the card for a second, with the same red progress arc the belt's hold-to-stop uses).
+
+A command is sent once, 300 ms after the last detent, the same debounce the treadmill's own speed
+control uses — spinning several clicks quickly still only produces one MQTT publish, and an edit
+made just before you leave the card still goes out. After a command goes out the card keeps
+showing the value it just sent for up to 1.5 seconds, so the reading doesn't flick back to HA's
+old state while the echo is still in flight. Every arrival on a light card, and every switch-on,
+starts on the Brightness page.
 
 The card shows `waiting for HA` (dimmed) while MQTT itself is down, or `no data` (dimmed) once
 MQTT is up but no retained state has arrived yet for that light (or HA reports it `unavailable`).
-During `waiting for HA` all three buttons are inert — there is nowhere for a command to go. During
-`no data`, `Power` stays tappable (once a first message has parsed) and `Bright`/`Colour` are
-inert. Topics: commands go out on `pacekeeper-dial/light/{office|lamp}/set`, retained state
+Neither face is interactive — there is nowhere for a command to go, or nothing to send it about.
+Topics: commands go out on `pacekeeper-dial/light/{office|lamp}/set`, retained state
 comes back on `pacekeeper-dial/light/{office|lamp}/state`, and the Dial asks for a fresh snapshot
 on `pacekeeper-dial/light/refresh` once after each MQTT (re)connect. The two Home Assistant
 automations that apply commands and mirror state are documented, with their full YAML, in
