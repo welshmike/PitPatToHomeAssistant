@@ -309,6 +309,10 @@ void NetTask::publishBootRecord()
     if (lastCount > 0)
     {
         static char doc[RemoteLog::kLastLines * (RemoteLog::kLineLen * 2) + 160];
+        // Worst case (every char escaped) must fit PubSubClient's buffer minus the
+        // 5-byte fixed header, 2-byte topic length and the topic itself.
+        static_assert(RemoteLog::kLastLines * (RemoteLog::kLineLen * 2) + 64 <= 2048 - 7 - 25,
+                      "diag/last JSON can exceed the MQTT buffer; shrink kLastLines/kLineLen");
         size_t n = (size_t)snprintf(doc, sizeof(doc), "{\"reset\":\"%s\",\"build\":\"%s\",\"lines\":[",
                                     RemoteLog::resetReasonName(), RemoteLog::buildStamp());
         for (uint8_t i = 0; i < lastCount && n + 4 < sizeof(doc); i++)

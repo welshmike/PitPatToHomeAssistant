@@ -14,7 +14,7 @@ Both boards do this; the topics are fixed strings, and only one board is ever li
 | --- | --- | --- |
 | `pacekeeper-dial/diag` | no (QoS 0) | one log line per message, e.g. `W (48213) Treadmill: Mid-session kick — backing off 10s before reconnect to work through kicking phase` |
 | `pacekeeper-dial/diag/boot` | **yes** | `{"reset":"SW","build":"Sep  6 2026 12:41:07","uptime_s":37,"heap":118432,"last_lines":0}` |
-| `pacekeeper-dial/diag/last` | no (QoS 0) | one pre-crash log line per message, e.g. `[last-1] I (5642) Treadmill: connect() begin` — see [After a crash](#after-a-crash) |
+| `pacekeeper-dial/diag/last` | **yes** | one JSON object per crash: `{"reset":"TASK_WDT","build":"…","lines":["I (5642) Treadmill: connect() begin", …]}` oldest first — see [After a crash](#after-a-crash) |
 
 The boot record is republished on every MQTT (re)connect, so a subscriber that arrives late still
 learns how the Dial last restarted:
@@ -26,7 +26,7 @@ learns how the Dial last restarted:
   unit is recompiled (a clean build, or a change to the build flags), so treat it as "which build
   family", not "which commit"; `uptime_s` is the reliable "did my flash land" signal.
 * `uptime_s`, `heap` — seconds since boot and free heap at the moment of the MQTT connect.
-* `last_lines` — how many `diag/last` messages accompanied this record. Non-zero only on the first
+* `last_lines` — how many pre-crash lines the `diag/last` object carries. Non-zero only on the first
   MQTT connect after a crash; `0` on every reconnect and after a clean restart.
 
 ## Reading the stream
@@ -66,28 +66,29 @@ is not zeroed by the startup code and survives a panic, either watchdog and a br
 except a power cycle, where it holds whatever the SRAM powered up as, which is why the ring carries
 a magic word and a checksum and is ignored unless both match.
 
-What you get, **once per boot**, on the first MQTT connect:
+What you get, **once per boot**, on the first MQTT connect after a crash:
 
-* one message per saved line on `pacekeeper-dial/diag/last`, oldest first, prefixed `[last-N] `
-  where N counts back from the reset — `[last-8]` … `[last-1]`, so `[last-1]` is the last thing the
-  firmware managed to log before it stopped;
-* `"last_lines":N` in the retained `diag/boot` record, so you know how many to expect.
+* **one retained JSON object** on `pacekeeper-dial/diag/last`:
+  `{"reset":"TASK_WDT","build":"Sep  6 2026 12:14:13","lines":["…", "…"]}` — `lines` is oldest
+  first, so the last element is the last thing the firmware managed to log before it stopped;
+* `"last_lines":N` in the retained `diag/boot` record published in the same connect.
 
-It appears **only when `esp_reset_reason()` is something other than `POWERON` or `SW`** — a power
-cycle has no ring to read and an OTA flash (`SW`) is not a crash. In every case the ring is cleared
-after that first connect, so later reconnects publish `"last_lines":0` and nothing on `diag/last`,
-and the next crash reports its own tail rather than replaying this one.
+It is written **only when `esp_reset_reason()` is something other than `POWERON` or `SW`** — a
+power cycle has no ring to read and an OTA flash (`SW`) is not a crash. A clean boot deliberately
+leaves the previous crash's object in place rather than erasing evidence, so always compare its
+`build`/`reset` with the current `diag/boot` record to see whether it belongs to *this* boot. The
+RTC ring itself is cleared after every first connect, so the next crash reports its own tail.
 
-To read it, subscribe *before* the Dial reconnects — `diag/last` is not retained:
+Because both topics are retained you can read them at any time, no need to be subscribed when the
+Dial comes back:
 
 ```bash
-mosquitto_sub -h <broker-host> -u <user> -P <pass> -t 'pacekeeper-dial/diag/#' -v
+mosquitto_sub -h <broker-host> -u <user> -P <pass> -t 'pacekeeper-dial/diag/#' -v -C 2
 ```
 
-then reset the Dial (or wait for it to fall over). The retained `diag/boot` record arrives first
-with the `reset` reason and `last_lines`, then the `[last-N]` lines, then the normal live stream.
-If you missed them, the retained boot record still tells you *that* it crashed and how many lines
-were published; the lines themselves are gone.
+prints the retained `boot` and `last` objects and exits; drop `-C 2` to keep following the live
+stream. The object is capped by the 2048-byte MQTT buffer (8 lines × 120 chars, JSON-escaped, fits
+with room to spare — a `static_assert` in `NetTask.cpp` keeps it that way).
 
 Two things exist purely to make that tail readable:
 
