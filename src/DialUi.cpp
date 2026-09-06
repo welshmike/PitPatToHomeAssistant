@@ -512,7 +512,7 @@ void DialUi::handleInput(uint32_t nowMs)
                  lightCardLive(screen))
         {
             // The knob adjusts the page that is showing — brightness, kelvin
-            // or colour preset. LightCardState ignores it while the light is
+            // or hue. LightCardState ignores it while the light is
             // off, and the command follows 300 ms after the last detent,
             // from tickLights(). The lightCardLive() guard keeps the whole
             // face inert while MQTT is down or the card has no live state.
@@ -556,8 +556,8 @@ void DialUi::handleInput(uint32_t nowMs)
 
 // Tap on a light card (spec 4.12): the whole off face switches the light on;
 // on the lit face only the small power glyph and, on the Colour page, the
-// eight swatches are live. Everything else is bare background — no beep,
-// exactly like the Clock card's tap.
+// hue ring are live. Everything else is bare background — no beep, exactly
+// like the Clock card's tap.
 void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
 {
     // Hardware diagnostics (2026-09-06): taps on the bottom power glyph were
@@ -590,19 +590,16 @@ void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
         return;
     }
 
-    // Swatches first: on the Colour page they are the page's whole point, and
-    // this ordering is what makes a swatch win outright if the two hit discs
-    // ever did overlap. (They don't — the rotated ring keeps every swatch
-    // centre past kSwatchHitR + kPowerGlyphHitR from the glyph, and a layout
-    // test sweeps the face to prove it — but the priority is free.)
+    // Colour page: only the hue ring is a target (the glyph is not drawn there).
     if (card.page() == LightCardState::Page::COLOUR && card.hasColour())
     {
-        const int8_t swatch = LightLayout::hitSwatch(x, y);
-        if (swatch >= 0)
+        if (LightLayout::hitHueRing(x, y))
         {
             // Same settle path as a detent: the command goes out 300 ms later
             // from tickLights(), so a quick second choice replaces the first.
-            card.selectPreset(static_cast<uint8_t>(swatch), nowMs);
+            const float hue = LightLayout::hueAt(x, y);
+            log_i("Light tap: hue ring at (%d,%d) -> %.0f", x, y, static_cast<double>(hue));
+            card.selectHue(hue, nowMs);
             playAcceptBeep(true);
             return;
         }
@@ -1022,8 +1019,8 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
     // Lights cards (spec 4.12): the page decides which face is drawn, so it
     // gets its own field alongside a FNV-1a over the light state the face
     // reads (key, valid, available, brightnessPct, kelvin, its min/max bounds,
-    // hue, supportsColor, mode). preset/settling drive the Colour page's selected
-    // swatch and every "an edit is in flight" amber, and `on` is the
+    // hue, supportsColor, mode). editHue/settling drive the Colour page's
+    // marker and every "an edit is in flight" amber, and `on` is the
     // off-face/on-face split — all cheap to compare directly. Zeroed when no
     // light card is showing, so the other screens never redraw on light state.
     key.lightMqttUp = (m_netStatus == NetStatus::MQTT_UP);
@@ -1056,7 +1053,7 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
         }
         key.lightHash     = static_cast<uint16_t>(h ^ (h >> 16));
         key.lightPage     = static_cast<uint8_t>(card.page());
-        key.lightPreset   = card.preset();
+        key.lightHue      = static_cast<uint16_t>(lroundf(card.editHue())) % 360u;
         key.lightSettling = card.settling();
         key.lightOn       = v.on;
     }
@@ -1064,7 +1061,7 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
     {
         key.lightHash     = 0;
         key.lightPage     = 0;
-        key.lightPreset   = 0;
+        key.lightHue      = 0;
         key.lightSettling = false;
         key.lightOn       = false;
     }
@@ -1090,9 +1087,9 @@ void DialUi::render(uint32_t nowMs)
     m_lastFrameDrawMs = nowMs;
 
     m_logoToDraw[0] = '\0';
-    // The Colour page's swatches and centre disc are true colour, which a
-    // 16-entry palette cannot hold: the canvas leaves them as TRANSPARENT
-    // holes and they are painted straight onto the display below.
+    // The Colour page's hue ring, marker and centre disc are true colour,
+    // which a 16-entry palette cannot hold: the canvas leaves them as
+    // TRANSPARENT holes and they are painted straight onto the display below.
     const Screen screen = static_cast<Screen>(key.screen);
     const bool lightTrueColour =
         (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP) &&
@@ -1106,11 +1103,12 @@ void DialUi::render(uint32_t nowMs)
         // needs to be told where to push rather than relying on one.
         if (m_logoToDraw[0] != '\0' || lightTrueColour)
         {
-            // The frame left the logo rectangle (drawFlights) or the colour
-            // swatches (drawLight) filled with the TRANSPARENT index, so this
-            // push leaves whatever is on the display there untouched — the
-            // full-colour logo decoded earlier, or last frame's swatches,
-            // which paintLightTrueColour() repaints below. No flicker.
+            // The frame left the logo rectangle (drawFlights) or the hue ring,
+            // marker and centre disc (drawLight) filled with the TRANSPARENT
+            // index, so this push leaves whatever is on the display there
+            // untouched — the full-colour logo decoded earlier, or last
+            // frame's colours, which paintLightTrueColour() repaints below.
+            // No flicker.
             m_canvas.pushSprite(&M5Dial.Display, 0, 0, static_cast<uint32_t>(Col::TRANSPARENT));
         }
         else
@@ -1128,10 +1126,10 @@ void DialUi::render(uint32_t nowMs)
         m_logoOnScreen[0] = '\0'; // direct draw repaints everything each frame
     }
 
-    // Eight preset hues plus the selected colour in the middle, in true colour
-    // rather than the palette's 16 (spec 4.12). Nine fillCircle calls, only on
-    // the frames the Colour page is actually up. The direct-to-display
-    // fallback painted them itself (there is no push to work around).
+    // The hue ring, its marker and the selected colour in the middle, in true
+    // colour rather than the palette's 16 (spec 4.12). Only on the frames the
+    // Colour page is actually up. The direct-to-display fallback painted them
+    // itself (there is no push to work around).
     if (lightTrueColour && m_theme.useCanvas)
     {
         paintLightTrueColour(M5Dial.Display, lightCardFor(screen));
@@ -1387,8 +1385,8 @@ void DialUi::markLogoDecodeFailed(const char* iata)
 
 // Lights card (spec 4.12). Everything on the face comes from the card's own
 // state and LightLayout's geometry — see DialLightsView.cpp. The Colour page's
-// swatches are left as TRANSPARENT holes here and filled in true colour by
-// render() after the push.
+// hue ring, marker and centre disc are left as TRANSPARENT holes here and
+// filled in true colour by render() after the push.
 void DialUi::drawLight(LovyanGFX& gfx, LightsModel::LightKey key)
 {
     const LightCardState& card = m_lightCards[static_cast<uint8_t>(key)];

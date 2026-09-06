@@ -37,11 +37,10 @@ constexpr int kKelvinCaptionY = 190;
 // Colour page: the "not active" glyph sits where the centre disc would be.
 constexpr int kColourGlyphR = 26;
 
-// HSV (h in degrees, s/v 0..100) to RGB565. Only used for the eight preset
-// hues at full saturation and value, but written generally so the swatch and
-// the disc cannot disagree about what "hue 240" looks like. Passing the
-// uint16_t result to a LovyanGFX draw call selects convert_rgb565()
-// (colortype.hpp: TYPECHECK(uint16_t)), which is what the display wants.
+// HSV (h in degrees, s/v 0..100) to RGB565. Used for the ring segments,
+// marker and centre disc. Passing the uint16_t result to a LovyanGFX draw
+// call selects convert_rgb565() (colortype.hpp: TYPECHECK(uint16_t)), which
+// is what the display wants.
 uint16_t hsvToRgb565(float h, float s, float v)
 {
     h = fmodf(h, 360.0f);
@@ -67,9 +66,12 @@ uint16_t hsvToRgb565(float h, float s, float v)
     return static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
 }
 
-uint16_t presetRgb565(uint8_t i)
+// RGB565 of a hue at full saturation and value: the ring segments, the
+// marker fill and the centre disc all go through this one function so they
+// cannot disagree about what "hue 240" looks like.
+uint16_t hueRgb565(float hue)
 {
-    return hsvToRgb565(LightLayout::kPresetHues[i % LightLayout::kPresetCount], 100.0f, 100.0f);
+    return hsvToRgb565(hue, 100.0f, 100.0f);
 }
 
 int clampInt(int v, int lo, int hi)
@@ -227,40 +229,51 @@ void drawKelvinPage(LovyanGFX& gfx, const DialTheme& theme, const LightCardState
     gfx.drawString(caption, kCentreX, kKelvinCaptionY, &fonts::Font2);
 }
 
+// Paints the true-colour parts of the Colour page onto `gfx`: the 72 ring
+// segments, the centre disc in the selected hue, then the marker fill and its
+// outline in `outlineColour`. Order matters: the marker overlaps the ring.
+// fillArc's angles are degrees clockwise from 3 o'clock, so hue h (0 at 12
+// o'clock) is at fillArc angle h - 90; adding 360 keeps every angle positive.
+void paintHueWheel(LovyanGFX& gfx, const LightCardState& card, uint32_t outlineColour)
+{
+    for (int i = 0; i < LightLayout::kHueSegments; ++i)
+    {
+        const float hue = static_cast<float>(i) * LightLayout::kHueSegmentDeg;
+        const float a0  = hue - 90.0f + 360.0f;
+        // A hair of overlap so the segment boundaries never leave a gap.
+        gfx.fillArc(kCentreX, kCentreY, LightLayout::kHueRingOuterR, LightLayout::kHueRingInnerR,
+                    a0, a0 + LightLayout::kHueSegmentDeg + 0.5f, hueRgb565(hue));
+    }
+
+    const float sel = card.editHue();
+    gfx.fillCircle(kCentreX, kCentreY, LightLayout::kCentreDiscR, hueRgb565(sel));
+
+    int mx = 0;
+    int my = 0;
+    LightLayout::hueMarkerCentre(sel, mx, my);
+    gfx.fillCircle(mx, my, LightLayout::kHueMarkerR + LightLayout::kHueMarkerOutline, outlineColour);
+    gfx.fillCircle(mx, my, LightLayout::kHueMarkerR, hueRgb565(sel));
+}
+
+// The Colour page (spec 4.18): a continuous hue ring, a marker on it at the
+// selected hue, and the selected colour in the centre disc. All three are true
+// colour, which the 16-colour canvas cannot hold: with `trueColour` the canvas
+// reserves them as TRANSPARENT and paintLightTrueColour() paints them on the
+// display after the push. Without it (hue mode not live) the page draws dim:
+// the band's two boundary circles, an outline where the marker sits, the
+// colour-dots glyph and the "not active" caption.
 void drawColourPage(LovyanGFX& gfx, const DialTheme& theme, const LightCardState& card,
                     bool trueColour)
 {
-    const uint8_t sel = card.preset();
-
-    for (uint8_t i = 0; i < LightLayout::kPresetCount; ++i)
-    {
-        int x = 0;
-        int y = 0;
-        LightLayout::swatchCentre(i, x, y);
-        const int r = (i == sel) ? LightLayout::kSwatchRSelected : LightLayout::kSwatchR;
-        if (!trueColour)
-        {
-            // Hue mode is not live: the whole page draws dim, so the swatches
-            // are outlines rather than colour (and nothing is reserved for
-            // paintLightTrueColour() to fill).
-            gfx.drawCircle(x, y, r, theme.col(Col::DIM_DIM));
-            continue;
-        }
-        if (theme.useCanvas)
-        {
-            // Reserved for paintLightTrueColour(): the push skips this index
-            // and leaves the display's own pixels alone.
-            gfx.fillCircle(x, y, r, static_cast<uint32_t>(Col::TRANSPARENT));
-        }
-        else
-        {
-            // Direct-to-display fallback: no push, so paint the real colour here.
-            gfx.fillCircle(x, y, r, presetRgb565(i));
-        }
-    }
+    int mx = 0;
+    int my = 0;
+    LightLayout::hueMarkerCentre(card.editHue(), mx, my);
 
     if (!trueColour)
     {
+        gfx.drawCircle(kCentreX, kCentreY, LightLayout::kHueRingOuterR, theme.col(Col::DIM_DIM));
+        gfx.drawCircle(kCentreX, kCentreY, LightLayout::kHueRingInnerR, theme.col(Col::DIM_DIM));
+        gfx.drawCircle(mx, my, LightLayout::kHueMarkerR, theme.col(Col::DIM));
         drawColourDotsGlyph(gfx, kCentreX, kCentreY, kColourGlyphR, theme.col(Col::DIM));
         gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
         gfx.drawString("not active - turn to use", kCentreX, LightLayout::kBrightCaptionY,
@@ -268,25 +281,22 @@ void drawColourPage(LovyanGFX& gfx, const DialTheme& theme, const LightCardState
         return;
     }
 
-    // Selected swatch's 3 px outline, just outside the fill: white, amber
-    // while the edit is still settling.
-    int sx = 0;
-    int sy = 0;
-    LightLayout::swatchCentre(sel, sx, sy);
-    const uint32_t outline = theme.col(card.settling() ? Col::PENDING : Col::TEXT);
-    for (int i = 1; i <= 3; ++i)
-    {
-        gfx.drawCircle(sx, sy, LightLayout::kSwatchRSelected + i, outline);
-    }
-
     if (theme.useCanvas)
     {
-        gfx.fillCircle(kCentreX, kCentreY, LightLayout::kCentreDiscR,
-                       static_cast<uint32_t>(Col::TRANSPARENT));
+        // Reserved for paintLightTrueColour(): the push skips this index and
+        // leaves the display's own pixels alone. The marker's reservation
+        // includes its outline, which is painted there too (a canvas outline
+        // would be covered by the ring segments painted after the push).
+        const uint32_t t = static_cast<uint32_t>(Col::TRANSPARENT);
+        gfx.fillArc(kCentreX, kCentreY, LightLayout::kHueRingOuterR, LightLayout::kHueRingInnerR,
+                    0.0f, 360.0f, t);
+        gfx.fillCircle(mx, my, LightLayout::kHueMarkerR + LightLayout::kHueMarkerOutline, t);
+        gfx.fillCircle(kCentreX, kCentreY, LightLayout::kCentreDiscR, t);
     }
     else
     {
-        gfx.fillCircle(kCentreX, kCentreY, LightLayout::kCentreDiscR, presetRgb565(sel));
+        // Direct-to-display fallback: no push, so paint the real colours here.
+        paintHueWheel(gfx, card, theme.col(card.settling() ? Col::PENDING : Col::TEXT));
     }
 }
 
@@ -304,11 +314,11 @@ void drawLightCard(LovyanGFX& gfx, const DialTheme& theme, const LightCardState&
 {
     const LightsModel::LightState& v = card.view();
 
-    // The Colour page draws bare: no card name, no page dots. The swatch ring
-    // is unmistakable on its own, and with the ring rotated onto the top and
-    // bottom of the face there is no room left for either without crowding
-    // (Mike: "hide the background") — and no power glyph either: Mike wants
-    // nothing under the picker. Swipe back, or the 10 s page timeout, leaves it.
+    // The Colour page draws bare: no card name, no page dots. The hue ring
+    // fills the outer 26 px of the face, so there is no room left for either
+    // without crowding (Mike: "hide the background") — and no power glyph
+    // either: Mike wants nothing under the picker. Swipe back, or the 10 s
+    // page timeout, leaves it.
     const bool bareColourPage = mqttUp && v.valid && v.available && v.on &&
                                 card.page() == LightCardState::Page::COLOUR;
 
@@ -369,16 +379,10 @@ void drawLightCard(LovyanGFX& gfx, const DialTheme& theme, const LightCardState&
 
 void paintLightTrueColour(LGFX_Device& display, const LightCardState& card)
 {
-    const uint8_t sel = card.preset();
-    for (uint8_t i = 0; i < LightLayout::kPresetCount; ++i)
-    {
-        int x = 0;
-        int y = 0;
-        LightLayout::swatchCentre(i, x, y);
-        display.fillCircle(x, y, (i == sel) ? LightLayout::kSwatchRSelected : LightLayout::kSwatchR,
-                           presetRgb565(i));
-    }
-    display.fillCircle(kCentreX, kCentreY, LightLayout::kCentreDiscR, presetRgb565(sel));
+    // The display is 16-bit, so the outline colours are RGB565 literals: white,
+    // and TFT_ORANGE 0xFDA0 which is what Col::PENDING maps to (DialTheme.h).
+    const uint32_t outline = card.settling() ? 0xFDA0u : 0xFFFFu;
+    paintHueWheel(display, card, outline);
 }
 
 #endif // HAS_DIAL_UI

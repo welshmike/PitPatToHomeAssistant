@@ -21,18 +21,19 @@
 void drawLightCard(LovyanGFX& gfx, const DialTheme& theme, const LightCardState& card,
                    const char* name, bool mqttUp);
 
-// Whether the Colour page's true-colour circles (the eight swatches and the
-// centre disc) are on screen for this card. Single source of truth for the
+// Whether the Colour page's true-colour circles (the hue ring, its marker and
+// the centre disc) are on screen for this card. Single source of truth for the
 // two halves of that trick: drawLightCard() reserves exactly these circles as
 // the TRANSPARENT palette index, and DialUi calls paintLightTrueColour() after
 // the canvas push to fill the same circles on the display itself — a palette
-// canvas has 16 colours and no room for eight saturated hues.
+// canvas has 16 colours and no room for a continuous hue ring.
 bool lightTrueColourVisible(const LightCardState& card, bool mqttUp);
 
-// Fills the eight swatches (radius LightLayout::kSwatchR, the selected one
-// kSwatchRSelected) and the centre disc (kCentreDiscR) in true colour, one
-// fillCircle each, straight onto the display. Only call it when
-// lightTrueColourVisible() agrees, and only after the frame has been pushed.
+// Paints the hue ring (72 five-degree segments between LightLayout's inner and
+// outer radii), the centre disc (kCentreDiscR) and the marker (kHueMarkerR
+// plus its outline — white, amber while settling) in true colour straight
+// onto the display. Only call it when lightTrueColourVisible() agrees, and
+// only after the frame has been pushed.
 void paintLightTrueColour(LGFX_Device& display, const LightCardState& card);
 
 #endif // HAS_DIAL_UI

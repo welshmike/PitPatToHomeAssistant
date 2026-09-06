@@ -132,7 +132,7 @@ private:
     void handleInput(uint32_t nowMs);
     // The tap handler for a light card (spec 4.12), split out of
     // handleInput(): switch-on anywhere on the off face, the small power
-    // glyph and the Colour page's swatches on the lit face, nothing else.
+    // glyph and the Colour page's hue ring on the lit face, nothing else.
     void handleLightTap(Screen screen, int x, int y, uint32_t nowMs);
     // Moves the card ring to `id` the way the user asked for it (menu
     // selection or the hold-home gesture): counts as manual navigation for
@@ -254,15 +254,15 @@ private:
         // available, brightnessPct, kelvin and its min/max bounds, hue,
         // supportsColor, mode) — same
         // idiom as flightHash above; 0 while no light card is showing. The
-        // page, the selected preset, the settling highlight and on/off decide
-        // which face is drawn at all, so they are compared directly rather
-        // than hashed. lightMqttUp gates the "waiting for HA" state, which
+        // page, the edit hue, the settling highlight and on/off decide which
+        // face is drawn at all, so they are compared directly rather than
+        // hashed. lightMqttUp gates the "waiting for HA" state, which
         // netStatus already covers, but is cheap and keeps the dependency
         // explicit.
         uint16_t lightHash      = 0;
         bool     lightMqttUp    = false;
         uint8_t  lightPage      = 0;
-        uint8_t  lightPreset    = 0;
+        uint16_t lightHue       = 0; // editHue() rounded to whole degrees
         bool     lightSettling  = false;
         bool     lightOn        = false;
 
@@ -285,7 +285,7 @@ private:
                    flightStale == o.flightStale && flightOffline == o.flightOffline &&
                    flightHash == o.flightHash && radarPhase == o.radarPhase &&
                    lightHash == o.lightHash && lightMqttUp == o.lightMqttUp &&
-                   lightPage == o.lightPage && lightPreset == o.lightPreset &&
+                   lightPage == o.lightPage && lightHue == o.lightHue &&
                    lightSettling == o.lightSettling && lightOn == o.lightOn;
         }
     };
