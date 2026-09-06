@@ -29,7 +29,7 @@ enum class Col : uint8_t
     NEUTRAL,    // Lights Kelvin bar, middle
     COOL,       // Lights Kelvin bar, cool end
     TRANSPARENT = 15, // canvas-only: skipped by pushSprite(transp) so the display keeps
-                      // what is under it (the airline logo, the true-colour swatches)
+                      // what is under it (the airline logo, the hue ring, marker and centre disc)
 };
 
 // Palette entries actually registered from the table below: 0..14. Index 15

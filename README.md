@@ -284,12 +284,11 @@ Kelvin and, on the Lamp, Colour. Swipe left or right to change page (the ends do
   `hue 240`).
 * **Kelvin**: the value large in the middle over a warm→cool bar with a marker at where this light
   sits inside its own min/max range; ±100 K per detent, clamped to that range.
-* **Colour** (Lamp only — Office is colour-temperature-only): eight preset hues on a ring in true
-  colour, the selected one larger with a white outline, and the chosen colour filling the middle.
-  One preset per detent (wrapping), or tap a swatch directly. This page draws nothing but the
-  ring and the centre disc — no card name, page dots or power glyph — so leave it by swiping back
-  or waiting for the 10 s page timeout. The swatches are rotated half a step so none sits at 12 or
-  6 o'clock.
+* **Colour** (Lamp only): a continuous hue ring around the edge of the face with a marker at the
+  selected hue and the colour itself in the centre disc. Tap anywhere on the ring to jump to that
+  hue; each knob detent moves 5° (72 detents per revolution, wrapping). The marker outline turns
+  amber while the command settles and until HA echoes it. This page draws nothing but the ring,
+  marker and disc: leave it by swiping back or waiting for the 10 s page timeout.
 
 The Lamp is in either temperature or hue mode at a time, so whichever of those two pages isn't
 live draws dim with `not active - turn to use`; the first detent on it sends that mode's command
@@ -297,7 +296,7 @@ and makes it live. On the Brightness and Kelvin pages a small power glyph at the
 the light off (as does holding
 anywhere on the card for a second, with the same red progress arc the belt's hold-to-stop uses).
 
-The Kelvin and Colour pages are transient: ten seconds without a swipe, a detent or a swatch tap
+The Kelvin and Colour pages are transient: ten seconds without a swipe, a detent or a ring tap
 drops the card back to Brightness, so a card you glanced at earlier reads the same as one you have
 just arrived on.
 
