@@ -90,8 +90,9 @@ private:
     void drawRunning(LovyanGFX& gfx, bool paused, uint32_t nowMs);
     // Flights card (spec 4.9): nearest aircraft, logo/route/altitude/speed —
     // drawn by DialFlightsView; this decides which airline logo (if any)
-    // render() should push onto the display afterwards.
-    void drawFlights(LovyanGFX& gfx);
+    // render() should push onto the display afterwards, and (spec 4.13)
+    // derives the radar sweep phase from nowMs when the empty state is up.
+    void drawFlights(LovyanGFX& gfx, uint32_t nowMs);
     // Lights cards (spec 4.12): the off face, or the page the card is on,
     // drawn by DialLightsView from the card's own state.
     void drawLight(LovyanGFX& gfx, LightsModel::LightKey key);
@@ -241,6 +242,12 @@ private:
         bool     flightStale    = false;
         bool     flightOffline  = false;
         uint16_t flightHash     = 0;
+        // Radar empty state (spec 4.13): 0..29, only while the radar is
+        // actually on screen (screen == FLIGHTS, flightCount == 0, not
+        // offline) — 0 otherwise, so it never churns the key on any other
+        // screen or once an aircraft appears. This is what makes the radar
+        // redraw at 10 Hz while visible and not at all otherwise.
+        uint8_t  radarPhase     = 0;
 
         // Lights cards (spec 4.12): lightHash is a 16-bit FNV-1a over the
         // light state the *visible* card's face reads (key, valid,
@@ -276,7 +283,7 @@ private:
                    menuOpen == o.menuOpen && menuHighlight == o.menuHighlight &&
                    flightIdx == o.flightIdx && flightCount == o.flightCount &&
                    flightStale == o.flightStale && flightOffline == o.flightOffline &&
-                   flightHash == o.flightHash &&
+                   flightHash == o.flightHash && radarPhase == o.radarPhase &&
                    lightHash == o.lightHash && lightMqttUp == o.lightMqttUp &&
                    lightPage == o.lightPage && lightPreset == o.lightPreset &&
                    lightSettling == o.lightSettling && lightOn == o.lightOn;

@@ -16,9 +16,20 @@
 // included). `haveLogo` is the caller's decision that a logo will be pushed
 // straight onto the display after the frame: when true, the logo rectangle is
 // reserved as the TRANSPARENT palette index instead of being painted over.
+// `radarPhase` (0..29, spec 4.13) drives the radar sweep drawn in the empty
+// (count == 0, not offline) state; the caller derives it from nowMs and it is
+// ignored otherwise.
 void drawFlightsCard(LovyanGFX& gfx, const DialTheme& theme,
                      const FlightsModel::FlightsSnapshot& snap, uint8_t flightIdx,
-                     bool haveLogo);
+                     bool haveLogo, uint8_t radarPhase);
+
+// Radar "Searching" empty state (spec 4.13): three range rings and a
+// crosshair in DIM_DIM, a 4 px NET_ON home dot, and a sweep line from the
+// centre to the outer ring rotating clockwise from 12 o'clock — one
+// revolution every 3 s (`radarPhase` 0..29, 12 deg/step) — with two trailing
+// wedges (SPEED_DIM then DIM_DIM) faking phosphor persistence. Called by
+// drawFlightsCard() for the count == 0, not-offline case.
+void drawRadarSweep(LovyanGFX& gfx, const DialTheme& theme, uint8_t radarPhase);
 
 // Reads /logos/<iata>.png off LittleFS, decodes it into a temporary 16-bit
 // sprite and pushes it onto the display at the card's logo rectangle. Returns

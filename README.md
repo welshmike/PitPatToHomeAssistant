@@ -261,8 +261,8 @@ Home Assistant.
 
 If Home Assistant goes quiet for two minutes with the card already showing a list, a small grey
 dot appears near the top while that list keeps showing; if MQTT itself is down the card shows
-"waiting for HA" instead; and when nothing is in range it shows "no aircraft nearby" / "none in
-range".
+"waiting for HA" instead; and when nothing is in range it draws a radar sweep (rotating one
+revolution every 3 s) with "Searching" underneath, instead of a static empty message.
 
 **Lights** are two cards, **Office** and **Lamp**, each controlling one Home Assistant light over
 MQTT — nothing goes through HA's REST/WebSocket API, only plain topics (see below).

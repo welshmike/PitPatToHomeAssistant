@@ -1004,6 +1004,16 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
     {
         key.flightHash = 0;
     }
+    // Radar empty state (spec 4.13): the sweep phase only belongs in the key
+    // while it's actually what's on screen — screen == FLIGHTS, the list is
+    // empty and HA isn't offline (the offline "waiting for HA" text wins
+    // over the radar, spec 4.13 "Untouched"). Zero otherwise so no other
+    // screen, and not even a populated or offline Flights card, redraws at
+    // 10 Hz because of this field.
+    key.radarPhase = (static_cast<Screen>(key.screen) == Screen::FLIGHTS &&
+                       m_flightsSnap.count == 0 && !m_flightsSnap.offline)
+                          ? static_cast<uint8_t>((nowMs / 100) % 30)
+                          : 0;
 
     // Lights cards (spec 4.12): the page decides which face is drawn, so it
     // gets its own field alongside a FNV-1a over the light state the face
@@ -1219,7 +1229,7 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
         drawClock(gfx);
         break;
     case Screen::FLIGHTS:
-        drawFlights(gfx);
+        drawFlights(gfx, nowMs);
         break;
     case Screen::LIGHT_OFFICE:
         drawLight(gfx, LightsModel::LightKey::OFFICE);
@@ -1314,8 +1324,11 @@ void DialUi::drawClock(LovyanGFX& gfx)
 // then hands the drawing to DialFlightsView. m_flightsSnap is written only by
 // pollFlights() and m_flightIdx only by handleInput()/tickFlights()/tick()
 // (all on the loop task), so this is a plain read — no locking needed on top
-// of Guarded's own.
-void DialUi::drawFlights(LovyanGFX& gfx)
+// of Guarded's own. The radar phase (spec 4.13) is derived from nowMs the
+// same way buildFrameKey() derives FrameKey::radarPhase — see that field's
+// comment for why the redraw-gating copy lives there instead of being passed
+// through here.
+void DialUi::drawFlights(LovyanGFX& gfx, uint32_t nowMs)
 {
     bool haveLogo = false;
     if (!m_flightsSnap.offline && m_flightsSnap.count > 0)
@@ -1332,7 +1345,10 @@ void DialUi::drawFlights(LovyanGFX& gfx)
             m_logoToDraw[2] = '\0';
         }
     }
-    drawFlightsCard(gfx, m_theme, m_flightsSnap, m_flightIdx, haveLogo);
+    const uint8_t radarPhase = (!m_flightsSnap.offline && m_flightsSnap.count == 0)
+                                   ? static_cast<uint8_t>((nowMs / 100) % 30)
+                                   : 0;
+    drawFlightsCard(gfx, m_theme, m_flightsSnap, m_flightIdx, haveLogo, radarPhase);
 }
 
 // I4: see m_logoFailed's comment in DialUi.h. `iata` is compared with

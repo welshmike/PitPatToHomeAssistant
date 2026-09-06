@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ClockFace.h"
+#include "DialGlyphs.h"
 #include "Geo.h"
 
 namespace
@@ -35,12 +37,20 @@ constexpr int32_t kFlightsCityY         = 134; // "London -> New York" (fc/tc), 
 constexpr int32_t kFlightsAltY          = 152; // "12,000 ft - 450 kt"
 constexpr int32_t kFlightsDistY         = 172; // "3.1 mi NE"
 constexpr int32_t kFlightsHintY         = 214; // page dots row (one per aircraft, up to 6)
-constexpr int32_t kFlightsEmptyCaptionY = 150; // "within N mi" under "no aircraft nearby"
 constexpr int32_t kFlightsStaleDotX     = 120;
 constexpr int32_t kFlightsStaleDotY     = 63;  // just under the white band, above the callsign row
 constexpr int32_t kFlightsStaleDotR     = 3;
 constexpr int32_t kFlightsDotR          = 3;  // page dot radius
 constexpr int32_t kFlightsDotSpacing    = 12; // centre-to-centre spacing between page dots
+
+// Radar empty state (spec 4.13), centred on kRingCx/kRingCy.
+constexpr int32_t kRadarR0        = 36;
+constexpr int32_t kRadarR1        = 72;
+constexpr int32_t kRadarR2        = 108; // also the sweep/wedge outer radius
+constexpr int32_t kRadarDotR      = 4;   // home dot
+constexpr int32_t kRadarSweepW    = 2;   // sweep line stroke width
+constexpr float    kRadarDegPerStep = 12.0f; // 360/30 steps, one revolution per 3 s at 10 Hz
+constexpr int32_t kRadarTextY     = 196; // "Searching", below the outer ring's bottom chord
 
 // Formats a non-negative integer with comma thousands separators by hand
 // (spec 4.9: "12,000 ft", not "12000 ft") — no locale, no String, no heap.
@@ -78,7 +88,7 @@ void formatThousands(int value, char* out, size_t n)
 // reserves the logo rectangle when it will be.
 void drawFlightsCard(LovyanGFX& gfx, const DialTheme& theme,
                      const FlightsModel::FlightsSnapshot& snap, uint8_t flightIdx,
-                     bool haveLogo)
+                     bool haveLogo, uint8_t radarPhase)
 {
     if (snap.stale)
     {
@@ -94,12 +104,10 @@ void drawFlightsCard(LovyanGFX& gfx, const DialTheme& theme,
 
     if (snap.count == 0)
     {
-        gfx.setTextColor(theme.col(Col::TEXT), theme.col(Col::BG));
-        gfx.drawString("no aircraft nearby", kRingCx, kRingCy, &fonts::Font4);
-        // The search radius is Home Assistant's business now (spec 4.11) —
-        // the Dial no longer has FLIGHTS_RADIUS_MI to name here.
-        gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
-        gfx.drawString("none in range", kCentreX, kFlightsEmptyCaptionY, &fonts::Font2);
+        // Spec 4.13 (2026-09-06): a radar sweep "looking for aircraft"
+        // instead of the old static "no aircraft nearby" caption. The stale
+        // dot above is unchanged — a stale empty list still shows the radar.
+        drawRadarSweep(gfx, theme, radarPhase);
         return;
     }
 
@@ -235,6 +243,46 @@ void drawFlightsCard(LovyanGFX& gfx, const DialTheme& theme,
             gfx.drawCircle(dotX, kFlightsHintY, kFlightsDotR, theme.col(Col::DIM));
         }
     }
+}
+
+// Radar "Searching" empty state (spec 4.13). `radarPhase` is 0..29 (12 deg
+// per step, one revolution every 3 s at the 10 Hz this is redrawn while
+// visible — see FrameKey::radarPhase in DialUi.cpp). Draw order matters:
+// wedges first so the rings/crosshair lines stay visible on top of them,
+// then the sweep line, then the centre dot, then the caption.
+void drawRadarSweep(LovyanGFX& gfx, const DialTheme& theme, uint8_t radarPhase)
+{
+    // ClockFace::pointAt's angle convention (0 deg = 12 o'clock, clockwise)
+    // is what the spec's "phase * 12 deg clockwise from 12 o'clock" means;
+    // fillArc wants LovyanGFX's own convention (0 deg = 3 o'clock, clockwise),
+    // so the wedges use `a` shifted by -90 instead.
+    const float sweepDeg = static_cast<float>(radarPhase) * kRadarDegPerStep;
+    const float a        = sweepDeg - 90.0f;
+
+    // Trailing wedges behind the sweep line, faking phosphor persistence:
+    // the 12 deg right behind the line brighter (SPEED_DIM), the next 12 deg
+    // dimmer (DIM_DIM).
+    gfx.fillArc(kRingCx, kRingCy, kRadarR2, 0, a - kRadarDegPerStep, a, theme.col(Col::SPEED_DIM));
+    gfx.fillArc(kRingCx, kRingCy, kRadarR2, 0, a - 2 * kRadarDegPerStep, a - kRadarDegPerStep,
+                theme.col(Col::DIM_DIM));
+
+    // Range rings and crosshair, drawn over the wedges so they stay visible.
+    gfx.drawCircle(kRingCx, kRingCy, kRadarR0, theme.col(Col::DIM_DIM));
+    gfx.drawCircle(kRingCx, kRingCy, kRadarR1, theme.col(Col::DIM_DIM));
+    gfx.drawCircle(kRingCx, kRingCy, kRadarR2, theme.col(Col::DIM_DIM));
+    gfx.drawLine(kRingCx - kRadarR2, kRingCy, kRingCx + kRadarR2, kRingCy, theme.col(Col::DIM_DIM));
+    gfx.drawLine(kRingCx, kRingCy - kRadarR2, kRingCx, kRingCy + kRadarR2, theme.col(Col::DIM_DIM));
+
+    // Sweep line, centre to the outer ring, on top of the face.
+    int sx, sy;
+    ClockFace::pointAt(sweepDeg, kRingCx, kRingCy, kRadarR2, sx, sy);
+    dialThickLine(gfx, kRingCx, kRingCy, sx, sy, kRadarSweepW, theme.col(Col::NET_ON));
+
+    // Home dot, on top of the sweep line where it crosses the centre.
+    gfx.fillCircle(kRingCx, kRingCy, kRadarDotR, theme.col(Col::NET_ON));
+
+    gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
+    gfx.drawString("Searching", kCentreX, kRadarTextY, &fonts::Font2);
 }
 
 // Airline logos from pics.avs.io are transparent PNGs drawn for light
