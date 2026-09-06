@@ -13,7 +13,8 @@ Both boards do this; the topics are fixed strings, and only one board is ever li
 | Topic | Retained | Payload |
 | --- | --- | --- |
 | `pacekeeper-dial/diag` | no (QoS 0) | one log line per message, e.g. `W (48213) Treadmill: Mid-session kick — backing off 10s before reconnect to work through kicking phase` |
-| `pacekeeper-dial/diag/boot` | **yes** | `{"reset":"SW","build":"Sep  6 2026 12:41:07","uptime_s":37,"heap":118432}` |
+| `pacekeeper-dial/diag/boot` | **yes** | `{"reset":"SW","build":"Sep  6 2026 12:41:07","uptime_s":37,"heap":118432,"last_lines":0}` |
+| `pacekeeper-dial/diag/last` | no (QoS 0) | one pre-crash log line per message, e.g. `[last-1] I (5642) Treadmill: connect() begin` — see [After a crash](#after-a-crash) |
 
 The boot record is republished on every MQTT (re)connect, so a subscriber that arrives late still
 learns how the Dial last restarted:
@@ -25,6 +26,8 @@ learns how the Dial last restarted:
   unit is recompiled (a clean build, or a change to the build flags), so treat it as "which build
   family", not "which commit"; `uptime_s` is the reliable "did my flash land" signal.
 * `uptime_s`, `heap` — seconds since boot and free heap at the moment of the MQTT connect.
+* `last_lines` — how many `diag/last` messages accompanied this record. Non-zero only on the first
+  MQTT connect after a crash; `0` on every reconnect and after a clean restart.
 
 ## Reading the stream
 
@@ -52,6 +55,50 @@ c.on_connect, c.on_message = on_connect, on_message
 c.connect("<broker-host>", 1883, 60)
 c.loop_forever()
 ```
+
+## After a crash
+
+A hung Dial publishes nothing, so the freeze that precedes a watchdog reset used to leave no trace
+at all — the first retained boot record showed `TASK_WDT` (the 300 s loop-task watchdog) with
+nothing to say what the loop had been doing. `RemoteLog` therefore keeps the last **8** forwarded
+lines in a ring in RTC slow memory (`RTC_NOINIT_ATTR`, `src/RemoteLog.cpp`, spec 4.16). That memory
+is not zeroed by the startup code and survives a panic, either watchdog and a brownout — everything
+except a power cycle, where it holds whatever the SRAM powered up as, which is why the ring carries
+a magic word and a checksum and is ignored unless both match.
+
+What you get, **once per boot**, on the first MQTT connect:
+
+* one message per saved line on `pacekeeper-dial/diag/last`, oldest first, prefixed `[last-N] `
+  where N counts back from the reset — `[last-8]` … `[last-1]`, so `[last-1]` is the last thing the
+  firmware managed to log before it stopped;
+* `"last_lines":N` in the retained `diag/boot` record, so you know how many to expect.
+
+It appears **only when `esp_reset_reason()` is something other than `POWERON` or `SW`** — a power
+cycle has no ring to read and an OTA flash (`SW`) is not a crash. In every case the ring is cleared
+after that first connect, so later reconnects publish `"last_lines":0` and nothing on `diag/last`,
+and the next crash reports its own tail rather than replaying this one.
+
+To read it, subscribe *before* the Dial reconnects — `diag/last` is not retained:
+
+```bash
+mosquitto_sub -h <broker-host> -u <user> -P <pass> -t 'pacekeeper-dial/diag/#' -v
+```
+
+then reset the Dial (or wait for it to fall over). The retained `diag/boot` record arrives first
+with the `reset` reason and `last_lines`, then the `[last-N]` lines, then the normal live stream.
+If you missed them, the retained boot record still tells you *that* it crashed and how many lines
+were published; the lines themselves are gone.
+
+Two things exist purely to make that tail readable:
+
+* **Brackets around the blocking BLE calls** (`src/TreadmillHandler.cpp`): `connect() begin` /
+  `connect() end ok|fail in N ms` around `NimBLEClient::connect()`, and `discover begin` /
+  `discover end` around the service-discovery retry loop. A `begin` with no matching `end` at the
+  tail of the ring names which call the loop task froze in.
+* **The loop stall detector** (`src/main.cpp`): a `loop stall N ms` warning whenever one `loop()`
+  iteration takes longer than `kLoopStallMs` (2 s). A normal pass is single-digit milliseconds, so
+  this fires long before the 300 s watchdog does — and being a W line it is always forwarded. The
+  one routine pass that trips it is a connect whose service discovery runs all 8 × 250 ms retries.
 
 ## What gets forwarded
 
@@ -81,7 +128,9 @@ Lines are truncated to 119 characters and the trailing newline is stripped. The 
 lines; the hook never blocks, so a burst that overflows it is counted and reported as a
 `[+N dropped] ` prefix on the next line that does get through. Lines queued while MQTT is down stay
 queued, so the boot-time BLE story survives until the link comes up (about 5 s after power-on).
-The net task publishes at most 4 lines per 10 ms loop.
+The net task publishes at most 4 lines per 10 ms loop. Every line that passes the filter also goes
+into the RTC ring described under [After a crash](#after-a-crash), whether or not the queue had room
+for it — a burst that overflows the queue is exactly the burst whose tail is worth keeping.
 
 ### Widening or narrowing the filter
 

@@ -75,6 +75,8 @@ private:
     // Publishes up to 4 queued RemoteLog lines (spec 4.14). Net task only —
     // this is the one place PubSubClient is touched for diagnostics.
     void drainDiagQueue();
+    // Publishes the retained boot record on every MQTT connect; on the first
+    // call after boot it also publishes the pre-reset log tail (spec 4.16).
     void publishBootRecord();
     void fullResync();
     bool enqueueCommand(const Command &cmd);
@@ -88,6 +90,11 @@ private:
     TaskHandle_t  m_task  = nullptr;
 
     std::atomic<NetStatus> m_status{NetStatus::WIFI_DOWN};
+
+    // Net task only. Gates the one-shot part of publishBootRecord(): the
+    // pre-reset log tail is published on the first MQTT connect of this boot
+    // and never again, so a flapping link cannot replay a crash.
+    bool m_bootPublished = false;
 
     char m_clientId[48]          = {0};
     char m_restoreTotalsTopic[64] = {0};

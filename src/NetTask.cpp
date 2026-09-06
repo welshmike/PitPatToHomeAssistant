@@ -274,14 +274,49 @@ void NetTask::drainDiagQueue()
 
 void NetTask::publishBootRecord()
 {
+    // The pre-reset log tail is a one-shot: fetch it before the boot record so
+    // the record can carry the count, and only on the first MQTT connect of
+    // this boot — later reconnects would otherwise replay a crash that is by
+    // then minutes old.
+    // static, not a local: 960 B is a tenth of the net task's stack and this
+    // function runs during the MQTT connect, next to TLS's own appetite. Net
+    // task only (onMqttConnected), never reentered, so no guard is needed.
+    static char last[RemoteLog::kLastLines][RemoteLog::kLineLen];
+    uint8_t lastCount = 0;
+    const bool first  = !m_bootPublished;
+    if (first && RemoteLog::resetWasCrash())
+    {
+        lastCount = RemoteLog::lastLines(last, RemoteLog::kLastLines);
+    }
+
     // Retained (spec 4.14): whoever subscribes later still learns whether the
     // last restart was an OTA flash (SW) or a crash (PANIC/TASK_WDT/BROWNOUT),
-    // and which build is running.
-    char json[160];
-    snprintf(json, sizeof(json), "{\"reset\":\"%s\",\"build\":\"%s\",\"uptime_s\":%lu,\"heap\":%u}",
+    // and which build is running. "last_lines" says how many diag/last lines
+    // accompanied this record — 0 on every reconnect.
+    char json[192];
+    snprintf(json, sizeof(json),
+             "{\"reset\":\"%s\",\"build\":\"%s\",\"uptime_s\":%lu,\"heap\":%u,\"last_lines\":%u}",
              RemoteLog::resetReasonName(), RemoteLog::buildStamp(),
-             (unsigned long)(millis() / 1000), (unsigned)ESP.getFreeHeap());
+             (unsigned long)(millis() / 1000), (unsigned)ESP.getFreeHeap(), (unsigned)lastCount);
     m_net.mqtt().publish(RemoteLog::kBootTopic, json, true);
+
+    // Oldest first, numbered back from the reset: [last-8] … [last-1], so the
+    // last line the firmware managed to log is the one labelled [last-1].
+    // QoS 0 and not retained — this is forensics, not state.
+    for (uint8_t i = 0; i < lastCount; i++)
+    {
+        char payload[RemoteLog::kLineLen + 16];
+        snprintf(payload, sizeof(payload), "[last-%u] %s", (unsigned)(lastCount - i), last[i]);
+        m_net.mqtt().publish(RemoteLog::kLastTopic, payload);
+    }
+
+    if (first)
+    {
+        m_bootPublished = true;
+        // Every case, POWERON and SW included: an OTA reboot is not a crash,
+        // and the next one should report its own tail, not this boot's.
+        RemoteLog::clearLastLines();
+    }
 }
 
 void NetTask::onMqttConnected()

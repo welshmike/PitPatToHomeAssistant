@@ -11,6 +11,7 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_system.h"
 
@@ -20,6 +21,133 @@ struct Line
 {
     char text[RemoteLog::kLineLen];
 };
+
+// ---------------------------------------------------------------------------
+// Crash forensics: the last forwarded lines, kept across a reset (spec 4.16).
+//
+// RTC_NOINIT_ATTR puts this in RTC slow memory and, crucially, keeps the
+// startup code from zeroing it: the contents survive a panic, either watchdog
+// and a brownout — everything except a power cycle, where the bits are simply
+// whatever the SRAM powered up as. Hence the magic word and the checksum: they
+// are the only way to tell "the previous firmware wrote this" from "this is
+// noise". Nothing here allocates and nothing blocks, because the writer is the
+// log hook, which runs on whichever task logged.
+// ---------------------------------------------------------------------------
+constexpr uint32_t kRingMagic = 0x50414345; // "PACE"
+
+struct RtcRing
+{
+    uint32_t magic;
+    uint32_t next;  // slot the next line goes into
+    uint32_t count; // valid slots, saturating at kLastLines
+    // The same bytes twice: lines[][] to write and read, words[] to checksum a
+    // word at a time. A union rather than a cast because casting a char array
+    // to uint32_t* is exactly the aliasing GCC is allowed to reorder around.
+    union
+    {
+        char     lines[RemoteLog::kLastLines][RemoteLog::kLineLen];
+        uint32_t words[RemoteLog::kLastLines * RemoteLog::kLineLen / sizeof(uint32_t)];
+    };
+    uint32_t checksum;
+};
+
+RTC_NOINIT_ATTR RtcRing s_ring;
+
+// The ring is written from any task (loop, net, NimBLE host) and read/cleared
+// from the net task, so it needs mutual exclusion — but the writer is a log
+// hook that must never block, which rules out a mutex. A spinlock it is: the
+// critical section is a bounded copy plus the checksum, a few microseconds.
+portMUX_TYPE s_ringMux = portMUX_INITIALIZER_UNLOCKED;
+
+// What begin() found in the ring, before this boot's own lines started
+// overwriting it. Without this copy the tail of the crash would be gone by the
+// time MQTT comes up ~5 s later — boot alone emits more than kLastLines
+// forwarded lines. 960 B of .bss for the one thing this feature exists to show.
+char    s_saved[RemoteLog::kLastLines][RemoteLog::kLineLen];
+uint8_t s_savedCount = 0;
+
+// Sum of the ring's mutable state. Word-wise rather than byte-wise only for
+// speed — it runs inside the spinlock on every forwarded line. It is a
+// corruption check, not a security measure; a plain sum is enough to reject the
+// power-on garbage that would otherwise be published as log lines.
+uint32_t ringChecksum(const RtcRing &r)
+{
+    static_assert(sizeof(r.lines) == sizeof(r.words), "union halves must match");
+    uint32_t sum = r.next + r.count;
+    for (size_t i = 0; i < sizeof(r.words) / sizeof(r.words[0]); i++)
+    {
+        sum += r.words[i];
+    }
+    return sum;
+}
+
+// Caller holds the spinlock, or is begin() before the hook is installed.
+bool ringValid()
+{
+    return s_ring.magic == kRingMagic && s_ring.next < RemoteLog::kLastLines &&
+           s_ring.count <= RemoteLog::kLastLines && s_ring.checksum == ringChecksum(s_ring);
+}
+
+// Caller holds the spinlock, or is begin() before the hook is installed.
+void ringReset()
+{
+    s_ring.magic = kRingMagic;
+    s_ring.next  = 0;
+    s_ring.count = 0;
+    memset(s_ring.lines, 0, sizeof(s_ring.lines));
+    s_ring.checksum = ringChecksum(s_ring);
+}
+
+// Called from the log hook, on whichever task logged. No allocation, no
+// blocking call, no printf: a bounded copy under the spinlock.
+void ringPut(const char *text)
+{
+    const bool inIsr = xPortInIsrContext();
+    if (inIsr)
+    {
+        portENTER_CRITICAL_ISR(&s_ringMux);
+    }
+    else
+    {
+        portENTER_CRITICAL(&s_ringMux);
+    }
+
+    // begin() leaves the ring valid, so this only fails if the ring was never
+    // armed — in which case the hook is not installed either and we cannot be
+    // here. Cheap insurance against writing through a wild s_ring.next.
+    if (s_ring.magic == kRingMagic && s_ring.next < RemoteLog::kLastLines)
+    {
+        char  *slot = s_ring.lines[s_ring.next];
+        size_t i    = 0;
+        for (; i + 1 < RemoteLog::kLineLen && text[i] != '\0'; i++)
+        {
+            slot[i] = text[i];
+        }
+        // Zero the tail as well as terminating: the checksum then covers only
+        // bytes this firmware wrote, and no fragment of an older line is left
+        // behind the NUL to be published after a truncating write.
+        for (size_t j = i; j < RemoteLog::kLineLen; j++)
+        {
+            slot[j] = '\0';
+        }
+
+        s_ring.next = (s_ring.next + 1) % RemoteLog::kLastLines;
+        if (s_ring.count < RemoteLog::kLastLines)
+        {
+            s_ring.count++;
+        }
+        s_ring.checksum = ringChecksum(s_ring);
+    }
+
+    if (inIsr)
+    {
+        portEXIT_CRITICAL_ISR(&s_ringMux);
+    }
+    else
+    {
+        portEXIT_CRITICAL(&s_ringMux);
+    }
+}
 
 // 24 x 120 B = 2.8 KB of internal RAM, allocated once in begin(). Deep enough
 // to hold the whole boot-time BLE story (connect, subscribe, first kick) until
@@ -166,6 +294,10 @@ int hook(const char *fmt, va_list ap)
         snprintf(line.text, sizeof(line.text), "%s", buf);
     }
 
+    // The ring gets the line whether or not the queue does: a full queue is
+    // exactly the burst whose tail we most want to see after a crash.
+    ringPut(line.text);
+
     BaseType_t sent;
     if (xPortInIsrContext())
     {
@@ -202,6 +334,32 @@ void begin()
     {
         return;
     }
+
+    // Before anything can log: take the pre-reset tail out of RTC memory and
+    // into RAM, then leave the ring exactly as it is (armed, still holding
+    // those lines) so a crash during boot still has somewhere to write. Only
+    // this copy is published — the ring itself is overwritten by this boot's
+    // own lines long before MQTT is up. An invalid ring means power-on garbage
+    // or a first boot on this firmware: arm it and report nothing.
+    if (ringValid())
+    {
+        s_savedCount = (uint8_t)s_ring.count;
+        for (uint8_t i = 0; i < s_savedCount; i++)
+        {
+            // Oldest first: in a full ring the oldest line is the one next in
+            // line to be overwritten; in a partial ring it is slot 0.
+            const uint32_t slot =
+                (s_ring.count == kLastLines) ? (s_ring.next + i) % kLastLines : i;
+            memcpy(s_saved[i], s_ring.lines[slot], kLineLen);
+            s_saved[i][kLineLen - 1] = '\0';
+        }
+    }
+    else
+    {
+        s_savedCount = 0;
+        ringReset();
+    }
+
     s_queue = xQueueCreate(kDepth, sizeof(Line));
     if (s_queue == nullptr)
     {
@@ -237,6 +395,35 @@ bool pop(char *out, size_t cap)
     line.text[sizeof(line.text) - 1] = '\0';
     snprintf(out, cap, "%s", line.text);
     return true;
+}
+
+uint8_t lastLines(char (*out)[kLineLen], uint8_t cap)
+{
+    if (out == nullptr || cap == 0)
+    {
+        return 0;
+    }
+    const uint8_t n = (s_savedCount < cap) ? s_savedCount : cap;
+    for (uint8_t i = 0; i < n; i++)
+    {
+        memcpy(out[i], s_saved[i], kLineLen);
+        out[i][kLineLen - 1] = '\0';
+    }
+    return n;
+}
+
+void clearLastLines()
+{
+    s_savedCount = 0;
+    portENTER_CRITICAL(&s_ringMux);
+    ringReset();
+    portEXIT_CRITICAL(&s_ringMux);
+}
+
+bool resetWasCrash()
+{
+    const esp_reset_reason_t reason = esp_reset_reason();
+    return reason != ESP_RST_POWERON && reason != ESP_RST_SW;
 }
 
 const char *resetReasonName()

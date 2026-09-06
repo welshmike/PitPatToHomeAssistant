@@ -74,6 +74,13 @@ NetStatus g_lastNetStatus = NetStatus::WIFI_DOWN;
 constexpr uint32_t kPostMqttHoldMs = 6000;
 constexpr uint32_t kPostBootHoldMs = 30000;
 
+// A loop() iteration longer than this is logged (spec 4.16). Orders of
+// magnitude above a normal pass (single-digit ms) and far below the 300 s task
+// watchdog, so a freeze leaves evidence long before it becomes a reset. The one
+// routine pass that can trip it is a connect whose service discovery runs all 8
+// retries (2 s inside treadmill.handle()), which is worth seeing anyway.
+constexpr uint32_t kLoopStallMs = 2000;
+
 // millis() of the last transition into MQTT_UP; 0 while not MQTT_UP.
 uint32_t g_mqttUpSinceMs = 0;
 
@@ -264,6 +271,13 @@ void setup()
 
 void loop()
 {
+  // Stall detector (spec 4.16). The task watchdog only fires after
+  // WATCHDOG_TIMEOUT_S (300 s), by which time the Dial is already resetting;
+  // a loop that takes seconds rather than milliseconds is the early symptom,
+  // and this is the log line that survives in the RTC ring if the next one
+  // never comes. Wrap-safe: unsigned subtraction of two millis() readings.
+  const uint32_t loopStartMs = millis();
+
   // reset watchdog, important to be called once each loop.
   esp_task_wdt_reset();
   {
@@ -324,4 +338,10 @@ void loop()
   treadmill.setConnectHold(connectHold);
 
   delay(1); // yield to the idle task
+
+  const uint32_t loopMs = millis() - loopStartMs;
+  if (loopMs > kLoopStallMs)
+  {
+    log_w("loop stall %lu ms", (unsigned long)loopMs);
+  }
 }

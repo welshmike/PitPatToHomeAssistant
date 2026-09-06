@@ -19,6 +19,7 @@
 #ifdef ARDUINO
 
 #include <stddef.h>
+#include <stdint.h>
 
 namespace RemoteLog
 {
@@ -31,6 +32,12 @@ constexpr size_t kLineLen = 120;
 // human with mosquitto_sub, and the DevKit and the Dial are never both live.
 constexpr const char *kTopic     = "pacekeeper-dial/diag";
 constexpr const char *kBootTopic = "pacekeeper-dial/diag/boot";
+constexpr const char *kLastTopic = "pacekeeper-dial/diag/last";
+
+// Crash forensics (spec 4.16): how many forwarded lines the RTC ring keeps.
+// 8 x kLineLen = 960 B of RTC slow memory (8 KB on both boards), enough for the
+// tail of a connect attempt without crowding out anything else that wants it.
+constexpr size_t kLastLines = 8;
 
 // Call as the very first statement of setup(). Creates the queue, raises the
 // ESP-IDF runtime log level (Arduino's initArduino() pins every tag at the
@@ -38,6 +45,22 @@ constexpr const char *kBootTopic = "pacekeeper-dial/diag/boot";
 // silence the W and I lines CORE_DEBUG_LEVEL=3 compiles in) and installs the
 // vprintf hook. Safe to call twice; the second call does nothing.
 void begin();
+
+// Net task only: the forwarded lines from before the last reset, oldest first.
+// Copies at most cap rows into out and returns how many were written (0 when
+// the ring did not survive, or after clearLastLines()). The ring is validated
+// (magic + checksum) once, in begin(); see the note there.
+uint8_t lastLines(char (*out)[kLineLen], uint8_t cap);
+
+// Net task only: drop the saved lines and re-arm the RTC ring for this boot.
+// Called after the boot record is published, whether or not anything was
+// published, so the next crash reports only its own tail.
+void clearLastLines();
+
+// True when esp_reset_reason() is anything other than POWERON or SW, i.e. the
+// firmware fell over rather than being power-cycled or restarted (an OTA flash
+// looks like SW).
+bool resetWasCrash();
 
 // Net task only: take the oldest queued line, false when there is none.
 // Copies at most cap-1 characters plus a NUL.

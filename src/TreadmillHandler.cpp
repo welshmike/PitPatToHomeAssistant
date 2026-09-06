@@ -608,7 +608,20 @@ bool TreadmillHandler::connectToDevice()
     // (reason=531) before service enumeration completed — especially on single-core C3
     // where BLE tasks share CPU with the main loop. On first boot the cache is empty
     // so discovery runs normally; subsequent reconnects skip it entirely.
-    if (!m_pClient->isConnected() && !m_pClient->connect(m_targetAddress, false, true))
+    // Bracketed for the RTC log ring (spec 4.16): connect() blocks the loop
+    // task inside NimBLE, so if the watchdog fires here the tail of the ring
+    // names the culprit — a "connect() begin" with no "end" after it. Same
+    // control flow as before: isConnected() short-circuits the call away.
+    bool connected = m_pClient->isConnected();
+    if (!connected)
+    {
+        log_i("connect() begin");
+        const uint32_t connectStartMs = millis();
+        connected                     = m_pClient->connect(m_targetAddress, false, true);
+        log_i("connect() end %s in %lu ms", connected ? "ok" : "fail",
+              (unsigned long)(millis() - connectStartMs));
+    }
+    if (!connected)
     {
         log_e("Failed to connect to treadmill at %s", m_targetAddress.toString().c_str());
         return false;
@@ -622,6 +635,10 @@ bool TreadmillHandler::connectToDevice()
     // 8 x 250ms = 2s of patience (was 5 x 200ms = 1s): the belt does not kick us
     // while we retry — it is our own disconnect() below that starts the kicking
     // phase — so waiting longer is strictly cheaper than giving up (spec 4.15).
+    // Bracketed for the same reason as connect() above: up to 2 s of the loop
+    // task's time, so a "discover begin" with no "end" after it in the ring
+    // says the loop froze in service discovery rather than in connect().
+    log_i("discover begin");
     NimBLERemoteService *pService = nullptr;
     for (int retry = 0; retry < 8; retry++)
     {
@@ -634,6 +651,7 @@ bool TreadmillHandler::connectToDevice()
         log_w("Service not found, retry %d/8...", retry + 1);
         delay(250);
     }
+    log_i("discover end");
     if (!pService)
     {
         log_e("Failed to find treadmill service UUID after 8 retries: %s", SERVICE_PAD_UUID);
