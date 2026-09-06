@@ -96,10 +96,12 @@ public:
     // Everything not protected by either is adopted as-is.
     void sync(const LightsModel::LightState& s, uint32_t nowMs);
 
-    // Tap on the off face. Ignored unless view().valid (a blind switch-on is
-    // allowed once any state has been parsed, even if the light is currently
-    // unavailable) and the light is off. Sets view().on optimistically,
-    // returns to the Brightness page and returns the POWER on command.
+    // Tap on the off face. Ignored unless view().valid and the light is off;
+    // this class itself permits a switch-on once any state has been parsed,
+    // even if the light is currently unavailable -- DialUi is what gates
+    // taps on view().available before ever calling this. Sets view().on
+    // optimistically, returns to the Brightness page and returns the POWER
+    // on command.
     LightsModel::Command tapOn(uint32_t nowMs);
 
     // Tap on the small power glyph, or a touch-hold. Ignored unless

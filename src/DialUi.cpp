@@ -375,9 +375,11 @@ void DialUi::handleInput(uint32_t nowMs)
         else if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
         {
             // Hold anywhere on a lit light card switches it off (spec 4.12);
-            // on the off face there is nothing to hold for.
+            // on the off face there is nothing to hold for, and the whole
+            // face is inert while MQTT is down or the card has no live state
+            // (lightCardLive()).
             LightCardState& card = lightCardFor(screen);
-            if (card.view().on && m_netStatus == NetStatus::MQTT_UP)
+            if (lightCardLive(screen) && card.view().on)
             {
                 const LightsModel::Command cmd = card.powerOff(nowMs);
                 if (cmd.type != LightsModel::Command::Type::NONE)
@@ -502,12 +504,14 @@ void DialUi::handleInput(uint32_t nowMs)
             // must not yank it back to Clock underneath the user (4.11).
             m_autoShow.noteManualNavigation();
         }
-        else if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
+        else if ((screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP) &&
+                 lightCardLive(screen))
         {
             // The knob adjusts the page that is showing — brightness, kelvin
             // or colour preset. LightCardState ignores it while the light is
-            // off or unavailable, and the command follows 300 ms after the
-            // last detent, from tickLights().
+            // off, and the command follows 300 ms after the last detent,
+            // from tickLights(). The lightCardLive() guard keeps the whole
+            // face inert while MQTT is down or the card has no live state.
             lightCardFor(screen).detents(ev.detents, nowMs);
         }
         // Clock, Disconnected, Connecting and Starting own no value the knob
@@ -522,11 +526,14 @@ void DialUi::handleInput(uint32_t nowMs)
             // (right = +1 = faster), same grid as a detent (4.7).
             m_selector.step(ev.swipe, nowMs);
         }
-        else if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
+        else if ((screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP) &&
+                 lightCardLive(screen))
         {
             // Carousel sense: dragging the face to the left (ev.swipe == -1)
             // brings the next page in, which is LightCardState's +1. Ignored
-            // while the light is off — the off face has no pages.
+            // while the light is off — the off face has no pages — and, via
+            // lightCardLive(), while MQTT is down or the card has no live
+            // state.
             lightCardFor(screen).swipe(-ev.swipe, nowMs);
         }
     }
@@ -555,16 +562,13 @@ void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
     LightCardState& card = lightCardFor(screen);
     const LightsModel::LightState& v = card.view();
 
-    if (m_netStatus != NetStatus::MQTT_UP)
+    if (!lightCardLive(screen))
     {
-        // "waiting for HA": the face is inert, and it says so on screen — a
-        // refused tone on top of that is just noise. Silent, like a tap on
-        // the Clock card (and as the README describes both faces).
+        // MQTT down ("waiting for HA") or no live state yet ("no data"): the
+        // face is inert, and it says so on screen — a refused tone on top of
+        // that is just noise. Silent, like a tap on the Clock card (and as
+        // the README describes both faces).
         return;
-    }
-    if (!v.valid || !v.available)
-    {
-        return; // "no data" face: nothing to switch, nothing to say
     }
 
     if (!v.on)
@@ -745,7 +749,7 @@ bool DialUi::holdDoesSomething(Screen screen) const
     }
     if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
     {
-        return lightCardFor(screen).view().on;
+        return lightCardLive(screen) && lightCardFor(screen).view().on;
     }
     return true;
 }
@@ -753,6 +757,23 @@ bool DialUi::holdDoesSomething(Screen screen) const
 const LightCardState& DialUi::lightCardFor(Screen screen) const
 {
     return m_lightCards[static_cast<uint8_t>(lightKeyFor(screen))];
+}
+
+// Whether a light card is a live input target (spec 4.12): MQTT is up and
+// the card's own state is both valid (parsed at least once) and available
+// (HA currently reports the light reachable). Mirrors the gate
+// handleLightTap() applied inline before this existed; now every light-card
+// input path -- knob detents, swipe, hold and tap -- and holdDoesSomething()
+// share this one predicate, so the face is inert as a whole rather than only
+// its tap handler while MQTT is down.
+bool DialUi::lightCardLive(Screen s) const
+{
+    if (m_netStatus != NetStatus::MQTT_UP)
+    {
+        return false;
+    }
+    const LightsModel::LightState& v = lightCardFor(s).view();
+    return v.valid && v.available;
 }
 
 void DialUi::playStopBeep(uint32_t nowMs, bool accepted)

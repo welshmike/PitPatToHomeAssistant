@@ -59,9 +59,10 @@ constexpr uint8_t kPresetCount = 8;
 // so the ring is rotated to leave both 12 and 6 o'clock empty: the page-dot
 // row lives at the top and the small power glyph at the bottom, and a swatch
 // on either would sit under (or next to) them. With this rotation the closest
-// swatch centres — 3 and 4, at 157.5 and 202.5 degrees — are ~37 px from the
-// power glyph centre, comfortably past the kSwatchHitR + kPowerGlyphHitR = 32
-// px at which the two hit discs would start to overlap (see the layout tests).
+// swatch centres — 3 and 4, at 157.5 and 202.5 degrees, ~(148,188) and
+// ~(92,188) — are ~34.5 px from the power glyph centre (120,208), comfortably
+// past the kSwatchHitR + kPowerGlyphHitR = 32 px at which the two hit discs
+// would start to overlap (see the layout tests).
 constexpr float kSwatchStartDeg = 22.5f;
 
 // The eight preset hues, all at saturation 100. Index order is ring order:

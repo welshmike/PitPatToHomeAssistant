@@ -190,9 +190,11 @@ void LightCardState::sync(const LightsModel::LightState& s, uint32_t nowMs)
 LightsModel::Command LightCardState::tapOn(uint32_t nowMs)
 {
     LightsModel::Command cmd; // Type::NONE
-    // valid (not available) is the gate: LightsModel::parseLightState() never
-    // sets available without valid, and a light HA currently calls
-    // unavailable can still be worth a blind switch-on.
+    // valid (not available) is the gate this class enforces itself:
+    // LightsModel::parseLightState() never sets available without valid, and
+    // a light HA currently calls unavailable would still be a permitted
+    // switch-on here -- but DialUi never taps through to this call unless
+    // view().available too, so that path is not reachable in practice.
     if (!m_view.valid || m_view.on)
     {
         return cmd;

@@ -170,6 +170,14 @@ private:
     // after checking screen == LIGHT_OFFICE || screen == LIGHT_LAMP.
     LightCardState& lightCardFor(Screen screen);
     const LightCardState& lightCardFor(Screen screen) const;
+    // Whether a light card's face is a live input target at all: MQTT is up,
+    // and the card's own view() has actually parsed a state (valid) for a
+    // light HA currently reports reachable (available). False on either
+    // count means the face just displays a status caption ("waiting for HA"
+    // / "no data") and nothing on it responds to a knob turn, swipe, hold or
+    // tap -- the single predicate all four light-card input paths in
+    // handleInput(), plus holdDoesSomething(), gate on.
+    bool lightCardLive(Screen s) const;
     bool holdDoesSomething(Screen screen) const;
     // Formats `cmd` into a LIGHT_CMD PublishItem and hands it to the net
     // task; the loop task never touches MQTT itself.
