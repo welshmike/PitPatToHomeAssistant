@@ -352,3 +352,16 @@ The first retained boot record (§4.14) showed the Dial had reset with `TASK_WDT
 - **Loop stall detector:** `main.cpp` logs `log_w("loop stall %u ms")` whenever a single `loop()` iteration took longer than 2 s (measured with `millis()`), so a stall shorter than the 300 s watchdog still leaves evidence.
 
 **Amended 2026-09-06 (as built):** `begin()` snapshots a valid RTC ring into RAM before the hook can overwrite it (the boot itself logs eight lines within seconds). `diag/last` is published as ONE retained JSON object `{"reset","build","lines":[...]}` (oldest first), only when the reset was a crash, so it can be read at any time; clean boots leave the previous record in place. The loop-stall threshold is 3 s (the 2 s GATT discovery loop is legitimate). The Plan 11 boot-hold window is latched rather than compared to `millis()`.
+
+## 4.17 Staged BLE connect (added 2026-09-06, approved)
+
+Diagnosis from the §4.16 brackets: `m_pClient->connect(m_targetAddress, false, true)` returns in 0 ms because NimBLE-Arduino 2.x's third parameter is `asyncConnect`. `connectToDevice()` then ran GATT discovery against a link that did not exist yet; `Connected to device!` arrived ~900 ms later, so discovery succeeded only when that landed inside the retry window (attempt 4–5), and otherwise the firmware called `disconnect()` on a pending connection — the HCI 0x16 that starts the Q1's kick phase. The boot-time failures, the kick cycles and the 1–2 s loop-task stalls all follow from this.
+
+- **Stages** (all on the loop task, driven from `handle()`; the NimBLE callbacks only set flags):
+  1. `LINKING`: issue `connect(addr, deleteAttributes=false, asyncConnect=true)`, record `m_linkStartMs`, return. Nothing blocks.
+  2. `onConnect()` (NimBLE task) sets `m_linkUp = true` (it already sets `m_sendInitNow`).
+  3. `handle()` sees `m_linkUp` → `SETUP`: the existing sequence — `getService` (now expected on attempt 1; keep at most 3 retries × 100 ms as a guard), write characteristic, early keepalive, notify subscribe, negotiated-params log, `m_lastConnectTime`, `Connection successful` — exactly the current code from that point on, including the existing failure paths (which may still `disconnect()`, because by then the link is real).
+  4. If `LINKING` lasts longer than `kLinkTimeoutMs = 6000` (the supervision timeout we request): `cancelConnect()`, `log_w("link timeout, cancelled")`, and schedule the next attempt through the existing 5 s retry path. **Never** `disconnect()` a link that never came up.
+- **Unchanged:** keepalive-per-notification, notification parsing, idle/kick backoffs, `POST_CONNECT_COOLDOWN`, the connect hold (§4.15), user-requested connect semantics, `doc/Q1_BLE_NOTES.md` protocol. `connectAttempts` counts LINKING starts as before.
+- **Observability:** brackets become `link begin` / `link up after N ms` / `link timeout after N ms` / `setup begin` / `setup end`; the stall detector should now stay silent during connects.
+- **Success (Phase J):** boot log shows `link up after <1500 ms` then `Service found on attempt 1`, `Connection successful`; no `loop stall`; belt power-cycled while connected → reconnect without a kick phase; belt switched off → `link timeout after 6000 ms` every ~11 s with the UI still responsive (knob/menu), no `disconnect()`.
