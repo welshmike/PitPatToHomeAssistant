@@ -99,129 +99,91 @@ static void test_layout_pageConstants(void)
     TEST_ASSERT_EQUAL_INT(188, LightLayout::kKelvinBarX1);
     TEST_ASSERT_EQUAL_INT(170, LightLayout::kKelvinBarY);
     TEST_ASSERT_EQUAL_INT(8, LightLayout::kKelvinBarH);
-    TEST_ASSERT_EQUAL_INT(74, LightLayout::kSwatchRingR);
-    TEST_ASSERT_EQUAL_FLOAT(22.5f, LightLayout::kSwatchStartDeg);
-    TEST_ASSERT_EQUAL_INT(12, LightLayout::kSwatchR);
-    TEST_ASSERT_EQUAL_INT(16, LightLayout::kSwatchRSelected);
-    TEST_ASSERT_EQUAL_INT(14, LightLayout::kSwatchHitR);
+    TEST_ASSERT_EQUAL_INT(112, LightLayout::kHueRingOuterR);
+    TEST_ASSERT_EQUAL_INT(86, LightLayout::kHueRingInnerR);
+    TEST_ASSERT_EQUAL_INT(99, LightLayout::kHueMarkerRingR);
+    TEST_ASSERT_EQUAL_INT(11, LightLayout::kHueMarkerR);
+    TEST_ASSERT_EQUAL_INT(3, LightLayout::kHueMarkerOutline);
+    TEST_ASSERT_EQUAL_INT(70, LightLayout::kHueHitInnerR);
+    TEST_ASSERT_EQUAL_INT(120, LightLayout::kHueHitOuterR);
+    TEST_ASSERT_EQUAL_INT(72, LightLayout::kHueSegments);
+    TEST_ASSERT_EQUAL_FLOAT(5.0f, LightLayout::kHueSegmentDeg);
     TEST_ASSERT_EQUAL_INT(30, LightLayout::kCentreDiscR);
 }
 
-static void test_layout_presetHues(void)
-{
-    TEST_ASSERT_EQUAL_UINT8(8, LightLayout::kPresetCount);
-    const float expected[8] = {0, 30, 60, 120, 180, 240, 275, 320};
-    for (uint8_t i = 0; i < 8; ++i)
-    {
-        TEST_ASSERT_EQUAL_FLOAT(expected[i], LightLayout::kPresetHues[i]);
-    }
-}
-
 // ---------------------------------------------------------------------------
-// LightLayout: swatch geometry + hit tests
+// LightLayout: hue ring geometry (spec 4.18)
 // ---------------------------------------------------------------------------
 
-// The ring is rotated half a step (kSwatchStartDeg = 22.5) so that no swatch
-// sits at 12 or 6 o'clock, where the page-dot row and the power glyph live.
-static void test_swatchCentre_ringStartsHalfAStepPastTwelve(void)
+static void test_wrapHue_normalisesIntoZeroTo360(void)
 {
-    int x = 0, y = 0;
-    LightLayout::swatchCentre(0, x, y);
-    TEST_ASSERT_EQUAL_INT(148, x);
-    TEST_ASSERT_EQUAL_INT(52, y);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, LightLayout::wrapHue(360.0f));
+    TEST_ASSERT_EQUAL_FLOAT(355.0f, LightLayout::wrapHue(-5.0f));
+    TEST_ASSERT_EQUAL_FLOAT(10.0f, LightLayout::wrapHue(730.0f));
+    TEST_ASSERT_EQUAL_FLOAT(275.0f, LightLayout::wrapHue(275.0f));
 }
 
-static void test_swatchCentre_goesClockwise(void)
+// Hue 0 is 12 o'clock and increases clockwise, so the four cardinal points
+// of the face read 0 / 90 / 180 / 270 and the top-right diagonal reads 45.
+static void test_hueAt_cardinalPointsAndDiagonal(void)
 {
-    int x = 0, y = 0;
-    LightLayout::swatchCentre(2, x, y); // quarter turn clockwise from swatch 0
-    TEST_ASSERT_EQUAL_INT(188, x);
-    TEST_ASSERT_EQUAL_INT(148, y);
-    LightLayout::swatchCentre(4, x, y); // half turn: bottom right of 6 o'clock
-    TEST_ASSERT_EQUAL_INT(92, x);
-    TEST_ASSERT_EQUAL_INT(188, y);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, LightLayout::hueAt(120, 0));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 90.0f, LightLayout::hueAt(240, 120));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 180.0f, LightLayout::hueAt(120, 240));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 270.0f, LightLayout::hueAt(0, 120));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 45.0f, LightLayout::hueAt(170, 70));
 }
 
-// The two bottom swatches are the closest to the small power glyph; the
-// rotation is what buys them their clearance, so assert it directly. 32 px is
-// kSwatchHitR + kPowerGlyphHitR: below that the two hit discs would overlap.
-static void test_swatchCentre_everySwatchClearsThePowerGlyph(void)
+static void test_hueAt_isAlwaysInZeroTo360(void)
 {
-    for (uint8_t i = 0; i < LightLayout::kPresetCount; ++i)
+    for (int x = 0; x < 240; x += 8)
     {
-        int x = 0, y = 0;
-        LightLayout::swatchCentre(i, x, y);
-        const int dx = x - LightLayout::kPowerGlyphX;
-        const int dy = y - LightLayout::kPowerGlyphY;
-        const int minSep = LightLayout::kSwatchHitR + LightLayout::kPowerGlyphHitR;
-        TEST_ASSERT_TRUE(dx * dx + dy * dy > minSep * minSep);
-    }
-}
-
-// The top pair straddles 12 o'clock rather than sitting on it: swatch 7 to
-// the left, swatch 0 to the right, both level with the page-dot row's y but
-// well outside the widest row the dots can occupy (three dots, so 120 +/- one
-// kPageDotSpacing plus kPageDotR). The Colour page hides the dots anyway, but
-// the ring geometry is shared with the pages that draw them.
-static void test_swatchCentre_topPairStraddlesTwelveOClock(void)
-{
-    int x = 0, y = 0;
-    LightLayout::swatchCentre(7, x, y);
-    TEST_ASSERT_EQUAL_INT(92, x);
-    TEST_ASSERT_EQUAL_INT(52, y);
-
-    const int dotHalfWidth = 2 * LightLayout::kPageDotSpacing; // generous
-    for (uint8_t i = 0; i < LightLayout::kPresetCount; ++i)
-    {
-        LightLayout::swatchCentre(i, x, y);
-        const int dy = y - LightLayout::kPageDotY;
-        const int adx = (x - 120) < 0 ? (120 - x) : (x - 120);
-        const bool onTheDotRow = (dy > -12 && dy < 12) && adx <= dotHalfWidth;
-        TEST_ASSERT_FALSE(onTheDotRow);
-    }
-}
-
-static void test_hitSwatch_centresHitTheirOwnIndex(void)
-{
-    for (uint8_t i = 0; i < LightLayout::kPresetCount; ++i)
-    {
-        int x = 0, y = 0;
-        LightLayout::swatchCentre(i, x, y);
-        TEST_ASSERT_EQUAL_INT(i, LightLayout::hitSwatch(x, y));
-    }
-}
-
-static void test_hitSwatch_edgeOfHitRadiusHitsAndJustPastMisses(void)
-{
-    int x = 0, y = 0;
-    LightLayout::swatchCentre(0, x, y);
-    TEST_ASSERT_EQUAL_INT(0, LightLayout::hitSwatch(x, y - LightLayout::kSwatchHitR));
-    TEST_ASSERT_EQUAL_INT(-1, LightLayout::hitSwatch(x, y - LightLayout::kSwatchHitR - 1));
-}
-
-static void test_hitSwatch_centreOfFaceMisses(void)
-{
-    TEST_ASSERT_EQUAL_INT(-1, LightLayout::hitSwatch(120, 120));
-}
-
-// Tap priority only matters if the two targets can ever both claim a point;
-// sweep the whole round face and assert they never do.
-static void test_hitSwatch_andPowerGlyph_neverClaimTheSamePoint(void)
-{
-    for (int y = 0; y <= 240; y += 2)
-    {
-        for (int x = 0; x <= 240; x += 2)
+        for (int y = 0; y < 240; y += 8)
         {
-            const int dx = x - 120;
-            const int dy = y - 120;
-            if (dx * dx + dy * dy > 120 * 120)
-            {
-                continue; // outside the round display
-            }
-            const bool swatch = LightLayout::hitSwatch(x, y) >= 0;
-            const bool power  = LightLayout::hitPowerGlyph(x, y);
-            TEST_ASSERT_FALSE(swatch && power);
+            const float h = LightLayout::hueAt(x, y);
+            TEST_ASSERT_TRUE(h >= 0.0f && h < 360.0f);
         }
+    }
+}
+
+// The touch annulus is wider than the painted band on both sides.
+static void test_hitHueRing_annulusBounds(void)
+{
+    TEST_ASSERT_TRUE(LightLayout::hitHueRing(120, 120 - LightLayout::kHueHitInnerR));
+    TEST_ASSERT_FALSE(LightLayout::hitHueRing(120, 120 - LightLayout::kHueHitInnerR + 1));
+    TEST_ASSERT_TRUE(LightLayout::hitHueRing(120, 120 - LightLayout::kHueHitOuterR));
+    TEST_ASSERT_FALSE(LightLayout::hitHueRing(120, 120 - LightLayout::kHueHitOuterR - 1));
+    TEST_ASSERT_TRUE(LightLayout::hitHueRing(120 + LightLayout::kHueMarkerRingR, 120));
+    TEST_ASSERT_FALSE(LightLayout::hitHueRing(120, 120));
+}
+
+// The marker sits on the band's mid-radius at the hue's angle.
+static void test_hueMarkerCentre_hue0IsTopHue90IsRight(void)
+{
+    int x = 0;
+    int y = 0;
+    LightLayout::hueMarkerCentre(0.0f, x, y);
+    TEST_ASSERT_EQUAL_INT(120, x);
+    TEST_ASSERT_EQUAL_INT(120 - LightLayout::kHueMarkerRingR, y);
+    LightLayout::hueMarkerCentre(90.0f, x, y);
+    TEST_ASSERT_EQUAL_INT(120 + LightLayout::kHueMarkerRingR, x);
+    TEST_ASSERT_EQUAL_INT(120, y);
+    LightLayout::hueMarkerCentre(180.0f, x, y);
+    TEST_ASSERT_EQUAL_INT(120, x);
+    TEST_ASSERT_EQUAL_INT(120 + LightLayout::kHueMarkerRingR, y);
+}
+
+// hueAt() and hueMarkerCentre() are inverses: the marker for hue h reads back
+// as h, all the way round.
+static void test_hueMarkerCentre_roundTripsThroughHueAt(void)
+{
+    for (int h = 0; h < 360; h += 15)
+    {
+        int x = 0;
+        int y = 0;
+        LightLayout::hueMarkerCentre(static_cast<float>(h), x, y);
+        TEST_ASSERT_FLOAT_WITHIN(0.7f, static_cast<float>(h), LightLayout::hueAt(x, y));
+        TEST_ASSERT_TRUE(LightLayout::hitHueRing(x, y));
     }
 }
 
@@ -231,34 +193,6 @@ static void test_hitPowerGlyph_withinAndOutsideHitRadius(void)
     TEST_ASSERT_TRUE(LightLayout::hitPowerGlyph(120, 208 + LightLayout::kPowerGlyphHitR));
     TEST_ASSERT_FALSE(LightLayout::hitPowerGlyph(120, 208 + LightLayout::kPowerGlyphHitR + 1));
     TEST_ASSERT_FALSE(LightLayout::hitPowerGlyph(120, 120));
-}
-
-// ---------------------------------------------------------------------------
-// LightLayout: nearestPreset
-// ---------------------------------------------------------------------------
-
-static void test_nearestPreset_exactHuesMapToThemselves(void)
-{
-    for (uint8_t i = 0; i < LightLayout::kPresetCount; ++i)
-    {
-        TEST_ASSERT_EQUAL_UINT8(i, LightLayout::nearestPreset(LightLayout::kPresetHues[i]));
-    }
-}
-
-static void test_nearestPreset_roundsToNearest(void)
-{
-    TEST_ASSERT_EQUAL_UINT8(5, LightLayout::nearestPreset(250.0f));  // 240
-    TEST_ASSERT_EQUAL_UINT8(4, LightLayout::nearestPreset(200.0f));  // 180
-    TEST_ASSERT_EQUAL_UINT8(1, LightLayout::nearestPreset(25.0f));   // 30
-}
-
-static void test_nearestPreset_wrapsRoundTheCircle(void)
-{
-    TEST_ASSERT_EQUAL_UINT8(0, LightLayout::nearestPreset(350.0f)); // nearer 0 than 320
-    TEST_ASSERT_EQUAL_UINT8(7, LightLayout::nearestPreset(335.0f)); // nearer 320 than 0
-    TEST_ASSERT_EQUAL_UINT8(0, LightLayout::nearestPreset(340.0f)); // exactly between: lowest index
-    TEST_ASSERT_EQUAL_UINT8(0, LightLayout::nearestPreset(-10.0f)); // out of range, normalised
-    TEST_ASSERT_EQUAL_UINT8(0, LightLayout::nearestPreset(720.0f));
 }
 
 // ---------------------------------------------------------------------------
@@ -398,15 +332,17 @@ static void test_detents_kelvinPage_stepsBy100AndClampsToBounds(void)
     TEST_ASSERT_EQUAL_UINT16(2000, card.view().kelvin);
 }
 
-static void test_detents_colourPage_movesOnePresetPerDetent(void)
+static void test_detents_colourPage_stepsFiveDegreesPerDetent(void)
 {
-    LightCardState card = onCard(); // hue 0 -> preset 0
+    LightCardState card = onCard(); // HA hue 0
     card.swipe(1, 1000);
     card.swipe(1, 1000);
     card.detents(1, 1000);
-    TEST_ASSERT_EQUAL_UINT8(1, card.preset());
-    TEST_ASSERT_EQUAL_FLOAT(30.0f, card.view().hue);
+    TEST_ASSERT_EQUAL_FLOAT(5.0f, card.editHue());
+    TEST_ASSERT_EQUAL_FLOAT(5.0f, card.view().hue);
     TEST_ASSERT_EQUAL_FLOAT(100.0f, card.view().sat);
+    card.detents(3, 1050);
+    TEST_ASSERT_EQUAL_FLOAT(20.0f, card.editHue());
 }
 
 static void test_detents_colourPage_wrapsBothWays(void)
@@ -414,23 +350,24 @@ static void test_detents_colourPage_wrapsBothWays(void)
     LightCardState card = onCard();
     card.swipe(1, 1000);
     card.swipe(1, 1000);
-    card.detents(-1, 1000); // 0 -> 7
-    TEST_ASSERT_EQUAL_UINT8(7, card.preset());
-    card.detents(1, 1100); // 7 -> 0
-    TEST_ASSERT_EQUAL_UINT8(0, card.preset());
+    card.detents(-1, 1000); // 0 -> 355
+    TEST_ASSERT_EQUAL_FLOAT(355.0f, card.editHue());
+    card.detents(1, 1100); // 355 -> 0
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, card.editHue());
 }
 
-static void test_detents_colourPage_fromTempMode_startsAtNearestPresetToHue(void)
+static void test_detents_colourPage_fromTempMode_startsAtHaHue(void)
 {
     LightCardState card(true);
-    // TEMP mode, but HA still reports the last hue: 250 -> preset 5 (240).
+    // TEMP mode, but HA still reports the last hue: 250.
     card.sync(makeState(true, 50, LightsModel::ColorMode::TEMP, 4000, 2000, 6500, 250, 100, true),
               1000);
     card.swipe(1, 1000);
     card.swipe(1, 1000);
     card.detents(1, 1000);
-    TEST_ASSERT_EQUAL_UINT8(6, card.preset()); // 240 -> next preset, 275
-    TEST_ASSERT_EQUAL_FLOAT(275.0f, card.view().hue);
+    TEST_ASSERT_EQUAL_FLOAT(255.0f, card.editHue());
+    TEST_ASSERT_EQUAL_FLOAT(255.0f, card.view().hue);
+    TEST_ASSERT_TRUE(card.colourLive());
 }
 
 static void test_detents_whileOff_isIgnored(void)
@@ -560,16 +497,16 @@ static void test_settle_kelvinPageEmitsTempCommand(void)
     TEST_ASSERT_EQUAL_UINT16(3800, cmd.kelvin);
 }
 
-static void test_settle_colourPageEmitsHueCommandWithPresetHueAndFullSaturation(void)
+static void test_settle_colourPageEmitsHueCommandWithRoundedHueAndFullSaturation(void)
 {
     LightCardState card = onCard();
     card.swipe(1, 1000);
     card.swipe(1, 1000);
-    card.detents(5, 1000); // preset 0 -> 5 (240)
+    card.detents(5, 1000); // 0 -> 25
     LightsModel::Command cmd = card.tick(1300);
     TEST_ASSERT_TRUE(LightsModel::Command::Type::HUE == cmd.type);
     TEST_ASSERT_TRUE(cmd.on);
-    TEST_ASSERT_EQUAL_FLOAT(240.0f, cmd.hue);
+    TEST_ASSERT_EQUAL_FLOAT(25.0f, cmd.hue);
     TEST_ASSERT_EQUAL_FLOAT(100.0f, cmd.sat);
 }
 
@@ -585,78 +522,100 @@ static void test_settle_survivesAPageSwipeAndStillSendsTheEditedField(void)
 }
 
 // ---------------------------------------------------------------------------
-// LightCardState: selectPreset
+// LightCardState: selectHue
 // ---------------------------------------------------------------------------
 
-static void test_selectPreset_armsSettleAndSendsThatPresetsHue(void)
+static void test_selectHue_armsSettleAndSendsThatHue(void)
 {
     LightCardState card = onColourPageCard();
-    card.selectPreset(3, 1000);
-    TEST_ASSERT_EQUAL_UINT8(3, card.preset());
+    card.selectHue(137.4f, 1000);
+    TEST_ASSERT_EQUAL_FLOAT(137.4f, card.editHue());
     TEST_ASSERT_TRUE(card.settling());
+    TEST_ASSERT_TRUE(card.colourLive());
     LightsModel::Command cmd = card.tick(1300);
     TEST_ASSERT_TRUE(LightsModel::Command::Type::HUE == cmd.type);
-    TEST_ASSERT_EQUAL_FLOAT(120.0f, cmd.hue);
+    TEST_ASSERT_EQUAL_FLOAT(137.4f, cmd.hue);
     TEST_ASSERT_EQUAL_FLOAT(100.0f, cmd.sat);
+    // formatCommand() rounds on the wire: 137.4 -> 137.
+    char buf[64];
+    TEST_ASSERT_TRUE(LightsModel::formatCommand(cmd, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_EQUAL_STRING("{\"state\":\"ON\",\"hs_color\":[137,100]}", buf);
 }
 
-static void test_selectPreset_whileOff_isIgnored(void)
+static void test_selectHue_normalisesTheHue(void)
+{
+    LightCardState card = onColourPageCard();
+    card.selectHue(-90.0f, 1000);
+    TEST_ASSERT_EQUAL_FLOAT(270.0f, card.editHue());
+}
+
+static void test_selectHue_whileOff_isIgnored(void)
 {
     LightCardState card(true);
     card.sync(colourState(), 1000); // off
-    card.selectPreset(3, 1000); // page is BRIGHT and the light is off: doubly ignored
+    card.selectHue(90.0f, 1000); // page is BRIGHT and the light is off: doubly ignored
     TEST_ASSERT_FALSE(card.settling());
 }
 
-// Only the Colour page draws swatches: the same coordinates on the
+// Only the Colour page draws the ring: the same coordinates on the
 // Brightness or Kelvin page are bare background.
-static void test_selectPreset_offTheColourPage_isIgnored(void)
+static void test_selectHue_offTheColourPage_isIgnored(void)
 {
     LightCardState card = onCard(); // BRIGHT
-    card.selectPreset(3, 1000);
+    card.selectHue(90.0f, 1000);
     TEST_ASSERT_FALSE(card.settling());
     card.swipe(1, 1000); // KELVIN
-    card.selectPreset(3, 1000);
+    card.selectHue(90.0f, 1000);
     TEST_ASSERT_FALSE(card.settling());
 }
 
-// Office has no Colour page at all, so no swatch tap can ever land.
-static void test_selectPreset_onACardWithoutColour_isIgnored(void)
+// Office has no Colour page at all, so no ring tap can ever land.
+static void test_selectHue_onACardWithoutColour_isIgnored(void)
 {
     LightCardState card = onOfficeCard();
     card.swipe(1, 1000);
     card.swipe(1, 1000); // clamps at KELVIN
-    card.selectPreset(3, 1000);
-    TEST_ASSERT_FALSE(card.settling());
-}
-
-static void test_selectPreset_outOfRangeIndex_isIgnored(void)
-{
-    LightCardState card = onColourPageCard();
-    card.selectPreset(8, 1000);
+    card.selectHue(90.0f, 1000);
     TEST_ASSERT_FALSE(card.settling());
 }
 
 // ---------------------------------------------------------------------------
-// LightCardState: preset(), kelvinLive(), colourLive(), ringFraction()
+// LightCardState: editHue(), kelvinLive(), colourLive(), ringFraction()
 // ---------------------------------------------------------------------------
 
-static void test_preset_followsHaHueWhenIdle(void)
+// No snapping: the marker shows exactly what HA reports.
+static void test_editHue_followsHaHueWhenIdle(void)
 {
     LightCardState card(true);
-    card.sync(makeState(true, 50, LightsModel::ColorMode::HS, 0, 2000, 6500, 350, 100, true), 1000);
-    TEST_ASSERT_EQUAL_UINT8(0, card.preset()); // 350 wraps to preset 0
+    card.sync(makeState(true, 50, LightsModel::ColorMode::HS, 0, 2000, 6500, 258.3f, 97.0f, true),
+              1000);
+    TEST_ASSERT_EQUAL_FLOAT(258.3f, card.editHue());
 }
 
-static void test_preset_isThePendingOneWhileSettling(void)
+static void test_editHue_isThePendingOneWhileSettling(void)
 {
     LightCardState card = onCard();
     card.swipe(1, 1000);
     card.swipe(1, 1000);
-    card.detents(2, 1000);
-    // A stale HA echo (still hue 0) mustn't drag the highlight back.
+    card.detents(2, 1000); // 0 -> 10
+    // A stale HA echo (still hue 0) mustn't drag the marker back.
     card.sync(colourOn(), 1050);
-    TEST_ASSERT_EQUAL_UINT8(2, card.preset());
+    TEST_ASSERT_EQUAL_FLOAT(10.0f, card.editHue());
+}
+
+// After the command goes out the marker stays on the sent hue until HA
+// confirms (or the 1.5 s hold expires), then follows HA.
+static void test_editHue_holdsTheSentHueUntilConfirmedThenFollowsHa(void)
+{
+    LightCardState card = onColourPageCard();
+    card.selectHue(275.0f, 1000);
+    (void)card.tick(1300); // command out, confirm hold starts
+    card.sync(colourOn(), 1400); // stale echo: hue 0, TEMP mode
+    TEST_ASSERT_EQUAL_FLOAT(275.0f, card.editHue());
+    // HA echoes the Hue bulb's version of 275: within tolerance -> confirmed.
+    card.sync(makeState(true, 50, LightsModel::ColorMode::HS, 0, 2000, 6500, 273.3f, 92.0f, true),
+              1500);
+    TEST_ASSERT_EQUAL_FLOAT(273.3f, card.editHue());
 }
 
 static void test_kelvinLiveAndColourLive_followTheReportedMode(void)
@@ -821,7 +780,7 @@ static void test_confirmHold_hue_withinToleranceConfirms(void)
     LightCardState card = onCard();
     card.swipe(1, 1000);
     card.swipe(1, 1000);
-    card.detents(5, 1000); // preset 5, hue 240
+    card.selectHue(240.0f, 1000);
     card.tick(1300);
     LightsModel::LightState s = colourOn();
     s.mode = LightsModel::ColorMode::HS;
@@ -835,7 +794,7 @@ static void test_confirmHold_hue_outsideToleranceKeepsLocal(void)
     LightCardState card = onCard();
     card.swipe(1, 1000);
     card.swipe(1, 1000);
-    card.detents(5, 1000);
+    card.selectHue(240.0f, 1000);
     card.tick(1300);
     card.sync(colourOn(), 1350); // stale: hue 0
     TEST_ASSERT_EQUAL_FLOAT(240.0f, card.view().hue);
@@ -872,21 +831,14 @@ int main(int, char**)
     RUN_TEST(test_layout_offFaceConstants);
     RUN_TEST(test_layout_onFaceConstants);
     RUN_TEST(test_layout_pageConstants);
-    RUN_TEST(test_layout_presetHues);
 
-    RUN_TEST(test_swatchCentre_ringStartsHalfAStepPastTwelve);
-    RUN_TEST(test_swatchCentre_goesClockwise);
-    RUN_TEST(test_swatchCentre_everySwatchClearsThePowerGlyph);
-    RUN_TEST(test_swatchCentre_topPairStraddlesTwelveOClock);
-    RUN_TEST(test_hitSwatch_andPowerGlyph_neverClaimTheSamePoint);
-    RUN_TEST(test_hitSwatch_centresHitTheirOwnIndex);
-    RUN_TEST(test_hitSwatch_edgeOfHitRadiusHitsAndJustPastMisses);
-    RUN_TEST(test_hitSwatch_centreOfFaceMisses);
+    RUN_TEST(test_wrapHue_normalisesIntoZeroTo360);
+    RUN_TEST(test_hueAt_cardinalPointsAndDiagonal);
+    RUN_TEST(test_hueAt_isAlwaysInZeroTo360);
+    RUN_TEST(test_hitHueRing_annulusBounds);
+    RUN_TEST(test_hueMarkerCentre_hue0IsTopHue90IsRight);
+    RUN_TEST(test_hueMarkerCentre_roundTripsThroughHueAt);
     RUN_TEST(test_hitPowerGlyph_withinAndOutsideHitRadius);
-
-    RUN_TEST(test_nearestPreset_exactHuesMapToThemselves);
-    RUN_TEST(test_nearestPreset_roundsToNearest);
-    RUN_TEST(test_nearestPreset_wrapsRoundTheCircle);
 
     RUN_TEST(test_pageCount_lampHasThreeOfficeHasTwo);
     RUN_TEST(test_page_startsOnBrightness);
@@ -902,9 +854,9 @@ int main(int, char**)
     RUN_TEST(test_detents_brightPage_stepsBy5AndArmsSettle);
     RUN_TEST(test_detents_brightPage_clampsTo1And100);
     RUN_TEST(test_detents_kelvinPage_stepsBy100AndClampsToBounds);
-    RUN_TEST(test_detents_colourPage_movesOnePresetPerDetent);
+    RUN_TEST(test_detents_colourPage_stepsFiveDegreesPerDetent);
     RUN_TEST(test_detents_colourPage_wrapsBothWays);
-    RUN_TEST(test_detents_colourPage_fromTempMode_startsAtNearestPresetToHue);
+    RUN_TEST(test_detents_colourPage_fromTempMode_startsAtHaHue);
     RUN_TEST(test_detents_whileOff_isIgnored);
     RUN_TEST(test_detents_whileUnavailable_isIgnored);
     RUN_TEST(test_detents_zero_isNoOp);
@@ -919,17 +871,18 @@ int main(int, char**)
     RUN_TEST(test_settle_emitsExactlyOneBrightCommandAtDeadline);
     RUN_TEST(test_settle_rearmsFromTheLastDetent);
     RUN_TEST(test_settle_kelvinPageEmitsTempCommand);
-    RUN_TEST(test_settle_colourPageEmitsHueCommandWithPresetHueAndFullSaturation);
+    RUN_TEST(test_settle_colourPageEmitsHueCommandWithRoundedHueAndFullSaturation);
     RUN_TEST(test_settle_survivesAPageSwipeAndStillSendsTheEditedField);
 
-    RUN_TEST(test_selectPreset_armsSettleAndSendsThatPresetsHue);
-    RUN_TEST(test_selectPreset_whileOff_isIgnored);
-    RUN_TEST(test_selectPreset_offTheColourPage_isIgnored);
-    RUN_TEST(test_selectPreset_onACardWithoutColour_isIgnored);
-    RUN_TEST(test_selectPreset_outOfRangeIndex_isIgnored);
+    RUN_TEST(test_selectHue_armsSettleAndSendsThatHue);
+    RUN_TEST(test_selectHue_normalisesTheHue);
+    RUN_TEST(test_selectHue_whileOff_isIgnored);
+    RUN_TEST(test_selectHue_offTheColourPage_isIgnored);
+    RUN_TEST(test_selectHue_onACardWithoutColour_isIgnored);
 
-    RUN_TEST(test_preset_followsHaHueWhenIdle);
-    RUN_TEST(test_preset_isThePendingOneWhileSettling);
+    RUN_TEST(test_editHue_followsHaHueWhenIdle);
+    RUN_TEST(test_editHue_isThePendingOneWhileSettling);
+    RUN_TEST(test_editHue_holdsTheSentHueUntilConfirmedThenFollowsHa);
     RUN_TEST(test_kelvinLiveAndColourLive_followTheReportedMode);
     RUN_TEST(test_colourEdit_makesColourLiveImmediately);
     RUN_TEST(test_kelvinEdit_makesKelvinLiveImmediately);

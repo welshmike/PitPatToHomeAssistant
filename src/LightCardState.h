@@ -16,8 +16,8 @@
 // the small power glyph and a touch-hold switch it off (powerOff()).
 //
 // DialUi owns one LightCardState per card, feeds it HA state via sync(),
-// drives it from swipe()/tapOn()/powerOff()/selectPreset()/detents(), polls
-// tick() every frame, and draws from view()/page()/preset()/ringFraction().
+// drives it from swipe()/tapOn()/powerOff()/selectHue()/detents(), polls
+// tick() every frame, and draws from view()/page()/editHue()/ringFraction().
 //
 // Detents adjust a local optimistic copy of the page's field (view()) and arm
 // a 300 ms settle deadline; tick() fires exactly one command 300 ms after the
@@ -35,7 +35,7 @@ public:
 
     static constexpr uint32_t SETTLE_MS = 300;
     // Pages other than Brightness fall back to Brightness after this long
-    // without a swipe, detent or preset tap (Mike, 2026-09-06: every menu
+    // without a swipe, detent or ring tap (Mike, 2026-09-06: every menu
     // times out back to the card's default).
     static constexpr uint32_t PAGE_IDLE_MS = 10000;
     // How long an emitted command's fields survive a contradicting sync()
@@ -48,6 +48,7 @@ public:
     static constexpr float CONFIRM_HUE_TOL = 2.0f;
     static constexpr int BRIGHT_STEP = 5;
     static constexpr int KELVIN_STEP = 100;
+    static constexpr int HUE_STEP = 5; // degrees per detent on the Colour page
 
     // hasColour: true for the Lamp card (which has a Colour page), false for
     // Office (Brightness and Kelvin only).
@@ -110,26 +111,25 @@ public:
     LightsModel::Command powerOff(uint32_t nowMs);
 
     // Adjusts the showing page's value by n detents -- BRIGHT +-5 clamped
-    // 1-100; KELVIN +-100 clamped to [minKelvin, maxKelvin]; COLOUR +-1
-    // preset, wrapping -- and (re)arms the 300 ms settle deadline from nowMs.
+    // 1-100; KELVIN +-100 clamped to [minKelvin, maxKelvin]; COLOUR +-HUE_STEP degrees, wrapping at 360 -- and (re)arms the 300 ms settle deadline from nowMs.
     // Ignored when n == 0, or while the light is off or unavailable (the off
     // face has no value to turn, and there is nothing to send to a light that
     // isn't there).
     //
-    // On COLOUR, the first detent moves off the preset nearest the light's
-    // current hue, so a light in temperature mode starts from something
-    // sensible; the edit also makes hue mode live locally, matching the
-    // command that is about to go out.
+    // On COLOUR, the first detent steps from editHue() -- the pending edit if
+    // one is in flight, otherwise the hue HA reports -- so a light in
+    // temperature mode starts from its last colour; the edit also makes hue
+    // mode live locally, matching the command that is about to go out.
     void detents(int n, uint32_t nowMs);
 
-    // Tap on swatch `i` on the Colour page. Same gating as detents(), plus:
-    // only the Colour page of a colour-capable card has swatches at all, so a
-    // call while another page is showing (or on Office) is ignored. An index
-    // outside 0..LightLayout::kPresetCount-1 is ignored too.
-    void selectPreset(uint8_t i, uint32_t nowMs);
+    // Tap on the hue ring at `hue` degrees (LightLayout::hueAt). Same gating
+    // as detents(), plus: only the Colour page of a colour-capable card has
+    // the ring at all, so a call while another page is showing (or on Office)
+    // is ignored. The hue is normalised into [0, 360).
+    void selectHue(float hue, uint32_t nowMs);
 
     // Polls the settle timer. If a settle is due (>=300 ms since the last
-    // detent or preset tap), emits exactly one command for the edited field
+    // detent or ring tap), emits exactly one command for the edited field
     // and clears settling() (and the pending edit with it). Otherwise returns
     // a NONE command. There is no idle release: the pages are always live.
     // DialUi polls this on BOTH cards every frame, whatever is on screen, so
@@ -146,10 +146,10 @@ public:
     // re-derive it from the card's LightKey.
     bool hasColour() const { return m_hasColour; }
 
-    // The highlighted colour preset: the one being sent while an edit is
-    // pending or awaiting confirmation, otherwise the preset nearest HA's
-    // reported hue.
-    uint8_t preset() const;
+    // The hue the marker shows: the edit being sent while it is pending or
+    // awaiting confirmation, otherwise HA's reported hue, normalised. No
+    // snapping -- a colour set from HA or the Hue app is shown faithfully.
+    float editHue() const;
 
     // Which of the two colour pages the light is actually in: HA reports one
     // mode at a time, and the other page draws dim ("not active - turn to
@@ -182,9 +182,9 @@ private:
     // mid-settle must not change what gets sent.
     LightsModel::Command::Type m_pending = LightsModel::Command::Type::NONE;
     bool m_settling = false;
-    uint32_t m_lastEdit = 0; // last detent/preset tap; drives the settle deadline
-    uint32_t m_pageInputMs = 0; // last swipe/detent/preset tap; drives PAGE_IDLE_MS
-    uint8_t m_preset = 0;    // preset being edited (only meaningful for a HUE edit/hold)
+    uint32_t m_lastEdit = 0; // last detent/ring tap; drives the settle deadline
+    uint32_t m_pageInputMs = 0; // last swipe/detent/ring tap; drives PAGE_IDLE_MS
+    float m_editHue = 0.0f;  // hue being edited (only meaningful for a HUE edit/hold)
     // The command whose echo we're waiting for (type NONE == no hold), and
     // when it went out.
     LightsModel::Command m_confirmHold;

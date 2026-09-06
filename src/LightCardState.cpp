@@ -258,17 +258,10 @@ void LightCardState::detents(int n, uint32_t nowMs)
     }
     case Page::COLOUR:
     {
-        // Start from the preset the light is already nearest (preset() falls
-        // back to nearestPreset(view().hue) when nothing is pending), then
-        // step, wrapping both ways.
-        const int count = static_cast<int>(LightLayout::kPresetCount);
-        int idx = (static_cast<int>(preset()) + n) % count;
-        if (idx < 0)
-        {
-            idx += count;
-        }
-        m_preset = static_cast<uint8_t>(idx);
-        m_view.hue = LightLayout::kPresetHues[m_preset];
+        // Step from the hue the marker shows (editHue(): the pending edit, or
+        // HA's hue when nothing is pending), wrapping both ways.
+        m_editHue  = LightLayout::wrapHue(editHue() + static_cast<float>(n * HUE_STEP));
+        m_view.hue = m_editHue;
         m_view.sat = 100.0f;
         m_view.mode = LightsModel::ColorMode::HS;
         m_pending = LightsModel::Command::Type::HUE;
@@ -281,19 +274,18 @@ void LightCardState::detents(int n, uint32_t nowMs)
     m_settling = true;
 }
 
-void LightCardState::selectPreset(uint8_t i, uint32_t nowMs)
+void LightCardState::selectHue(float hue, uint32_t nowMs)
 {
-    // Only the Colour page draws swatches, and only a colour-capable card has
+    // Only the Colour page draws the ring, and only a colour-capable card has
     // that page — a tap that lands on those coordinates on any other page is
     // a tap on bare background.
-    if (i >= LightLayout::kPresetCount || !m_hasColour || m_page != Page::COLOUR ||
-        !editable())
+    if (!m_hasColour || m_page != Page::COLOUR || !editable())
     {
         return;
     }
 
-    m_preset = i;
-    m_view.hue = LightLayout::kPresetHues[i];
+    m_editHue  = LightLayout::wrapHue(hue);
+    m_view.hue = m_editHue;
     m_view.sat = 100.0f;
     m_view.mode = LightsModel::ColorMode::HS;
     m_pending = LightsModel::Command::Type::HUE;
@@ -320,12 +312,12 @@ LightsModel::Command LightCardState::buildSettleCommand() const
     case LightsModel::Command::Type::HUE:
         c.type = LightsModel::Command::Type::HUE;
         c.on = true;
-        c.hue = LightLayout::kPresetHues[m_preset];
+        c.hue = m_editHue;
         c.sat = 100.0f;
         break;
     case LightsModel::Command::Type::NONE:
     case LightsModel::Command::Type::POWER:
-        // Only a detent/preset edit arms a settle, and those only ever set
+        // Only a detent/ring edit arms a settle, and those only ever set
         // BRIGHT/TEMP/HUE — there is no settle command for either of these.
         break;
     }
@@ -355,15 +347,15 @@ LightsModel::Command LightCardState::tick(uint32_t nowMs)
     return cmd;
 }
 
-uint8_t LightCardState::preset() const
+float LightCardState::editHue() const
 {
     const bool pendingHue = m_settling && m_pending == LightsModel::Command::Type::HUE;
     const bool holdingHue = m_confirmHold.type == LightsModel::Command::Type::HUE;
     if (pendingHue || holdingHue)
     {
-        return m_preset;
+        return m_editHue;
     }
-    return LightLayout::nearestPreset(m_view.hue);
+    return LightLayout::wrapHue(m_view.hue);
 }
 
 float LightCardState::ringFraction() const
