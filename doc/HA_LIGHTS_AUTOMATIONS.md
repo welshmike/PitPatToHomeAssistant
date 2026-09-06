@@ -93,7 +93,7 @@ variables:
   is_off: "{{ p.state is defined and (p.state | upper) == 'OFF' }}"
   turn_on_data: >-
     {% set ns = namespace(d={}) %}{% if p.brightness_pct is defined %}{% set ns.d =
-    dict(ns.d, brightness_pct=(p.brightness_pct | int(0)) | max(1) | min(100)) %}{% endif
+    dict(ns.d, brightness_pct=[[p.brightness_pct | int(0), 1] | max, 100] | min) %}{% endif
     %}{% if p.color_temp_kelvin is defined %}{% set ns.d = dict(ns.d,
     color_temp_kelvin=p.color_temp_kelvin | int) %}{% endif %}{% if p.hs_color is defined
     %}{% set ns.d = dict(ns.d, hs_color=p.hs_color) %}{% endif %}{{ ns.d }}
