@@ -318,7 +318,8 @@ private:
     // handle() forces disconnect() once this deadline passes with the link still
     // up. 0 = no escalation pending. Deadline = 2x the negotiated supervision
     // timeout, clamped to [kDropEscalateMinMs, kDropEscalateMaxMs].
-    uint32_t m_dropDeadlineMs = 0;
+    // volatile: cleared by onDisconnect() on the NimBLE task.
+    volatile uint32_t m_dropDeadlineMs = 0;
     // Negotiated supervision timeout in ms, captured in completeSetup(); falls
     // back to the 6 s we request if the stack reports 0.
     uint32_t m_connTimeoutMs = 6000;

@@ -208,8 +208,12 @@ bool TreadmillHandler::requestConnect()
         m_userRequestedConnect = true;
         m_reconnectNotBefore   = 0;
         m_connectAttempts      = 0;
-        m_dropDeadlineMs       = 0;
-        m_pClient->disconnect();
+        // m_dropDeadlineMs is left armed: onDisconnect() clears it, and if the
+        // terminate below is refused the deadline is the remaining safety net.
+        if (!m_pClient->disconnect())
+        {
+            log_e("disconnect() refused on the muted link — escalation deadline still armed");
+        }
         return true;
     }
     log_i("Manual connect requested");
@@ -473,7 +477,8 @@ bool TreadmillHandler::sendCommand(const uint8_t *data, size_t length)
                 // disconnect() — see m_dropDeadlineMs in the header.
                 if (m_dropDeadlineMs == 0)
                 {
-                    m_dropDeadlineMs = millis() + escalateMs;
+                    // | 1: 0 is the "not armed" sentinel.
+                    m_dropDeadlineMs = (millis() + escalateMs) | 1u;
                 }
             }
             else
@@ -498,6 +503,17 @@ bool TreadmillHandler::sendCommand(const uint8_t *data, size_t length)
         return false;
     }
 
+    // A user command that the belt accepted while an intentional drop was
+    // pending (pause timeout / idle disconnect window) means the belt may now be
+    // running on our say-so: keep the link alive rather than letting the
+    // deliberate supervision-timeout drop fire under a moving belt.
+    if (length == 27 && m_stopKeepalives)
+    {
+        log_w("User command accepted on a muted link — cancelling the intentional drop");
+        m_stopKeepalives  = false;
+        m_intentionalDrop = false;
+        m_dropDeadlineMs  = 0;
+    }
     return true;
 }
 
@@ -615,13 +631,22 @@ bool TreadmillHandler::handle()
     // (sendCommand) stopped keepalives and armed this deadline. If the link
     // layer is still up when it passes, the supervision timeout is not coming
     // soon enough — force the drop so the reconnect chain runs.
+    // Gated on stage IDLE and the muted flag: the debounce can re-arm the
+    // deadline after onDisconnect() has already cleared it (the write failed
+    // on a link that dropped in the same instant), and a stale deadline must
+    // never disconnect() the NEXT link while it is still LINKING — that is the
+    // HCI 0x16 on a coming-up link that spec 4.17 exists to avoid.
     if (m_dropDeadlineMs != 0 && (int32_t)(millis() - m_dropDeadlineMs) >= 0)
     {
         m_dropDeadlineMs = 0;
-        if (m_pClient && m_pClient->isConnected())
+        if (m_linkStage == LinkStage::IDLE && m_stopKeepalives &&
+            m_pClient && m_pClient->isConnected())
         {
             log_e("Zombie link still up after the escalation deadline — forcing disconnect");
-            m_pClient->disconnect();
+            if (!m_pClient->disconnect())
+            {
+                log_e("disconnect() refused on the zombie link");
+            }
         }
     }
 
@@ -903,6 +928,9 @@ bool TreadmillHandler::completeSetup()
     // latency=0, timeout=600 (6s). If the pad negotiated a much longer timeout, that
     // explains why onDisconnect() can take hundreds of seconds after the GATT layer breaks.
     NimBLEConnInfo connInfo = m_pClient->getConnInfo();
+    // Captured once per link; a later peripheral-initiated parameter update is
+    // not tracked — acceptable because the escalation deadline is clamped to
+    // 12-30 s anyway.
     m_connTimeoutMs = connInfo.getConnTimeout() ? connInfo.getConnTimeout() * 10u : 6000u;
     log_i("Negotiated BLE params: interval=%u (%.1fms) latency=%u timeout=%u (%ums)",
           connInfo.getConnInterval(), connInfo.getConnInterval() * 1.25f,
