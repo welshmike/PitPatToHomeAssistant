@@ -63,6 +63,20 @@ DialUi dialUi(controller, timeService, netTask);
 // Last network state pushed to the views; the display will read this too.
 NetStatus g_lastNetStatus = NetStatus::WIFI_DOWN;
 
+// BLE connect hold (spec 4.15). WiFi and BLE share one antenna: a connect that
+// lands on top of WiFi association or MQTT's discovery/resync burst loses
+// service discovery, and the disconnect() that follows sends the Q1 into its
+// kicking phase. So background connects wait for the air to be quiet.
+//   - the first kPostBootHoldMs after boot, while WiFi/MQTT are still coming up;
+//   - kPostMqttHoldMs after each transition into MQTT_UP (the discovery burst).
+// Never held when WiFi is simply down (standalone Dial) or after the boot
+// window, so a Dial with no network still connects within seconds.
+constexpr uint32_t kPostMqttHoldMs = 6000;
+constexpr uint32_t kPostBootHoldMs = 30000;
+
+// millis() of the last transition into MQTT_UP; 0 while not MQTT_UP.
+uint32_t g_mqttUpSinceMs = 0;
+
 // Hands one settings publish to the net task. Snapshots go through the
 // controller's observer instead.
 static void enqueue(PubType type, bool b = false, uint16_t u16 = 0, uint8_t u8 = 0, float f = 0)
@@ -290,11 +304,24 @@ void loop()
     {
       timeService.onWifiUp();
     }
+    // Timestamp the entry into MQTT_UP so the post-MQTT hold below can run out.
+    // millis() can be 0 for one tick after boot; 1 is close enough and keeps 0
+    // meaning "not up".
+    g_mqttUpSinceMs = (netStatus == NetStatus::MQTT_UP) ? (now == 0 ? 1 : now) : 0;
     g_lastNetStatus = netStatus;
     controller.publishNetStatus(netStatus);
     log_i("Net status %d: heap=%u minFree=%u", (int)netStatus,
           (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
   }
+
+  // Cheap every loop — the handler logs only when the flag actually changes.
+  const bool bringingUp = (netStatus == NetStatus::WIFI_CONNECTING ||
+                           netStatus == NetStatus::MQTT_CONNECTING);
+  const bool connectHold =
+      (now < kPostBootHoldMs && bringingUp) ||
+      (netStatus == NetStatus::MQTT_UP && g_mqttUpSinceMs != 0 &&
+       now - g_mqttUpSinceMs < kPostMqttHoldMs);
+  treadmill.setConnectHold(connectHold);
 
   delay(1); // yield to the idle task
 }

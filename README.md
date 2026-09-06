@@ -317,6 +317,9 @@ on `pacekeeper-dial/light/refresh` once after each MQTT (re)connect. The two Hom
 automations that apply commands and mirror state are documented, with their full YAML, in
 [`doc/HA_LIGHTS_AUTOMATIONS.md`](doc/HA_LIGHTS_AUTOMATIONS.md).
 
+WiFi and BLE share one antenna, so background treadmill connects are held off while WiFi/MQTT come
+up (first 30 s after boot) and for 6 s after each MQTT connect; a connect you ask for is never held.
+
 ### One device at a time
 
 Only one BLE central can hold the Q1's connection, so run either the DevKit or the Dial — never

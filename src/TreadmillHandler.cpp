@@ -280,6 +280,16 @@ void TreadmillHandler::setFlightsAutoShow(bool on)
     log_i("Flights auto-show set: %d", m_flightsAutoShow);
 }
 
+void TreadmillHandler::setConnectHold(bool hold)
+{
+    if (hold == m_connectHold)
+    {
+        return; // called every loop; only the transition is worth a line
+    }
+    m_connectHold = hold;
+    log_i("BLE connect hold %s", m_connectHold ? "on" : "off");
+}
+
 void TreadmillHandler::setIdleDisconnectMins(uint16_t mins)
 {
     m_idleDisconnectMins = mins;
@@ -418,8 +428,12 @@ bool TreadmillHandler::handle()
     // handles reconnection
     // m_reconnectNotBefore is set after an idle kick (user-requested connect) to add
     // a 60s backoff between reconnect attempts — avoids rapid beeping while idle.
+    // m_connectHold (spec 4.15): main.cpp holds background connects off the air
+    // while WiFi/MQTT are bringing up on the shared antenna. A connect the user
+    // asked for is never held.
     if (m_doConnect && (millis() - m_lastConnectAttempt > 5000) && m_autoReconnect &&
-        (m_reconnectNotBefore == 0 || millis() >= m_reconnectNotBefore))
+        (m_reconnectNotBefore == 0 || millis() >= m_reconnectNotBefore) &&
+        (!m_connectHold || m_userRequestedConnect))
     {
         m_lastConnectAttempt = millis();
         ++m_connectAttempts;
@@ -604,9 +618,12 @@ bool TreadmillHandler::connectToDevice()
     // terminated) if it receives no write within ~300ms of connecting. Every millisecond
     // spent here is time we're not spending on the handshake.
 
-    // Retry service discovery up to 5 times with a short delay between attempts
+    // Retry service discovery up to 8 times with a short delay between attempts.
+    // 8 x 250ms = 2s of patience (was 5 x 200ms = 1s): the belt does not kick us
+    // while we retry — it is our own disconnect() below that starts the kicking
+    // phase — so waiting longer is strictly cheaper than giving up (spec 4.15).
     NimBLERemoteService *pService = nullptr;
-    for (int retry = 0; retry < 5; retry++)
+    for (int retry = 0; retry < 8; retry++)
     {
         pService = m_pClient->getService(SERVICE_PAD_UUID);
         if (pService)
@@ -614,12 +631,12 @@ bool TreadmillHandler::connectToDevice()
             log_i("Service found on attempt %d", retry + 1);
             break;
         }
-        log_w("Service not found, retry %d/5...", retry + 1);
-        delay(200); // reduced from 500ms - device won't wait long
+        log_w("Service not found, retry %d/8...", retry + 1);
+        delay(250);
     }
     if (!pService)
     {
-        log_e("Failed to find treadmill service UUID after 5 retries: %s", SERVICE_PAD_UUID);
+        log_e("Failed to find treadmill service UUID after 8 retries: %s", SERVICE_PAD_UUID);
         m_pClient->disconnect();
         return false;
     }

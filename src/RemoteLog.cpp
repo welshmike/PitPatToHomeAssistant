@@ -47,8 +47,13 @@ std::atomic<uint32_t> s_dropped{0};
 // story we are chasing (spec 4.14); everything else at I is the 15 s heap
 // heartbeat and per-command chatter. E and W are always forwarded, so this
 // list only has to cover the interesting INFO lines.
+// "Treadmill:" is the ESP-IDF tag of every TreadmillHandler line, so the whole
+// connect sequence (service found, characteristic, keepalive, subscribed) and
+// any kick phase come through, not just the lines that happen to say "connect"
+// (spec 4.15).
 const char *const kInfoKeywords[] = {
     "connect", "Connect", "kick", "Kick", "Subscribed", "BLE", "Net status", "boot",
+    "Treadmill:",
 };
 
 bool infoWanted(const char *line)

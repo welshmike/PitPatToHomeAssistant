@@ -44,6 +44,15 @@ public:
         return m_autoReconnect;
     }
 
+    // While held, handle() starts no background connect attempts — WiFi/MQTT
+    // bring-up and the discovery burst share the antenna with BLE, and a
+    // connect that collides with them loses service discovery and ends in a
+    // disconnect() that sends the Q1 into its kicking phase (spec 4.15).
+    // A user-requested connect always goes through. main.cpp owns the policy
+    // (which net states hold, and for how long); this only stores the flag and
+    // logs the transitions.
+    void setConnectHold(bool hold);
+
     // If the timer is currently armed, rearm it with the new duration.
     void setIdleDisconnectMins(uint16_t mins);
 
@@ -212,6 +221,10 @@ private:
     // 60-second backoff instead of stopping entirely. Cleared when user disconnects,
     // or after a real walking session ends (belt STOPPED after actual activity).
     bool m_userRequestedConnect = false;
+
+    // Set by main.cpp from the net status (spec 4.15). Suppresses background
+    // reconnect attempts only; m_userRequestedConnect overrides it.
+    bool m_connectHold = false;
 
     // millis() timestamp — don't attempt reconnect before this time.
     // Set in onDisconnect() after an idle kick: 5s for user-requested connect,
