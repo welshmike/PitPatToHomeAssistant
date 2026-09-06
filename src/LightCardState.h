@@ -34,6 +34,10 @@ public:
     enum class Page : uint8_t { BRIGHT, KELVIN, COLOUR };
 
     static constexpr uint32_t SETTLE_MS = 300;
+    // Pages other than Brightness fall back to Brightness after this long
+    // without a swipe, detent or preset tap (Mike, 2026-09-06: every menu
+    // times out back to the card's default).
+    static constexpr uint32_t PAGE_IDLE_MS = 10000;
     // How long an emitted command's fields survive a contradicting sync()
     // while waiting for HA to echo the change back.
     static constexpr uint32_t CONFIRM_HOLD_MS = 1500;
@@ -63,7 +67,7 @@ public:
     // pageCount()-1] — the ends do not wrap. Ignored while the light is off:
     // the off face is a single switch-on target with no pages behind it, so a
     // swipe there must not leave the card on a page nobody can see.
-    void swipe(int dir);
+    void swipe(int dir, uint32_t nowMs);
 
     // Adopts HA's light state into view(), subject to two overlapping
     // protections:
@@ -177,6 +181,7 @@ private:
     LightsModel::Command::Type m_pending = LightsModel::Command::Type::NONE;
     bool m_settling = false;
     uint32_t m_lastEdit = 0; // last detent/preset tap; drives the settle deadline
+    uint32_t m_pageInputMs = 0; // last swipe/detent/preset tap; drives PAGE_IDLE_MS
     uint8_t m_preset = 0;    // preset being edited (only meaningful for a HUE edit/hold)
     // The command whose echo we're waiting for (type NONE == no hold), and
     // when it went out.

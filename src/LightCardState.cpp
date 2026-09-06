@@ -51,7 +51,7 @@ void LightCardState::resetPage()
     m_page = Page::BRIGHT;
 }
 
-void LightCardState::swipe(int dir)
+void LightCardState::swipe(int dir, uint32_t nowMs)
 {
     if (!m_view.on)
     {
@@ -59,6 +59,7 @@ void LightCardState::swipe(int dir)
     }
     const int last = static_cast<int>(pageCount()) - 1;
     m_page = static_cast<Page>(clampInt(static_cast<int>(m_page) + dir, 0, last));
+    m_pageInputMs = nowMs;
 }
 
 bool LightCardState::confirmedBy(const LightsModel::LightState& s) const
@@ -274,6 +275,7 @@ void LightCardState::detents(int n, uint32_t nowMs)
     }
 
     m_lastEdit = nowMs;
+    m_pageInputMs = nowMs;
     m_settling = true;
 }
 
@@ -294,6 +296,7 @@ void LightCardState::selectPreset(uint8_t i, uint32_t nowMs)
     m_view.mode = LightsModel::ColorMode::HS;
     m_pending = LightsModel::Command::Type::HUE;
     m_lastEdit = nowMs;
+    m_pageInputMs = nowMs;
     m_settling = true;
 }
 
@@ -330,6 +333,13 @@ LightsModel::Command LightCardState::buildSettleCommand() const
 LightsModel::Command LightCardState::tick(uint32_t nowMs)
 {
     LightsModel::Command cmd; // Type::NONE
+
+    // Page idle timeout: back to Brightness once nothing has touched the
+    // page for PAGE_IDLE_MS. Independent of the settle below.
+    if (m_page != Page::BRIGHT && elapsedAtLeast(nowMs, m_pageInputMs, PAGE_IDLE_MS))
+    {
+        resetPage();
+    }
 
     if (!m_settling || !elapsedAtLeast(nowMs, m_lastEdit, SETTLE_MS))
     {

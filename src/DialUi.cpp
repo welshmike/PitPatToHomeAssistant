@@ -509,7 +509,7 @@ void DialUi::handleInput(uint32_t nowMs)
             // Carousel sense: dragging the face to the left (ev.swipe == -1)
             // brings the next page in, which is LightCardState's +1. Ignored
             // while the light is off — the off face has no pages.
-            lightCardFor(screen).swipe(-ev.swipe);
+            lightCardFor(screen).swipe(-ev.swipe, nowMs);
         }
     }
 
