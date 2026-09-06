@@ -112,7 +112,7 @@ configuration screen for this and similar settings is planned.
   instantly, regardless of what's showing. On Connecting it's a harmless no-op refusal since
   there's no belt link yet, and it does not cancel an in-progress connect; only tap/hold on the
   Connecting screen do that. Otherwise, while the belt is idle, the button works in two stages: a
-  decided single click (after M5Unified's ~350 ms multi-click window) opens the **card menu**, or
+  decided single click (after M5Unified's 500 ms multi-click window) opens the **card menu**, or
   picks the highlighted card if the menu is already open; a **hold** (500 ms) always jumps
   straight to the Treadmill card from any screen, closing any open menu or selector on the
   way — see Desk mode below. On the Selector screen a click has no effect; a hold closes it
@@ -283,12 +283,18 @@ Kelvin and, on the Lamp, Colour. Swipe left or right to change page (the ends do
   sits inside its own min/max range; ±100 K per detent, clamped to that range.
 * **Colour** (Lamp only — Office is colour-temperature-only): eight preset hues on a ring in true
   colour, the selected one larger with a white outline, and the chosen colour filling the middle.
-  One preset per detent (wrapping), or tap a swatch directly.
+  One preset per detent (wrapping), or tap a swatch directly. This page hides the card name and
+  the page dots — the ring says where you are, and the swatches are rotated half a step so none of
+  them sits on top of the dots' row or the power glyph at the bottom.
 
 The Lamp is in either temperature or hue mode at a time, so whichever of those two pages isn't
 live draws dim with `not active - turn to use`; the first detent on it sends that mode's command
 and makes it live. A small power glyph at the bottom switches the light off (as does holding
 anywhere on the card for a second, with the same red progress arc the belt's hold-to-stop uses).
+
+The Kelvin and Colour pages are transient: ten seconds without a swipe, a detent or a swatch tap
+drops the card back to Brightness, so a card you glanced at earlier reads the same as one you have
+just arrived on.
 
 A command is sent once, 300 ms after the last detent, the same debounce the treadmill's own speed
 control uses — spinning several clicks quickly still only produces one MQTT publish, and an edit

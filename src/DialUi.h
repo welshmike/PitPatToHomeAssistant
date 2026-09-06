@@ -170,6 +170,7 @@ private:
     // after checking screen == LIGHT_OFFICE || screen == LIGHT_LAMP.
     LightCardState& lightCardFor(Screen screen);
     const LightCardState& lightCardFor(Screen screen) const;
+    bool holdDoesSomething(Screen screen) const;
     // Formats `cmd` into a LIGHT_CMD PublishItem and hands it to the net
     // task; the loop task never touches MQTT itself.
     void publishLightCommand(LightsModel::LightKey key, const LightsModel::Command& cmd);

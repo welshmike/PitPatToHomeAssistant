@@ -230,9 +230,12 @@ void DialUi::handleInput(uint32_t nowMs)
     // BtnA wraps the Dial's single side button. wasClicked() is the instant
     // press-and-release edge, which is what the belt's emergency stop wants
     // (btnStop). wasSingleClicked() is the same press decided only after
-    // M5Unified's multi-click window (~350 ms) and wasHold() fires at 500 ms
-    // — the pair that drives the card menu and the jump home (spec 4.12).
-    // All three are one-tick edges that auto-clear.
+    // M5Unified's multi-click window — one _msecHold, i.e. 500 ms after the
+    // release — and wasHold() fires at the same 500 ms while still held: the
+    // pair that drives the card menu and the jump home (spec 4.12). All three
+    // are one-tick edges that auto-clear. Because one press yields both
+    // wasClicked() and wasSingleClicked(), the btnStop path below tells
+    // DialInput to swallow the second half when it acts on the first.
     const bool btnClicked = M5Dial.BtnA.wasClicked();
     const bool btnSingleClicked = M5Dial.BtnA.wasSingleClicked();
     const bool btnHeld = M5Dial.BtnA.wasHold();
@@ -418,13 +421,14 @@ void DialUi::handleInput(uint32_t nowMs)
         }
     }
 
-    if (ev.btnHold)
+    if (ev.btnHold && !beltScreen)
     {
-        // Home: holding the side button always returns to the Treadmill card,
-        // closing any menu or selector first (spec 4.12). Nothing is running
-        // on the screens this can be seen on, so there is no belt command to
-        // send; while the belt IS running the belt screens simply win over
-        // whichever card the ring is left parked on.
+        // Home: holding the side button returns to the Treadmill card,
+        // closing any menu or selector first (spec 4.12). Belt idle only: the
+        // belt screens already win over whichever card the ring is parked on,
+        // so there is nothing to navigate to while one is up — and without
+        // the guard a hold during a run would beep and re-point the ring
+        // underneath it, for no visible effect.
         m_menu.close();
         if (m_selector.isOpen())
         {
@@ -447,6 +451,14 @@ void DialUi::handleInput(uint32_t nowMs)
                  screen == Screen::FLIGHTS || screen == Screen::LIGHT_OFFICE ||
                  screen == Screen::LIGHT_LAMP)
         {
+            // The two are never open at once, and this is what makes that
+            // true rather than an accident of the branch list above: the
+            // menu's open always closes the selector first. Silent — the
+            // accept beep below covers the gesture.
+            if (m_selector.isOpen())
+            {
+                m_selector.close();
+            }
             m_menu.open(m_cards.current(), nowMs);
             playAcceptBeep(true);
         }
@@ -542,9 +554,9 @@ void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
 
     if (m_netStatus != NetStatus::MQTT_UP)
     {
-        // "waiting for HA": the face is inert and there is no path for a
-        // command to reach HA anyway, so say so rather than doing nothing.
-        playAcceptBeep(false);
+        // "waiting for HA": the face is inert, and it says so on screen — a
+        // refused tone on top of that is just noise. Silent, like a tap on
+        // the Clock card (and as the README describes both faces).
         return;
     }
     if (!v.valid || !v.available)
@@ -710,6 +722,24 @@ LightCardState& DialUi::lightCardFor(Screen screen)
     return m_lightCards[static_cast<uint8_t>(lightKeyFor(screen))];
 }
 
+// Whether a touch-hold on `screen` has anything to do — i.e. whether the red
+// hold arc is worth drawing, and so whether its progress belongs in the frame
+// key at all. Not the menu, whose own ring sits exactly where the arc would
+// draw and which a hold does nothing on; not a light card that is already
+// off, where there is nothing left to switch.
+bool DialUi::holdDoesSomething(Screen screen) const
+{
+    if (screen == Screen::MENU)
+    {
+        return false;
+    }
+    if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
+    {
+        return lightCardFor(screen).view().on;
+    }
+    return true;
+}
+
 const LightCardState& DialUi::lightCardFor(Screen screen) const
 {
     return m_lightCards[static_cast<uint8_t>(lightKeyFor(screen))];
@@ -872,7 +902,12 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
     key.pending        = m_targetPending;
     key.overlayActive  = (int32_t)(m_speedOverlayUntilMs - nowMs) > 0;
     key.netStatus       = static_cast<uint8_t>(m_netStatus);
-    key.holdUnits       = static_cast<int32_t>(m_holdProgress * 20.0f);
+    // Same predicate the hold arc draws under: on a screen where a hold does
+    // nothing there is no arc to redraw, so letting holdUnits climb would
+    // churn the key (and a full repaint per tick) for an identical frame.
+    key.holdUnits       = holdDoesSomething(currentScreen(paused))
+                              ? static_cast<int32_t>(m_holdProgress * 20.0f)
+                              : 0;
     key.pulsePhase       = static_cast<uint8_t>((nowMs / 500) % 2);
     key.connectAttempts  = m_controller.connectAttempts();
     key.sessionDurationSec   = m_snapshot.sessionDurationSec;
@@ -1189,11 +1224,7 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     // lit light card off, spec 4.12). Not on the menu, whose ring sits where
     // the arc would draw and which a hold does nothing on; and not on a light
     // card that is already off, where the hold has nothing to switch.
-    const bool holdDoesSomething =
-        screen != Screen::MENU &&
-        !((screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP) &&
-          !lightCardFor(screen).view().on);
-    if (m_holdProgress > 0.0f && holdDoesSomething)
+    if (m_holdProgress > 0.0f && holdDoesSomething(screen))
     {
         drawHoldArc(gfx);
     }
