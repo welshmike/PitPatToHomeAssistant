@@ -104,8 +104,12 @@ constexpr int32_t kClockDateY      = 168; // date when valid, "waiting for time"
 // Flights card layout (spec 4.9), centred on the same 240x240 canvas
 // (centre x=120, reusing kRingCx/kRingCy where a row sits on that centre).
 constexpr int32_t kFlightsLogoX         = 60;  // (240 - 120-wide sprite) / 2
-constexpr int32_t kFlightsLogoY         = 16;  // sprite is 48 tall -> bottom at 64
-constexpr int32_t kFlightsFallbackY     = 40;  // operatorName/callsign when there's no logo
+// The top of the card is a white band (0..kFlightsBandH) so airline logos —
+// transparent PNGs drawn for light backgrounds — sit on white edge to edge
+// (Mike, 2026-09-06). The logo sprite is white-backed and lands inside it.
+constexpr int32_t kFlightsBandH         = 58;
+constexpr int32_t kFlightsLogoY         = 8;   // sprite is 48 tall -> bottom at 56, inside the band
+constexpr int32_t kFlightsFallbackY     = 30;  // operatorName/callsign (dark on the white band) when there's no logo
 constexpr int32_t kFlightsCallsignY     = 76;  // "callsign - type"
 constexpr int32_t kFlightsRouteY        = 112; // "LHR -> JFK" / "route unknown"
 constexpr int32_t kFlightsCityY         = 134; // "London -> New York" (fc/tc), when known
@@ -114,7 +118,7 @@ constexpr int32_t kFlightsDistY         = 172; // "3.1 mi NE"
 constexpr int32_t kFlightsHintY         = 214; // page dots row (one per aircraft, up to 6)
 constexpr int32_t kFlightsEmptyCaptionY = 150; // "within N mi" under "no aircraft nearby"
 constexpr int32_t kFlightsStaleDotX     = 120;
-constexpr int32_t kFlightsStaleDotY     = 14;
+constexpr int32_t kFlightsStaleDotY     = 63;  // just under the white band, above the callsign row
 constexpr int32_t kFlightsStaleDotR     = 3;
 constexpr int32_t kFlightsDotR          = 3;  // page dot radius
 constexpr int32_t kFlightsDotSpacing    = 12; // centre-to-centre spacing between page dots
@@ -1147,12 +1151,10 @@ void DialUi::render(uint32_t nowMs)
                     if (dbgSprite == 1)
                     {
                         // Airline logos from pics.avs.io are transparent PNGs
-                        // drawn for light backgrounds (dark marks, thin
-                        // strokes), so they vanish or look ragged straight on
-                        // black. Paint them on a white rounded badge instead;
-                        // the badge corners stay black to blend with the card.
-                        tmp.fillSprite(TFT_BLACK);
-                        tmp.fillRoundRect(0, 0, 120, 48, 8, TFT_WHITE);
+                        // drawn for light backgrounds, so they are painted on
+                        // white — the same white as the card's top band that
+                        // drawFlights() lays down around them.
+                        tmp.fillSprite(TFT_WHITE); // matches the card's white top band
                         // Scale the 120x48 PNG to 90 % (108x43) and centre it so
                         // the badge keeps ~6 px of white either side and ~2 px
                         // top/bottom instead of the artwork touching the edges.
@@ -1434,6 +1436,11 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     // frame is pushed. Here we only decide whether there is a logo to draw.
     const bool wantLogo = ac.airlineIata[0] != '\0' && !isLogoDecodeFailed(ac.airlineIata);
     const bool haveLogo = wantLogo && m_flights.logoReady(ac.airlineIata);
+    // White band across the top of the card (the round bezel clips the
+    // corners). With a logo, the logo rectangle inside it is reserved as
+    // TRANSPARENT so the white-backed sprite pushed in render() shows through
+    // seamlessly; without one, the operator name is drawn dark on the band.
+    gfx.fillRect(0, 0, 240, kFlightsBandH, col(Col::TEXT));
     if (haveLogo)
     {
         strncpy(m_logoToDraw, ac.airlineIata, 2);
@@ -1445,7 +1452,7 @@ void DialUi::drawFlights(LovyanGFX& gfx)
     }
     else
     {
-        gfx.setTextColor(col(Col::TEXT), col(Col::BG));
+        gfx.setTextColor(col(Col::BG), col(Col::TEXT));
         const char* fallback = (ac.operatorKnown && ac.operatorName[0] != '\0') ? ac.operatorName : ac.callsign;
         gfx.drawString(fallback, kCentreX, kFlightsFallbackY, &fonts::Font2);
     }
