@@ -129,33 +129,47 @@ void TreadmillHandler::restoreTotals(float distKm, uint32_t steps, uint32_t calo
 
 bool TreadmillHandler::requestDisconnect()
 {
-    if (!isConnected())
+    // Cancel an in-flight connect attempt (kick phase / retry loop).
+    // m_autoReconnect = false suppresses the next scheduled attempt in
+    // handle(). Since spec 4.17 the connect is asynchronous, so a link
+    // request may genuinely be pending right now: cancel it with
+    // cancelConnect() — never disconnect(), which on a link that never came
+    // up is the HCI 0x16 that starts the Q1's kicking phase.
+    // The stage is tested BEFORE isConnected(): NimBLE flips isConnected() to
+    // true at the GAP connect event, ~100 ms before onConnect() raises
+    // m_linkUp, so a link that is still coming up would otherwise fall
+    // straight through to the disconnect() path below.
+    // (SETUP runs to completion inside handle() on this same task, so the
+    // stage can only be IDLE or LINKING here.)
+    if (m_linkStage != LinkStage::IDLE ||
+        (!isConnected() && m_doConnect && m_autoReconnect))
     {
-        if (m_doConnect && m_autoReconnect)
+        log_i("Connect cancelled by user while connecting");
+        if (m_linkStage == LinkStage::LINKING && m_pClient)
         {
-            // Cancel an in-flight connect attempt (kick phase / retry loop).
-            // m_autoReconnect = false suppresses the next scheduled attempt in
-            // handle(). Since spec 4.17 the connect is asynchronous, so a link
-            // request may genuinely be pending right now: cancel it with
-            // cancelConnect() — never disconnect(), which on a link that never
-            // came up is the HCI 0x16 that starts the Q1's kicking phase.
-            // (SETUP runs to completion inside handle() on this same task, so
-            // the stage can only be IDLE or LINKING here.)
-            log_i("Connect cancelled by user while connecting");
-            if (m_linkStage == LinkStage::LINKING && m_pClient)
+            // disconnect() only once onConnect() has confirmed the link is
+            // genuinely up; on a still-pending link it is the HCI 0x16 above.
+            if (m_linkUp)
+            {
+                m_pClient->disconnect();
+            }
+            else
             {
                 m_pClient->cancelConnect();
-                m_linkStage = LinkStage::IDLE;
-                m_linkUp    = false;
             }
-            m_autoReconnect        = false;
-            m_userRequestedConnect = false;
-            m_doConnect            = false;
-            m_reconnectNotBefore   = 0;
-            m_pendingCmd           = PendingCmd::NONE;
-            m_connectAttempts      = 0;
-            return true;
+            m_linkStage = LinkStage::IDLE;
+            m_linkUp    = false;
         }
+        m_autoReconnect        = false;
+        m_userRequestedConnect = false;
+        m_doConnect            = false;
+        m_reconnectNotBefore   = 0;
+        m_pendingCmd           = PendingCmd::NONE;
+        m_connectAttempts      = 0;
+        return true;
+    }
+    if (!isConnected())
+    {
         return false;
     }
     // Safety check — don't disconnect while belt is active
@@ -197,11 +211,22 @@ bool TreadmillHandler::requestConnect()
 void TreadmillHandler::sendKeepalive()
 {
     if (!isConnected()) return;
+    // The link comes up ~100 ms before onConnect() fires and completeSetup()
+    // fetches the characteristic (spec 4.17), so isConnected() alone is not
+    // enough — without this the seq counter would advance on a write that
+    // sendCommand() refuses outright.
+    if (m_pWriteCharacteristic == nullptr) return;
     if (m_stopKeepalives) return; // intentional drop in progress — let supervision timeout fire
 
     uint8_t packet[9];
-    BA05Protocol::makeKeepalive(m_seqCounter++, packet);
-    this->sendCommand(packet, sizeof(packet));
+    BA05Protocol::makeKeepalive(m_seqCounter, packet);
+    // Burn the sequence number only on a write the belt actually saw: the
+    // on-air numbering for successful sends is unchanged, but a refused or
+    // failed write no longer leaves a gap the belt has to reconcile.
+    if (this->sendCommand(packet, sizeof(packet)))
+    {
+        ++m_seqCounter;
+    }
 }
 
 // Sent immediately after subscribing to notifications.
@@ -405,21 +430,41 @@ bool TreadmillHandler::sendCommand(const uint8_t *data, size_t length)
             // disconnect command immediately, fires onDisconnect() (reason=534,
             // local host terminated) within milliseconds, and unblocks the reconnect
             // loop — no waiting for supervision timeout.
-            log_e("Write failed: GATT layer broken despite isConnected()=true (zombie) — forcing disconnect");
+            log_e("Write failed: GATT layer broken despite isConnected()=true (zombie)");
             m_snapshot.modify([&](TreadMillData& d) { d.status = TreadMillData::DISCONNECTED; });
             m_newDataAvailable = true;
-            if (isUserCommand)
+
+            // Debounce (2026-09-06): a single failed heartbeat is not worth an
+            // HCI 0x16. The belt reads 0x16 as a local host termination and
+            // answers it with a multi-cycle kick phase; letting the 6 s
+            // supervision timeout fire instead gives it 0x08 and the lighter
+            // path (doc/Q1_BLE_NOTES.md). Same for any write issued while a
+            // link stage is still in flight — that link may be seconds old and
+            // the write may simply have raced the GATT setup.
+            if (!isUserCommand || m_linkStage != LinkStage::IDLE)
+            {
+                log_w("keepalive write failed — letting supervision timeout drop the link");
+                m_stopKeepalives  = true;
+                m_intentionalDrop = true;
+            }
+            else
             {
                 // User sent a command — they want to walk. Re-arm auto-reconnect so
                 // onDisconnect() → m_doConnect chain fires even if a prior session
                 // had set m_autoReconnect=false.
                 m_autoReconnect        = true;
                 m_userRequestedConnect = true;
+                // disconnect() fires onDisconnect() asynchronously on Core 0.
+                // onDisconnect() nulls the characteristic pointers and sets m_doConnect=true
+                // (if m_autoReconnect). Safe to call from Core 1 / handle() context.
+                // Re-check the link: it can have dropped between the failed write
+                // and here, in which case onDisconnect() is already on its way.
+                if (m_pClient->isConnected())
+                {
+                    log_e("Zombie on a user command — forcing disconnect");
+                    m_pClient->disconnect();
+                }
             }
-            // disconnect() fires onDisconnect() asynchronously on Core 0.
-            // onDisconnect() nulls the characteristic pointers and sets m_doConnect=true
-            // (if m_autoReconnect). Safe to call from Core 1 / handle() context.
-            m_pClient->disconnect();
         }
         return false;
     }
@@ -462,7 +507,32 @@ bool TreadmillHandler::handle()
     // disconnect() that starts the Q1's kicking phase.
     if (m_linkStage == LinkStage::LINKING)
     {
-        if (m_linkUp)
+        if (!m_linkUp && (millis() - m_linkStartMs >= kLinkTimeoutMs))
+        {
+            // Re-test m_linkUp immediately before cancelling: onConnect() runs
+            // on the NimBLE task and can raise it in the window between the
+            // deadline test above and the cancelConnect() below. Cancelling a
+            // link that has just come up would be an HCI 0x16 on a live
+            // connection — exactly the thing that starts the Q1's kicking
+            // phase. If it came up, do nothing here and let the SETUP branch
+            // below run on this same tick.
+            if (!m_linkUp)
+            {
+                // cancelConnect(), never disconnect(): the link never came up, and
+                // an HCI 0x16 on a pending connection is what sends the Q1 into its
+                // kicking phase. m_doConnect stays true — the 5 s m_lastConnectAttempt
+                // spacing schedules the next try.
+                if (m_pClient)
+                {
+                    m_pClient->cancelConnect();
+                }
+                log_w("link timeout after %lu ms, cancelled",
+                      (unsigned long)(millis() - m_linkStartMs));
+                m_linkStage = LinkStage::IDLE;
+            }
+        }
+
+        if (m_linkStage == LinkStage::LINKING && m_linkUp)
         {
             log_i("link up after %lu ms", (unsigned long)(millis() - m_linkStartMs));
             m_linkStage = LinkStage::SETUP;
@@ -486,20 +556,6 @@ bool TreadmillHandler::handle()
             }
             m_linkStage = LinkStage::IDLE;
         }
-        else if (millis() - m_linkStartMs >= kLinkTimeoutMs)
-        {
-            // cancelConnect(), never disconnect(): the link never came up, and
-            // an HCI 0x16 on a pending connection is what sends the Q1 into its
-            // kicking phase. m_doConnect stays true — the 5 s m_lastConnectAttempt
-            // spacing schedules the next try.
-            if (m_pClient)
-            {
-                m_pClient->cancelConnect();
-            }
-            log_w("link timeout after %lu ms, cancelled",
-                  (unsigned long)(millis() - m_linkStartMs));
-            m_linkStage = LinkStage::IDLE;
-        }
     }
 
     // Attempt counter: only reset once the connection has been stable for
@@ -515,7 +571,11 @@ bool TreadmillHandler::handle()
     // Send the initial keepalive once GATT is ready (onConnect set this flag).
     // Cannot write from onConnect() directly — writeValue(true) blocks for an ATT
     // response that would be processed by the same NimBLE task, causing deadlock.
-    if (m_sendInitNow && isConnected())
+    // m_pWriteCharacteristic gate: NimBLE flips isConnected() to true at the GAP
+    // connect event, ~100 ms before onConnect() fires and completeSetup() fetches
+    // the characteristic (spec 4.17). handle() runs inside that window, so every
+    // write path is gated on the characteristic, not just on the link.
+    if (m_sendInitNow && isConnected() && m_pWriteCharacteristic != nullptr)
     {
         m_sendInitNow = false;
         sendInitSequence();
@@ -524,7 +584,8 @@ bool TreadmillHandler::handle()
 
     // Heartbeat: reply once to each belt notification (the PitPat app's pattern, ~1 Hz),
     // with a fallback only if the belt goes quiet. See KEEPALIVE_FALLBACK_MS in the header.
-    if (isConnected())
+    // Gated on the write characteristic as well as the link — see the note above.
+    if (isConnected() && m_pWriteCharacteristic != nullptr)
     {
         bool reply = m_keepaliveReplyPending;
         if (reply || (millis() - m_lastKeepalive >= KEEPALIVE_FALLBACK_MS))
@@ -582,6 +643,7 @@ bool TreadmillHandler::handle()
     // Pending commands are queued by start()/setSpeed() when called while disconnected.
     if (m_pendingCmd != PendingCmd::NONE &&
         isConnected() &&
+        m_pWriteCharacteristic != nullptr &&
         !m_sendInitNow &&
         millis() - m_lastConnectTime >= POST_CONNECT_COOLDOWN)
     {
@@ -656,6 +718,12 @@ bool TreadmillHandler::beginLink()
 
     m_linkUp      = false;
     m_linkStartMs = millis();
+    // A fresh link measures the fallback heartbeat from now. Without this the
+    // stale m_lastKeepalive from the previous connection is already older than
+    // KEEPALIVE_FALLBACK_MS, and handle() fires an unsolicited fallback write
+    // in the first seconds of the new connection — exactly the unsolicited
+    // traffic the belt kicks us for (doc/Q1_BLE_NOTES.md, revision 2026-09-03).
+    m_lastKeepalive = millis();
 
     // Already linked — same short-circuit the old code had (isConnected() skipped
     // the connect call). Mark the link up so handle()'s LINKING block falls

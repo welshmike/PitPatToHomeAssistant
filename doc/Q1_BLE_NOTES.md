@@ -190,6 +190,13 @@ else
 `disconnect()` fires `onDisconnect()` (reason=534) within milliseconds, which sets `m_doConnect=true`
 (if `m_autoReconnect`), unblocking the reconnect loop immediately.
 
+**Debounce (2026-09-06).** The forced `disconnect()` is now reserved for **user command** writes
+(start / speed / stop, the 27-byte packets), and is only issued after re-checking
+`m_pClient->isConnected()`. A failed **keepalive** (9-byte heartbeat), or any failed write while
+`m_linkStage != IDLE`, sets `m_stopKeepalives = true; m_intentionalDrop = true;` instead — the
+belt then sees a supervision timeout (HCI 0x08, the lighter kick phase) rather than the HCI 0x16
+a single stray heartbeat failure used to cost us.
+
 ---
 
 ## NimBLE Async Connect Behaviour
@@ -206,6 +213,37 @@ m_pClient->connect(m_targetAddress, false, true)
   processed by the same NimBLE task, causing deadlock.
 - `getConnInfo()` called immediately after `connect()` returns zeros — normal, GATT layer not
   ready yet. Not an error.
+
+### The pre-`onConnect()` window — why writes are gated on the characteristic
+
+NimBLE flips `isConnected()` to `true` at the **GAP connect event**, roughly **100 ms before**
+`onConnect()` fires and raises `m_linkUp`. Since the staged connect (spec 4.17) made `connect()`
+asynchronous, `handle()` runs several times inside that window, and in it:
+
+- `isConnected()` is already `true`,
+- `onConnect()` has not fired, so `handle()` has not yet run `completeSetup()`,
+- `m_pWriteCharacteristic` is therefore still `nullptr` (it is nulled in `onDisconnect()` and
+  only re-fetched by `completeSetup()`).
+
+So `isConnected()` is **not** a sufficient guard for a write. Every write path in
+`TreadmillHandler::handle()` — the init keepalive (`m_sendInitNow`), the heartbeat/fallback
+block, and the pending-command block — is gated on `m_pWriteCharacteristic != nullptr` as well
+as on the link, and `sendKeepalive()` returns early on a null characteristic so a refused write
+never burns a sequence number.
+
+Two related consequences of the same window:
+
+- **Cancel, don't disconnect.** `requestDisconnect()` tests `m_linkStage != IDLE` *before*
+  `isConnected()`. A connect still coming up looks "connected" here, and tearing it down with
+  `disconnect()` is the HCI 0x16 that starts the belt's multi-cycle kick phase; `cancelConnect()`
+  is the light path. `disconnect()` is used only once `m_linkUp` is true.
+- **The link-timeout race.** The LINKING timeout branch re-tests `m_linkUp` immediately before
+  `cancelConnect()` — `onConnect()` runs on the NimBLE task and can raise it between the deadline
+  test and the cancel. If it just came up, the tick falls through to SETUP instead of cancelling
+  a live link.
+
+`beginLink()` also resets `m_lastKeepalive` alongside `m_linkUp = false`, so the 3 s fallback
+heartbeat cannot be stale-triggered in a fresh connection's first seconds.
 
 ---
 

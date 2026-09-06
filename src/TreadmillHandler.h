@@ -223,8 +223,10 @@ private:
     //   LINKING — connect() issued, waiting for onConnect() or the timeout
     //   SETUP   — link is up, completeSetup() is running on the loop task
     enum class LinkStage : uint8_t { IDLE, LINKING, SETUP };
-    LinkStage m_linkStage   = LinkStage::IDLE;
-    uint32_t  m_linkStartMs = 0;
+    // volatile: onDisconnect() clears the stage from the NimBLE task while
+    // handle() reads and writes it on the loop task.
+    volatile LinkStage m_linkStage   = LinkStage::IDLE;
+    uint32_t           m_linkStartMs = 0;
 
     // Raised by onConnect() (NimBLE task); cleared when a link begins and in
     // onDisconnect(). The only cross-task signal the LINKING stage waits on.
