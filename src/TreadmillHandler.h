@@ -129,11 +129,18 @@ public:
     bool isPaused() const override { return m_tracker.isPaused(); }
     uint16_t lastCommandedSpeedRaw() const override { return m_lastSpeed; }
 
-    // True while handle() is actively retrying connectToDevice() — a connect
-    // is queued, auto-reconnect is on, and we're not up yet.
-    bool isConnecting() const override { return !isConnected() && m_doConnect && m_autoReconnect; }
-    // Number of connectToDevice() attempts since the last requestConnect()
-    // call or successful connection.
+    // True while handle() is working on a connect: a link/setup stage is in
+    // flight (spec 4.17), or a connect is queued, auto-reconnect is on and
+    // we're not up yet. The stage test matters because the link is already up
+    // during SETUP, so the isConnected() test alone would report "connected"
+    // before the write/notify characteristics exist.
+    bool isConnecting() const override
+    {
+        return m_linkStage != LinkStage::IDLE ||
+               (!isConnected() && m_doConnect && m_autoReconnect);
+    }
+    // Number of link attempts since the last requestConnect() call or
+    // successful connection.
     uint16_t connectAttempts() const override { return m_connectAttempts; }
 
     TreadMillData snapshot() const override { return m_snapshot.read(); }
@@ -167,7 +174,12 @@ private:
     // Sent immediately after notification subscription to prevent reason=531 disconnect.
     // The Q1 expects a response within ~300ms of connect or it terminates the session.
     void sendInitSequence();
-    bool connectToDevice();
+
+    // Staged connect (spec 4.17), both called from handle() on the loop task.
+    // beginLink() issues the asynchronous connect and returns immediately;
+    // completeSetup() runs the GATT setup once onConnect() has raised m_linkUp.
+    bool beginLink();
+    bool completeSetup();
 
     // BA05 protocol state
     // Heartbeat policy (changed 2026-09-03 from a 200 ms timer after an HCI snoop of the
@@ -198,14 +210,36 @@ private:
     bool m_autoReconnect = true;
 
     unsigned long m_lastConnectAttempt = 0;
-    // Count of connectToDevice() attempts since requestConnect() or the last
+    // Count of beginLink() attempts since requestConnect() or the last
     // successful connection — drives the Dial's "attempt N" Connecting screen.
     uint16_t m_connectAttempts = 0;
+
+    // --- Staged connect (spec 4.17) --------------------------------------
+    // NimBLE's connect(addr, deleteAttributes, asyncConnect=true) returns as
+    // soon as the request is queued, so GATT setup has to wait for the link to
+    // actually come up. handle() drives both stages on the loop task; the
+    // NimBLE callbacks only set flags.
+    //   IDLE    — nothing in flight
+    //   LINKING — connect() issued, waiting for onConnect() or the timeout
+    //   SETUP   — link is up, completeSetup() is running on the loop task
+    enum class LinkStage : uint8_t { IDLE, LINKING, SETUP };
+    LinkStage m_linkStage   = LinkStage::IDLE;
+    uint32_t  m_linkStartMs = 0;
+
+    // Raised by onConnect() (NimBLE task); cleared when a link begins and in
+    // onDisconnect(). The only cross-task signal the LINKING stage waits on.
+    volatile bool m_linkUp = false;
+
+    // Matches the 6 s supervision timeout we request in setConnectionParams().
+    // On expiry the LINKING stage calls cancelConnect() — never disconnect(),
+    // which on a link that never came up is the HCI 0x16 that starts the Q1's
+    // kicking phase.
+    static constexpr uint32_t kLinkTimeoutMs = 6000;
 
     unsigned long m_lastPacketMs = 0;
     SnapshotStore m_snapshot;
 
-    // Set true in connectToDevice() so notifyCallback() can dump the raw bytes of
+    // Set true in completeSetup() so notifyCallback() can dump the raw bytes of
     // the first post-connect packet — helps diagnose the phantom RUNNING state on
     // connect. SessionTracker keeps its own first-packet flag for the baseline
     // capture; this one exists only because the tracker never sees raw bytes.

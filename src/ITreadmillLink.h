@@ -33,9 +33,9 @@ public:
     virtual bool isPaused() const = 0;
     virtual uint16_t lastCommandedSpeedRaw() const = 0;
     // True while a connect is queued and auto-reconnect is enabled but the
-    // link isn't up yet — i.e. handle() is actively retrying connectToDevice().
+    // link isn't up yet — i.e. handle() is actively working on a connect.
     virtual bool isConnecting() const = 0;
-    // Number of connectToDevice() attempts made since the last requestConnect()
+    // Number of link attempts made since the last requestConnect()
     // call or successful connection, whichever was most recent.
     virtual uint16_t connectAttempts() const = 0;
     virtual ~ITreadmillLink() = default;

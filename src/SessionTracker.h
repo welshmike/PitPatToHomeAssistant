@@ -33,7 +33,7 @@ class SessionTracker
 public:
     SessionTracker(ITotalsStore& totals, ISessionEvents& events);
 
-    // Reset per-connection state. Call from connectToDevice() before subscribing,
+    // Reset per-connection state. Call from completeSetup() before subscribing,
     // with the same millis() value the handler records as its connect time.
     void onConnected(uint32_t nowMs);
 

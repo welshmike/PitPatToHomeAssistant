@@ -1403,7 +1403,7 @@ void DialUi::drawConnecting(LovyanGFX& gfx)
     gfx.drawString("Connecting...", kCentreX, kConnLabelY, &fonts::Font4);
 
     // Only show "attempt N" once there has actually been one — attempt 0
-    // (the brief window before the first connectToDevice() call) just reads
+    // (the brief window before the first beginLink() call) just reads
     // "Connecting..." with no attempt line (I2).
     const uint16_t attempts = m_controller.connectAttempts();
     if (attempts > 0)

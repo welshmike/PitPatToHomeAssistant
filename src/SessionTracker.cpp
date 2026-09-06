@@ -13,7 +13,7 @@ SessionTracker::SessionTracker(ITotalsStore& totals, ISessionEvents& events)
 
 void SessionTracker::onConnected(uint32_t nowMs)
 {
-    // Reset ALL per-connection state. Called from connectToDevice() before
+    // Reset ALL per-connection state. Called from completeSetup() before
     // subscribing, so any notification arriving during the rest of the connect
     // sequence sees a clean slate.
     //

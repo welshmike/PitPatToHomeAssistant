@@ -320,6 +320,11 @@ automations that apply commands and mirror state are documented, with their full
 WiFi and BLE share one antenna, so background treadmill connects are held off while WiFi/MQTT come
 up (first 30 s after boot) and for 6 s after each MQTT connect; a connect you ask for is never held.
 
+The connect itself is staged and non-blocking: the Dial asks NimBLE for the link, carries on running
+the UI, and only runs GATT setup once the belt has actually linked — a link that never comes up
+inside 6 s is cancelled rather than disconnected, which is what used to send the belt into its
+kicking phase.
+
 ### One device at a time
 
 Only one BLE central can hold the Q1's connection, so run either the DevKit or the Dial — never

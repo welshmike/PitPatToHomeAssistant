@@ -134,12 +134,20 @@ bool TreadmillHandler::requestDisconnect()
         if (m_doConnect && m_autoReconnect)
         {
             // Cancel an in-flight connect attempt (kick phase / retry loop).
-            // connectToDevice() is synchronous and every caller runs on the
-            // loop task, so this can only land between attempts — never mid-
-            // connect. m_autoReconnect = false just suppresses the next
-            // scheduled attempt in handle(); nothing further needs tearing
-            // down here.
+            // m_autoReconnect = false suppresses the next scheduled attempt in
+            // handle(). Since spec 4.17 the connect is asynchronous, so a link
+            // request may genuinely be pending right now: cancel it with
+            // cancelConnect() — never disconnect(), which on a link that never
+            // came up is the HCI 0x16 that starts the Q1's kicking phase.
+            // (SETUP runs to completion inside handle() on this same task, so
+            // the stage can only be IDLE or LINKING here.)
             log_i("Connect cancelled by user while connecting");
+            if (m_linkStage == LinkStage::LINKING && m_pClient)
+            {
+                m_pClient->cancelConnect();
+                m_linkStage = LinkStage::IDLE;
+                m_linkUp    = false;
+            }
             m_autoReconnect        = false;
             m_userRequestedConnect = false;
             m_doConnect            = false;
@@ -431,29 +439,66 @@ bool TreadmillHandler::handle()
     // m_connectHold (spec 4.15): main.cpp holds background connects off the air
     // while WiFi/MQTT are bringing up on the shared antenna. A connect the user
     // asked for is never held.
-    if (m_doConnect && (millis() - m_lastConnectAttempt > 5000) && m_autoReconnect &&
+    // m_linkStage == IDLE: never start a second link while one is in flight —
+    // the 6 s link timeout outlives the 5 s attempt spacing (spec 4.17).
+    if (m_doConnect && m_linkStage == LinkStage::IDLE &&
+        (millis() - m_lastConnectAttempt > 5000) && m_autoReconnect &&
         (m_reconnectNotBefore == 0 || millis() >= m_reconnectNotBefore) &&
         (!m_connectHold || m_userRequestedConnect))
     {
         m_lastConnectAttempt = millis();
         ++m_connectAttempts;
-        if (this->connectToDevice())
+        if (!this->beginLink())
         {
-            log_i("Connection successful.");
-            m_doConnect = false;
-            // Deliberately NOT resetting m_connectAttempts here: a successful
-            // connectToDevice() only means the kick phase's GATT handshake
-            // went through, not that the link is stable — the Q1 can still
-            // bounce us straight back into another attempt. The Dial's
-            // "attempt N" should keep counting through that. See the
-            // POST_CONNECT_COOLDOWN check below for the actual reset point.
-            m_lastKeepalive = millis(); // Reset keepalive timer on connect
-            // m_lastConnectTime is now set inside connectToDevice() before subscription
-            // so that notification timing is accurate during the setup window.
-        }
-        else
-        {
+            // connect() refused the request outright (no link was ever queued).
             log_e("Failed to connect - Retrying in 5 seconds...");
+        }
+    }
+
+    // Staged connect, stage 2 (spec 4.17). beginLink() only queues the connect;
+    // onConnect() raises m_linkUp from the NimBLE task when the link is really
+    // up, and only then may we run GATT discovery. Doing that work against a
+    // pending link is what used to fail service discovery and end in the
+    // disconnect() that starts the Q1's kicking phase.
+    if (m_linkStage == LinkStage::LINKING)
+    {
+        if (m_linkUp)
+        {
+            log_i("link up after %lu ms", (unsigned long)(millis() - m_linkStartMs));
+            m_linkStage = LinkStage::SETUP;
+            if (this->completeSetup())
+            {
+                log_i("Connection successful.");
+                m_doConnect = false;
+                // Deliberately NOT resetting m_connectAttempts here: a successful
+                // setup only means the kick phase's GATT handshake
+                // went through, not that the link is stable — the Q1 can still
+                // bounce us straight back into another attempt. The Dial's
+                // "attempt N" should keep counting through that. See the
+                // POST_CONNECT_COOLDOWN check below for the actual reset point.
+                m_lastKeepalive = millis(); // Reset keepalive timer on connect
+                // m_lastConnectTime is now set inside completeSetup() before subscription
+                // so that notification timing is accurate during the setup window.
+            }
+            else
+            {
+                log_e("Failed to connect - Retrying in 5 seconds...");
+            }
+            m_linkStage = LinkStage::IDLE;
+        }
+        else if (millis() - m_linkStartMs >= kLinkTimeoutMs)
+        {
+            // cancelConnect(), never disconnect(): the link never came up, and
+            // an HCI 0x16 on a pending connection is what sends the Q1 into its
+            // kicking phase. m_doConnect stays true — the 5 s m_lastConnectAttempt
+            // spacing schedules the next try.
+            if (m_pClient)
+            {
+                m_pClient->cancelConnect();
+            }
+            log_w("link timeout after %lu ms, cancelled",
+                  (unsigned long)(millis() - m_linkStartMs));
+            m_linkStage = LinkStage::IDLE;
         }
     }
 
@@ -581,7 +626,13 @@ bool TreadmillHandler::handle()
     return newData;
 }
 
-bool TreadmillHandler::connectToDevice()
+// Staged connect, stage 1 (spec 4.17): create/configure the client and issue the
+// asynchronous connect. Nothing here blocks — NimBLE's connect() with
+// asyncConnect=true returns as soon as the request is queued, so the loop task
+// stays responsive while the link comes up. handle()'s LINKING block waits for
+// onConnect() to raise m_linkUp (or for kLinkTimeoutMs) and then runs
+// completeSetup().
+bool TreadmillHandler::beginLink()
 {
     if (m_pClient == nullptr)
     {
@@ -603,44 +654,57 @@ bool TreadmillHandler::connectToDevice()
 
     log_i("Connecting to %s", m_targetAddress.toString().c_str());
 
+    m_linkUp      = false;
+    m_linkStartMs = millis();
+
+    // Already linked — same short-circuit the old code had (isConnected() skipped
+    // the connect call). Mark the link up so handle()'s LINKING block falls
+    // straight through to SETUP on this same tick.
+    if (m_pClient->isConnected())
+    {
+        m_linkUp    = true;
+        m_linkStage = LinkStage::LINKING;
+        return true;
+    }
+
     // deleteAttributes=false: reuse cached GATT service/characteristic handles from the
     // previous connection. Full discovery was causing the belt to kick the connection
     // (reason=531) before service enumeration completed — especially on single-core C3
     // where BLE tasks share CPU with the main loop. On first boot the cache is empty
     // so discovery runs normally; subsequent reconnects skip it entirely.
-    // Bracketed for the RTC log ring (spec 4.16): connect() blocks the loop
-    // task inside NimBLE, so if the watchdog fires here the tail of the ring
-    // names the culprit — a "connect() begin" with no "end" after it. Same
-    // control flow as before: isConnected() short-circuits the call away.
-    bool connected = m_pClient->isConnected();
-    if (!connected)
-    {
-        log_i("connect() begin");
-        const uint32_t connectStartMs = millis();
-        connected                     = m_pClient->connect(m_targetAddress, false, true);
-        log_i("connect() end %s in %lu ms", connected ? "ok" : "fail",
-              (unsigned long)(millis() - connectStartMs));
-    }
-    if (!connected)
+    // asyncConnect=true (the third argument): connect() only queues the request and
+    // returns — a true return means "accepted", not "linked". The link is up when
+    // onConnect() fires. Bracketed for the RTC log ring (spec 4.16): a "link begin"
+    // with no "link up"/"link timeout" after it names the stage that stalled.
+    log_i("link begin");
+    if (!m_pClient->connect(m_targetAddress, false, true))
     {
         log_e("Failed to connect to treadmill at %s", m_targetAddress.toString().c_str());
         return false;
     }
+    m_linkStage = LinkStage::LINKING;
+    return true;
+}
+
+// Staged connect, stage 3 (spec 4.17): the GATT setup, run on the loop task once
+// the link is genuinely up. Everything from here on is the pre-4.17 code —
+// service discovery, write characteristic, early keepalive, notify subscribe,
+// negotiated-params log — including its failure paths, which may still call
+// disconnect() because by this point the link is real.
+bool TreadmillHandler::completeSetup()
+{
+    log_i("setup begin");
 
     // NOTE: delay(500) removed. The Q1 Classic Pro disconnects (reason=531, remote user
     // terminated) if it receives no write within ~300ms of connecting. Every millisecond
     // spent here is time we're not spending on the handshake.
 
-    // Retry service discovery up to 8 times with a short delay between attempts.
-    // 8 x 250ms = 2s of patience (was 5 x 200ms = 1s): the belt does not kick us
-    // while we retry — it is our own disconnect() below that starts the kicking
-    // phase — so waiting longer is strictly cheaper than giving up (spec 4.15).
-    // Bracketed for the same reason as connect() above: up to 2 s of the loop
-    // task's time, so a "discover begin" with no "end" after it in the ring
-    // says the loop froze in service discovery rather than in connect().
-    log_i("discover begin");
+    // The link is up before we get here, so the service is expected on attempt 1;
+    // 3 x 100ms is only a guard against NimBLE's discovery landing a tick late
+    // (spec 4.17, replacing the 8 x 250ms patience of spec 4.15 — that existed
+    // solely to cover the pending-link case this staging removes).
     NimBLERemoteService *pService = nullptr;
-    for (int retry = 0; retry < 8; retry++)
+    for (int retry = 0; retry < 3; retry++)
     {
         pService = m_pClient->getService(SERVICE_PAD_UUID);
         if (pService)
@@ -648,13 +712,12 @@ bool TreadmillHandler::connectToDevice()
             log_i("Service found on attempt %d", retry + 1);
             break;
         }
-        log_w("Service not found, retry %d/8...", retry + 1);
-        delay(250);
+        log_w("Service not found, retry %d/3...", retry + 1);
+        delay(100);
     }
-    log_i("discover end");
     if (!pService)
     {
-        log_e("Failed to find treadmill service UUID after 8 retries: %s", SERVICE_PAD_UUID);
+        log_e("Failed to find treadmill service UUID after 3 retries: %s", SERVICE_PAD_UUID);
         m_pClient->disconnect();
         return false;
     }
@@ -693,7 +756,7 @@ bool TreadmillHandler::connectToDevice()
     }
 
     // Reset ALL per-connection state BEFORE subscribing so that any notification
-    // that arrives during the remainder of connectToDevice() sees a clean slate.
+    // that arrives during the remainder of completeSetup() sees a clean slate.
     m_lastConnectTime         = millis();
     m_logRawFirstPacket       = true;
     m_sendInitNow             = false;
@@ -730,6 +793,7 @@ bool TreadmillHandler::connectToDevice()
           connInfo.getConnTimeout(),
           connInfo.getConnTimeout() * 10);
 
+    log_i("setup end");
     return true;
 }
 
@@ -834,6 +898,9 @@ void TreadmillHandler::onSettledIdle()
 void TreadmillHandler::onConnect(BLEClient *pClient)
 {
     log_i("Connected to device!");
+    // The LINKING stage waits on this; handle() runs the GATT setup from the loop
+    // task. Nothing blocking may happen here — this is the NimBLE host task.
+    m_linkUp      = true;
     m_sendInitNow = true;
 #if HAS_STATUS_LED
     digitalWrite(LED_BLE_PIN, HIGH); // active-high: on
@@ -842,6 +909,12 @@ void TreadmillHandler::onConnect(BLEClient *pClient)
 
 void TreadmillHandler::onDisconnect(BLEClient *pClient, int reason)
 {
+    // Clear the staged-connect state first (spec 4.17): a drop mid-LINKING (a
+    // connect that failed to establish) or mid-SETUP must never leave the stage
+    // stuck — handle() would then start no further attempts.
+    m_linkUp    = false;
+    m_linkStage = LinkStage::IDLE;
+
     // NimBLE reason = 512 + HCI error code. Common codes:
     //   0x08 (520) = connection timeout       — radio loss / device out of range
     //   0x13 (531) = remote user terminated   — device actively closed the connection
@@ -950,7 +1023,7 @@ void TreadmillHandler::onDisconnect(BLEClient *pClient, int reason)
     // deletes the client — it reuses it, letting connect(addr, true, true) clear
     // the GATT cache on the next connect attempt.
     // Null the characteristic pointers — they're stale after disconnect and
-    // connectToDevice() re-fetches them on the next successful connection.
+    // completeSetup() re-fetches them on the next successful connection.
     m_pWriteCharacteristic  = nullptr;
     m_pNotifyCharacteristic = nullptr;
 
