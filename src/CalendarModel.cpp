@@ -110,6 +110,27 @@ uint8_t allDayCount(const Snapshot& s)
     return n;
 }
 
+size_t clockLine(const Snapshot& s, uint32_t nowEpoch, uint32_t (*localDayOf)(uint32_t),
+                 void (*hhmm)(uint32_t epoch, char* out, size_t cap), char* buf, size_t cap,
+                 bool& live)
+{
+    live = false;
+    if (buf == nullptr || cap == 0) return 0;
+    buf[0] = '\0';
+
+    const int8_t idx = nextTimedToday(s, nowEpoch, localDayOf);
+    if (idx < 0) return 0;
+
+    const Event& e = s.ev[idx];
+    char when[8];
+    hhmm(e.start, when, sizeof(when));
+    live = (nowEpoch + 30 >= e.start);
+
+    const int n = snprintf(buf, cap, "%s %s", when, e.title);
+    if (n < 0) { buf[0] = '\0'; return 0; }
+    return ((size_t)n >= cap) ? cap - 1 : (size_t)n;
+}
+
 bool isStale(const Snapshot& s, uint32_t nowEpoch)
 {
     // nowEpoch <= fetchedAtEpoch is "not stale", not an unsigned underflow into

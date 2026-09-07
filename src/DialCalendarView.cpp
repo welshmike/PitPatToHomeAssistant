@@ -5,6 +5,50 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "DialTextFit.h"
+
+// The epoch -> local time converter for calendarLocalDayOf()/calendarHhmm()
+// below (also used internally by drawCalendarCard()). DialUi owns the
+// localtime_r wrapper and hands it in via setCalendarLocalTime() so the Clock
+// card's meeting subline (spec 4.19 amendment) can reuse the exact same day
+// number and "HH:MM" formatting as the Calendar face — one definition, not
+// two. Loop task only, one draw at a time — no re-entrancy to worry about.
+namespace
+{
+bool (*s_localTime)(uint32_t, struct tm&) = nullptr;
+} // namespace
+
+void setCalendarLocalTime(bool (*localTime)(uint32_t epoch, struct tm& out))
+{
+    s_localTime = localTime;
+}
+
+// Day number for CalendarModel's plain-function-pointer callbacks: monotonic
+// across a year boundary (tm_year * 400 + tm_yday). They only ever compare
+// two of these for equality or order, so the exact scale does not matter.
+uint32_t calendarLocalDayOf(uint32_t epoch)
+{
+    struct tm t;
+    if (s_localTime == nullptr || !s_localTime(epoch, t))
+    {
+        return 0;
+    }
+    return static_cast<uint32_t>(t.tm_year) * 400u + static_cast<uint32_t>(t.tm_yday);
+}
+
+void calendarHhmm(uint32_t epoch, char* buf, size_t cap)
+{
+    struct tm t;
+    if (s_localTime != nullptr && s_localTime(epoch, t))
+    {
+        snprintf(buf, cap, "%02d:%02d", t.tm_hour, t.tm_min);
+    }
+    else
+    {
+        snprintf(buf, cap, "--:--");
+    }
+}
+
 namespace
 {
 
@@ -37,58 +81,6 @@ constexpr uint8_t kFollowMax  = 3;
 constexpr size_t kWrapCols = 16;
 // Following-event lines are clipped to this many characters of title.
 constexpr size_t kFollowTitleMax = 20;
-
-// The epoch -> local time converter for this draw call. drawCalendarCard()
-// is handed one as an argument (DialUi owns the localtime_r wrapper), but the
-// day-aware CalendarModel helpers (nextTimedToday(), allDayCountToday(),
-// firstAllDayToday(), firstTimedOnLaterDay()) take a plain function pointer
-// that cannot carry it, so it is parked here for localDayOf() below to reach.
-// Loop task only, one draw at a time — no re-entrancy to worry about.
-bool (*s_localTime)(uint32_t, struct tm&) = nullptr;
-
-// Day number for those helpers: monotonic across a year boundary
-// (tm_year * 400 + tm_yday). They only ever compare two of these for equality
-// or order, so the exact scale does not matter.
-uint32_t localDayOf(uint32_t epoch)
-{
-    struct tm t;
-    if (s_localTime == nullptr || !s_localTime(epoch, t))
-    {
-        return 0;
-    }
-    return static_cast<uint32_t>(t.tm_year) * 400u + static_cast<uint32_t>(t.tm_yday);
-}
-
-// Visible width of the round face at row y, less a 6 px bezel margin per side.
-// The face is a 120 px-radius circle centred on (kCentreX, kCentreY); at row y
-// the chord half-width is sqrt(r^2 - dy^2).
-int32_t rowWidth(int32_t y)
-{
-    const float dy = static_cast<float>(y - kCentreY);
-    return static_cast<int32_t>(2.0f * sqrtf(120.0f * 120.0f - dy * dy)) - 12;
-}
-
-// Trims `s` in place, one character at a time off the end, until it fits
-// rowWidth(y) in `font`. Appends nothing (the wrap/clip upstream already
-// decided how much title to show; this is only the last-resort bezel guard).
-void fitToRow(LovyanGFX& gfx, char* s, int32_t y, const lgfx::IFont* font)
-{
-    size_t n = strlen(s);
-    while (n > 0 && gfx.textWidth(s, font) > rowWidth(y)) { s[--n] = '\0'; }
-}
-
-void hhmm(uint32_t epoch, char* buf, size_t cap)
-{
-    struct tm t;
-    if (s_localTime != nullptr && s_localTime(epoch, t))
-    {
-        snprintf(buf, cap, "%02d:%02d", t.tm_hour, t.tm_min);
-    }
-    else
-    {
-        snprintf(buf, cap, "--:--");
-    }
-}
 
 struct TitleLines
 {
@@ -200,7 +192,7 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
                       uint32_t nowEpoch, bool (*localTime)(uint32_t epoch, struct tm& out),
                       bool fetchedOnce)
 {
-    s_localTime = localTime;
+    setCalendarLocalTime(localTime);
     gfx.setTextDatum(middle_center);
 
     gfx.setTextColor(theme.col(Col::TEXT), theme.col(Col::BG));
@@ -219,7 +211,7 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
     }
 
     // No clock yet is as unusable as a stale snapshot: every line on the face
-    // below is relative to now, and localDayOf() has no local day to work
+    // below is relative to now, and calendarLocalDayOf() has no local day to work
     // with either. isStale() deliberately does *not* cover this (it treats
     // nowEpoch <= fetchedAtEpoch as fresh rather than underflowing), so the
     // check is spelled out here.
@@ -241,11 +233,11 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
         return;
     }
 
-    const uint32_t today  = localDayOf(nowEpoch);
-    const uint8_t  allDay = CalendarModel::allDayCountToday(s, nowEpoch, &localDayOf);
+    const uint32_t today  = calendarLocalDayOf(nowEpoch);
+    const uint8_t  allDay = CalendarModel::allDayCountToday(s, nowEpoch, &calendarLocalDayOf);
     if (allDay > 0)
     {
-        drawAllDayLine(gfx, theme, s, CalendarModel::firstAllDayToday(s, nowEpoch, &localDayOf),
+        drawAllDayLine(gfx, theme, s, CalendarModel::firstAllDayToday(s, nowEpoch, &calendarLocalDayOf),
                        allDay);
     }
 
@@ -253,7 +245,7 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
     // tomorrow, so nextTimed() would report tomorrow's 09:00 as "next" all
     // evening (with an "in 18 h 30" countdown) and the empty face below would
     // never be reached.
-    const int8_t idx = CalendarModel::nextTimedToday(s, nowEpoch, &localDayOf);
+    const int8_t idx = CalendarModel::nextTimedToday(s, nowEpoch, &calendarLocalDayOf);
     if (idx < 0)
     {
         // Nothing timed left today; tomorrow's first *timed* event, if the
@@ -265,11 +257,11 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
         fitToRow(gfx, nothing, kCentreY, &fonts::Font4);
         gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
         gfx.drawString(nothing, kCentreX, kCentreY, &fonts::Font4);
-        const int8_t j = CalendarModel::firstTimedOnLaterDay(s, nowEpoch, &localDayOf);
+        const int8_t j = CalendarModel::firstTimedOnLaterDay(s, nowEpoch, &calendarLocalDayOf);
         if (j >= 0)
         {
             char when[8];
-            hhmm(s.ev[j].start, when, sizeof(when));
+            calendarHhmm(s.ev[j].start, when, sizeof(when));
             char buf[48];
             snprintf(buf, sizeof(buf), "Tomorrow %s %.*s", when, (int)kFollowTitleMax,
                      s.ev[j].title);
@@ -282,7 +274,7 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
     const CalendarModel::Event& next = s.ev[idx];
 
     char startBuf[8];
-    hhmm(next.start, startBuf, sizeof(startBuf));
+    calendarHhmm(next.start, startBuf, sizeof(startBuf));
     gfx.setTextColor(theme.col(Col::TEXT), theme.col(Col::BG));
     gfx.drawString(startBuf, kCentreX, kStartY, &fonts::Font4);
 
@@ -323,12 +315,12 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
     uint8_t row = 0;
     for (uint8_t i = static_cast<uint8_t>(idx) + 1; i < s.count && row < kFollowMax; ++i)
     {
-        if (s.ev[i].allDay || localDayOf(s.ev[i].start) != today)
+        if (s.ev[i].allDay || calendarLocalDayOf(s.ev[i].start) != today)
         {
             continue;
         }
         char when[8];
-        hhmm(s.ev[i].start, when, sizeof(when));
+        calendarHhmm(s.ev[i].start, when, sizeof(when));
         char buf[40];
         snprintf(buf, sizeof(buf), "%s %.*s", when, (int)kFollowTitleMax, s.ev[i].title);
         fitToRow(gfx, buf, kFollowY[row], &fonts::Font2);

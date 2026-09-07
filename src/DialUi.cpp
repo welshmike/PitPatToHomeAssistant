@@ -1536,11 +1536,48 @@ void DialUi::drawDisconnected(LovyanGFX& gfx)
     gfx.drawString("tap: speed   hold: start", kCentreX, kDiscHintY, &fonts::Font2);
 }
 
+#if HAS_CALENDAR
+namespace
+{
+// Google hands out UTC epochs and the face shows London times, so every event
+// time goes through localtime_r() — TimeService::localTime() only ever
+// formats *now*, which is no use for a meeting that starts at 14:30. The TZ
+// is set once by TimeService (Europe/London), so localtime_r() here agrees
+// with the clock card. Shared by drawClock() (spec 4.19 amendment) and
+// drawCalendar() below.
+bool calendarLocalTime(uint32_t epoch, struct tm& out)
+{
+    const time_t t = static_cast<time_t>(epoch);
+    return localtime_r(&t, &out) != nullptr;
+}
+} // namespace
+#endif
+
 // Clock card (spec 4.8): the analogue face is drawn by DialClockView from the
 // live TimeService — see there for the layout and the invalid-time state.
+// Spec 4.19 amendment: when a calendar snapshot is fresh, also builds
+// today's next-meeting subline and hands it to drawClockCard() to draw under
+// the date. Mirrors the dataValid computation in the nudge block above
+// (pollCalendar()'s caller); `m_calendar.fetchedOnce()` guards against a
+// default-constructed (never-fetched) snapshot happening to look "valid".
 void DialUi::drawClock(LovyanGFX& gfx)
 {
+#if HAS_CALENDAR
+    char subline[48] = {0};
+    bool live = false;
+    const uint32_t nowEpoch = m_time.valid() ? static_cast<uint32_t>(time(nullptr)) : 0;
+    const bool dataValid = (nowEpoch != 0) && m_calSnap.valid &&
+                           !CalendarModel::isStale(m_calSnap, nowEpoch);
+    if (m_calendar.fetchedOnce() && dataValid)
+    {
+        setCalendarLocalTime(&calendarLocalTime);
+        CalendarModel::clockLine(m_calSnap, nowEpoch, &calendarLocalDayOf, &calendarHhmm,
+                                  subline, sizeof(subline), live);
+    }
+    drawClockCard(gfx, m_theme, m_time, subline[0] ? subline : nullptr, live);
+#else
     drawClockCard(gfx, m_theme, m_time);
+#endif
 }
 
 // Flights card (spec 4.9): decides whether the airline logo will be pushed
@@ -1618,20 +1655,6 @@ void DialUi::drawLight(LovyanGFX& gfx, LightsModel::LightKey key)
 }
 
 #if HAS_CALENDAR
-namespace
-{
-// Google hands out UTC epochs and the face shows London times, so every event
-// time goes through localtime_r() — TimeService::localTime() only ever
-// formats *now*, which is no use for a meeting that starts at 14:30. The TZ
-// is set once by TimeService (Europe/London), so localtime_r() here agrees
-// with the clock card.
-bool calendarLocalTime(uint32_t epoch, struct tm& out)
-{
-    const time_t t = static_cast<time_t>(epoch);
-    return localtime_r(&t, &out) != nullptr;
-}
-} // namespace
-
 void DialUi::drawCalendar(LovyanGFX& gfx)
 {
     const uint32_t nowEpoch = m_time.valid() ? static_cast<uint32_t>(time(nullptr)) : 0;

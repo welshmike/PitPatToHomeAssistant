@@ -215,7 +215,9 @@ string `TIMEZONE_TZ` from `config.h` (default `Europe/London`), and is also kept
 onboard BM8563 RTC — synced from NTP once it succeeds, and read back at boot — so the clock reads
 correctly immediately after a power cycle even with no WiFi available. Before either source has a
 time (a fresh device, no WiFi yet, an unset RTC), the face shows tick marks with no hands and
-`--:--` instead of a time.
+`--:--` instead of a time. When the Calendar feed is configured and fresh, a small line under the
+date shows today's next timed meeting as `HH:MM Title` (Font2, dim), turning amber once the
+meeting is under way; it disappears once today's last meeting has ended.
 
 **Flights** shows the aircraft overhead, nearest first, up to 6 at a time. Each one gets its
 airline logo (or the operator name as text when there's no logo) at the top, `callsign - type`

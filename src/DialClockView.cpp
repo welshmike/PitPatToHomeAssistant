@@ -6,6 +6,7 @@
 
 #include "ClockFace.h"
 #include "DialGlyphs.h"
+#include "DialTextFit.h"
 
 namespace
 {
@@ -28,6 +29,7 @@ constexpr float    kSecondHandW    = 1.0f;
 constexpr int32_t kClockCentreDotR = 4;
 constexpr int32_t kClockSecondDotR = 2;
 constexpr int32_t kClockDateY      = 168; // date when valid, "waiting for time" hint when not
+constexpr int32_t kClockSublineY   = 186; // today's next meeting (spec 4.19 amendment)
 
 } // namespace
 
@@ -37,7 +39,8 @@ constexpr int32_t kClockDateY      = 168; // date when valid, "waiting for time"
 // o'clock position. DialUi redraws it once a second via the clockSec field in
 // its FrameKey. When TimeService isn't valid yet (fresh device, no WiFi, empty
 // RTC) draws the ticks with no hands and "--:--" instead of a time.
-void drawClockCard(LovyanGFX& gfx, const DialTheme& theme, const TimeService& time)
+void drawClockCard(LovyanGFX& gfx, const DialTheme& theme, const TimeService& time,
+                   const char* subline, bool live)
 {
     // 12 tick marks; the four cardinal ones (12/3/6/9) run from a slightly
     // larger radius so they read as longer/bolder without a second draw call.
@@ -90,6 +93,20 @@ void drawClockCard(LovyanGFX& gfx, const DialTheme& theme, const TimeService& ti
     }
     gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
     gfx.drawString(dateBuf, kCentreX, kClockDateY, &fonts::Font2);
+
+    // Today's next meeting (spec 4.19 amendment): one Font2 line under the
+    // date, amber (PENDING) once it is under way, dim (DIM) otherwise. Copied
+    // into a fixed stack buffer (no heap) so fitToRow() can trim it in place
+    // without mutating the caller's string.
+    if (subline != nullptr && subline[0] != '\0')
+    {
+        char buf[48];
+        strncpy(buf, subline, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        fitToRow(gfx, buf, kClockSublineY, &fonts::Font2);
+        gfx.setTextColor(theme.col(live ? Col::PENDING : Col::DIM), theme.col(Col::BG));
+        gfx.drawString(buf, kCentreX, kClockSublineY, &fonts::Font2);
+    }
 }
 
 #endif // HAS_DIAL_UI

@@ -1,4 +1,5 @@
 #include <unity.h>
+#include <stdio.h>
 #include <string.h>
 #include "CalendarModel.h"
 
@@ -168,6 +169,128 @@ static void test_countdownText_forms(void)
     TEST_ASSERT_EQUAL_UINT(0, (unsigned)CalendarModel::countdownText(e, 13601u, buf, sizeof(buf)));
 }
 
+static uint32_t fakeDay2(uint32_t epoch) { return epoch / 86400u; }
+
+// Writes "HH:MM" from epoch % 86400, same shape as the real hhmm() but
+// timezone-free so the tests can use plain arithmetic epochs.
+static void fakeHhmm(uint32_t epoch, char* out, size_t cap)
+{
+    const uint32_t sod = epoch % 86400u;
+    snprintf(out, cap, "%02u:%02u", (unsigned)(sod / 3600u), (unsigned)((sod % 3600u) / 60u));
+}
+
+// Day 0 events: Standup 09:30-10:00 (34200-36000). Day 1: Later, timed
+// (120600-122400) and an all-day event, so day-0-only and all-day-skip both
+// get exercised.
+static const char* kClockPayload =
+    "{\"t\":1000000,\"ev\":["
+    "{\"s\":34200,\"e\":36000,\"n\":\"Standup\",\"a\":0,\"l\":\"\"},"
+    "{\"s\":120600,\"e\":122400,\"n\":\"Later\",\"a\":0,\"l\":\"\"}"
+    "]}";
+
+static const char* kClockAllDayOnlyPayload =
+    "{\"t\":1000000,\"ev\":["
+    "{\"s\":0,\"e\":86400,\"n\":\"Offsite\",\"a\":1,\"l\":\"\"}"
+    "]}";
+
+static void test_clockLine_todaysNextEvent_notYetLive25MinBefore(void)
+{
+    CalendarModel::Snapshot s;
+    TEST_ASSERT_TRUE(CalendarModel::parse(kClockPayload, strlen(kClockPayload), s));
+    char buf[48];
+    bool live = true;
+    const size_t n = CalendarModel::clockLine(s, 34200u - 25 * 60, fakeDay2, fakeHhmm, buf,
+                                               sizeof(buf), live);
+    TEST_ASSERT_EQUAL_STRING("09:30 Standup", buf);
+    TEST_ASSERT_EQUAL_UINT(strlen(buf), n);
+    TEST_ASSERT_FALSE(live);
+}
+
+static void test_clockLine_liveWithin30sAndDuring(void)
+{
+    CalendarModel::Snapshot s;
+    TEST_ASSERT_TRUE(CalendarModel::parse(kClockPayload, strlen(kClockPayload), s));
+    char buf[48];
+    bool live = false;
+
+    // 10 s before the start.
+    CalendarModel::clockLine(s, 34200u - 10, fakeDay2, fakeHhmm, buf, sizeof(buf), live);
+    TEST_ASSERT_EQUAL_STRING("09:30 Standup", buf);
+    TEST_ASSERT_TRUE(live);
+
+    // In progress.
+    live = false;
+    CalendarModel::clockLine(s, 35000u, fakeDay2, fakeHhmm, buf, sizeof(buf), live);
+    TEST_ASSERT_EQUAL_STRING("09:30 Standup", buf);
+    TEST_ASSERT_TRUE(live);
+}
+
+static void test_clockLine_afterTodaysLastEvent_ignoresTomorrow(void)
+{
+    CalendarModel::Snapshot s;
+    TEST_ASSERT_TRUE(CalendarModel::parse(kClockPayload, strlen(kClockPayload), s));
+    char buf[48] = "unset";
+    bool live = true;
+    const size_t n = CalendarModel::clockLine(s, 36001u, fakeDay2, fakeHhmm, buf, sizeof(buf),
+                                               live);
+    TEST_ASSERT_EQUAL_UINT(0, (unsigned)n);
+    TEST_ASSERT_FALSE(live);
+    // nextTimed() (day-blind) would still find tomorrow's event; clockLine's
+    // nextTimedToday() must not.
+    TEST_ASSERT_EQUAL_INT8(1, CalendarModel::nextTimed(s, 36001u));
+}
+
+static void test_clockLine_allDayOnlyToday_isZero(void)
+{
+    CalendarModel::Snapshot s;
+    TEST_ASSERT_TRUE(
+        CalendarModel::parse(kClockAllDayOnlyPayload, strlen(kClockAllDayOnlyPayload), s));
+    char buf[48];
+    bool live = true;
+    const size_t n = CalendarModel::clockLine(s, 40000u, fakeDay2, fakeHhmm, buf, sizeof(buf),
+                                               live);
+    TEST_ASSERT_EQUAL_UINT(0, (unsigned)n);
+    TEST_ASSERT_FALSE(live);
+}
+
+static void test_clockLine_invalidSnapshot_isZero(void)
+{
+    CalendarModel::Snapshot s; // default: valid=false, count=0
+    char buf[48];
+    bool live = true;
+    const size_t n = CalendarModel::clockLine(s, 34200u, fakeDay2, fakeHhmm, buf, sizeof(buf),
+                                               live);
+    TEST_ASSERT_EQUAL_UINT(0, (unsigned)n);
+    TEST_ASSERT_FALSE(live);
+}
+
+static void test_clockLine_longTitleTruncatesSafelyIntoSmallBuffer(void)
+{
+    const char* payload =
+        "{\"t\":1000000,\"ev\":["
+        "{\"s\":34200,\"e\":36000,"
+        "\"n\":\"1234567890123456789012345678901234567890\",\"a\":0,\"l\":\"\"}"
+        "]}";
+    CalendarModel::Snapshot s;
+    TEST_ASSERT_TRUE(CalendarModel::parse(payload, strlen(payload), s));
+    TEST_ASSERT_EQUAL_INT(40, (int)strlen(s.ev[0].title));
+
+    // A generous buffer: the 40-char title passes through untrimmed.
+    char big[64];
+    bool live = false;
+    size_t n = CalendarModel::clockLine(s, 34200u, fakeDay2, fakeHhmm, big, sizeof(big), live);
+    TEST_ASSERT_EQUAL_STRING("09:30 1234567890123456789012345678901234567890", big);
+    TEST_ASSERT_EQUAL_UINT(strlen(big), n);
+
+    // A tight buffer (cap 16): truncated, NUL-terminated, returns what fits,
+    // never overflows.
+    char small[16];
+    n = CalendarModel::clockLine(s, 34200u, fakeDay2, fakeHhmm, small, sizeof(small), live);
+    TEST_ASSERT_EQUAL_UINT(15, n);
+    TEST_ASSERT_EQUAL_UINT(15, strlen(small));
+    TEST_ASSERT_EQUAL_UINT('\0', small[15]);
+}
+
 static void test_allDayCount_and_isStale(void)
 {
     CalendarModel::Snapshot s = parsed();
@@ -197,6 +320,12 @@ int main(int, char**)
     RUN_TEST(test_firstTimedOnLaterDay_skipsAllDay);
     RUN_TEST(test_firstTimedOnLaterDay_allDayOnlyIsMinusOne);
     RUN_TEST(test_countdownText_forms);
+    RUN_TEST(test_clockLine_todaysNextEvent_notYetLive25MinBefore);
+    RUN_TEST(test_clockLine_liveWithin30sAndDuring);
+    RUN_TEST(test_clockLine_afterTodaysLastEvent_ignoresTomorrow);
+    RUN_TEST(test_clockLine_allDayOnlyToday_isZero);
+    RUN_TEST(test_clockLine_invalidSnapshot_isZero);
+    RUN_TEST(test_clockLine_longTitleTruncatesSafelyIntoSmallBuffer);
     RUN_TEST(test_allDayCount_and_isStale);
     return UNITY_END();
 }

@@ -79,4 +79,16 @@ uint8_t allDayCount(const Snapshot& s);
 
 bool isStale(const Snapshot& s, uint32_t nowEpoch);
 
+// Builds "HH:MM Title" for today's next timed event (nextTimedToday) into
+// buf, returns chars written (0 = nothing to show: no event left today, an
+// all-day-only day, or an invalid/empty snapshot). `live` is set true when
+// the event is in progress or starts within 30 s, false otherwise (including
+// when nothing is written). `hhmm` formats an epoch as local "HH:MM" the same
+// way the Calendar card does. Truncates to fit `cap` (NUL-terminated,
+// returns what fits) rather than overflowing; trimming to the round bezel is
+// the view's job, not this one's.
+size_t clockLine(const Snapshot& s, uint32_t nowEpoch, uint32_t (*localDayOf)(uint32_t),
+                 void (*hhmm)(uint32_t epoch, char* out, size_t cap), char* buf, size_t cap,
+                 bool& live);
+
 } // namespace CalendarModel
