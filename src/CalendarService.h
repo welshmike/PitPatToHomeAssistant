@@ -48,7 +48,7 @@ class NetManager;
 class CalendarService
 {
 public:
-    static constexpr uint32_t kPollMs = 300000, kBackoffMinMs = 30000, kBackoffMaxMs = 1800000;
+    static constexpr uint32_t kPollMs = 60000, kBackoffMinMs = 30000, kBackoffMaxMs = 1800000;
     static constexpr size_t   kBufCap = 2048;
 
     explicit CalendarService(NetManager &net);

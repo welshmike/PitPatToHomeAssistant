@@ -96,7 +96,7 @@ void drawClockCard(LovyanGFX& gfx, const DialTheme& theme, const TimeService& ti
         }
     }
     gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
-    gfx.drawString(dateBuf, kCentreX, kClockDateY, &fonts::Font2);
+    gfx.drawString(dateBuf, kCentreX, kClockDateY, &fonts::Font4);
 
     // Today's next meeting (spec 4.19 "clock layout" amendment): two Font2
     // lines below the centre — the title, then its time. The title is always

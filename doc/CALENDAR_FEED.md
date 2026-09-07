@@ -14,13 +14,13 @@ about 2 MB of `VEVENT`s and `RRULE`s. Streaming and expanding that on an ESP32-S
 2 KB response buffer is not on.
 
 So a small Python process on the always-on **Mac mini** does the work: it fetches the
-`.ics` every 5 minutes, expands recurrences for *now → end of tomorrow* in Europe/London,
+`.ics` every 2 minutes, expands recurrences for *now → end of tomorrow* in Europe/London,
 drops meetings you have declined, and serves the same compact JSON the Dial always
 expected, over plain HTTP on the LAN.
 
 ```
 Google Calendar  --https/.ics-->  Mac mini relay  --http/LAN-->  Dial
-   (~2 MB)                        (5 min refresh)                (~300 B)
+   (~2 MB)                        (2 min refresh)                (~300 B)
 ```
 
 ## What runs where
@@ -208,7 +208,7 @@ One-shot, outside launchd — fetches once, prints the JSON, exits non-zero on f
 
 The relay keeps serving the **last good payload** when a fetch fails, with its original
 `t`, so the Dial's `isStale()` reports `last update N min ago` rather than the card going
-blank on one flaky fetch. A failed refresh retries in 60 s instead of the usual 300 s.
+blank on one flaky fetch. A failed refresh retries in 60 s instead of the usual 120 s.
 
 To stop or remove it:
 
@@ -221,7 +221,7 @@ rm ~/Library/LaunchAgents/com.pacekeeper.calendar-feed.plist
 
 The plist logs stdout/stderr straight to `~/Library/Logs/pacekeeper-calendar.log` with no
 rotation of its own — there is no `logrotate` on macOS, and this relay does not need
-anything as heavyweight as a full `newsyslog.d` entry. At one line per 5-minute refresh
+anything as heavyweight as a full `newsyslog.d` entry. At one line per 2-minute refresh
 it grows slowly, but for an always-on process it is still worth bounding. Either:
 
 - truncate it by hand occasionally (`launchctl kickstart` reopens the file, so this is

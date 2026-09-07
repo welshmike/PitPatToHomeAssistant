@@ -765,7 +765,7 @@ void DialUi::pollFlights(uint32_t nowMs)
 void DialUi::pollCalendar(uint32_t nowMs)
 {
     // Same rhythm as pollFlights(), an order of magnitude slower: snapshot()
-    // is a Guarded copy, and a calendar feed only changes every 5 minutes.
+    // is a Guarded copy, and the relay only re-reads Google every 2 minutes.
     // Unsigned subtraction, so this stays correct across a millis() wrap.
     if (!m_haveCalSnap || (nowMs - m_lastCalSnapMs) >= kCalendarSnapIntervalMs)
     {

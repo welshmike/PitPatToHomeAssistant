@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PaceKeeper Dial calendar relay (spec 4.19, feed-source amendment).
 
-Fetches a Google Calendar secret iCal address every 5 minutes, expands
+Fetches a Google Calendar secret iCal address every 2 minutes, expands
 recurrences for now -> end of tomorrow in Europe/London, drops declined
 events, and serves the Dial's compact JSON on the LAN:
 
@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 import icalendar
 import recurring_ical_events
 
-REFRESH_S = 300
+REFRESH_S = 120
 RETRY_S = 60
 MAX_EVENTS = 5
 TITLE_MAX = 40
