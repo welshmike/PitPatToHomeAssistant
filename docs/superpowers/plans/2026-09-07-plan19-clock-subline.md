@@ -32,3 +32,11 @@
 - Docs: README Clock card bullet gains the subline sentence; spec §4.19 As-built one line if anything deviates; AUDIT Phase L two items: "Clock shows `HH:MM Title` under the date for today's next meeting, amber once it starts; line disappears after the day's last meeting ends".
 
 - [ ] Steps: tests → RED → implement → GREEN (`pio test -e native`, expect 348 + ~5) → `pio run -e dial-ota` with and without `CALENDAR_URL` (both SUCCESS; restore config.h) → docs → commit `Clock: today's next meeting under the date (spec 4.19 amendment)`.
+
+---
+
+### Task 2: Date above the centre; title and time on two lines below (spec amendment "clock layout")
+
+**Files:** `src/CalendarModel.h/.cpp` (`clockLine` → `size_t clockLine(const Snapshot&, uint32_t nowEpoch, localDayOf, hhmm, char* titleBuf, size_t titleCap, char* timeBuf, size_t timeCap, bool& live)` returning the title length, 0 = nothing), `test/test_calendar_model/test_main.cpp` (update the six clockLine tests to the two-buffer form; title has no time prefix; time buffer is `"HH:MM"`), `src/DialClockView.h/.cpp` (`kClockDateY = 72`; `drawClockCard(gfx, theme, time, const char* title = nullptr, const char* when = nullptr, bool live = false)`; title at `kClockEventTitleY = 168` `DIM`, time at `kClockEventTimeY = 186` `DIM`/`PENDING`; both through `fitToRow`; "waiting for time" stays at `kClockDateY`), `src/DialUi.cpp` `drawClock()` (two buffers), README Clock bullet, AUDIT Phase L item wording, spec as-built if anything deviates.
+
+- [ ] Tests first → RED → implement → GREEN (`pio test -e native`, count unchanged at 354 unless a test is added for the time buffer) → both `dial-ota` variants SUCCESS (restore `src/config.h`) → docs → commit `Clock: date above the centre, meeting title and time below (spec 4.19 amendment)`.
