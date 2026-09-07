@@ -1,6 +1,7 @@
 #include "DialCalendarView.h"
 #if HAS_DIAL_UI && HAS_CALENDAR
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -22,8 +23,11 @@ constexpr int32_t kAllDayY = 40;
 // The next timed event: start time, then the wrapped title, then the countdown.
 constexpr int32_t kStartY  = 62;
 constexpr int32_t kTitleY  = 108; // one line
-constexpr int32_t kTitleY1 = 96;  // two lines: first
-constexpr int32_t kTitleY2 = 120; // two lines: second
+// Two lines, each a 26 px tall Font4 cell: 96/120 put line 2's opaque
+// background right against line 1's descenders and clipped them. 94/122 add a
+// couple of px of clearance while keeping the pair centred on y 108, per spec.
+constexpr int32_t kTitleY1 = 94;  // two lines: first
+constexpr int32_t kTitleY2 = 122; // two lines: second
 constexpr int32_t kCountY  = 150;
 // The three following events, one Font2 line each.
 constexpr int32_t kFollowY[3] = {176, 192, 208};
@@ -51,6 +55,24 @@ uint32_t localDayOf(uint32_t epoch)
         return 0;
     }
     return static_cast<uint32_t>(t.tm_year) * 400u + static_cast<uint32_t>(t.tm_yday);
+}
+
+// Visible width of the round face at row y, less a 6 px bezel margin per side.
+// The face is a 120 px-radius circle centred on (kCentreX, kCentreY); at row y
+// the chord half-width is sqrt(r^2 - dy^2).
+int32_t rowWidth(int32_t y)
+{
+    const float dy = static_cast<float>(y - kCentreY);
+    return static_cast<int32_t>(2.0f * sqrtf(120.0f * 120.0f - dy * dy)) - 12;
+}
+
+// Trims `s` in place, one character at a time off the end, until it fits
+// rowWidth(y) in `font`. Appends nothing (the wrap/clip upstream already
+// decided how much title to show; this is only the last-resort bezel guard).
+void fitToRow(LovyanGFX& gfx, char* s, int32_t y, const lgfx::IFont* font)
+{
+    size_t n = strlen(s);
+    while (n > 0 && gfx.textWidth(s, font) > rowWidth(y)) { s[--n] = '\0'; }
 }
 
 void hhmm(uint32_t epoch, char* buf, size_t cap)
@@ -172,6 +194,7 @@ void drawAllDayLine(LovyanGFX& gfx, const DialTheme& theme, const CalendarModel:
     {
         snprintf(buf, sizeof(buf), "All day: %u events", (unsigned)count);
     }
+    fitToRow(gfx, buf, kAllDayY, &fonts::Font2);
     gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
     gfx.drawString(buf, kCentreX, kAllDayY, &fonts::Font2);
 }
@@ -192,8 +215,11 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
     // calendar itself — this is boot, not an outage (spec 4.19).
     if (!fetchedOnce)
     {
+        char msg[24];
+        snprintf(msg, sizeof(msg), "waiting for calendar");
+        fitToRow(gfx, msg, kCentreY, &fonts::Font4);
         gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
-        gfx.drawString("waiting for calendar", kCentreX, kCentreY, &fonts::Font4);
+        gfx.drawString(msg, kCentreX, kCentreY, &fonts::Font4);
         return;
     }
 
@@ -202,13 +228,17 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
     // unsigned age underflows against nowEpoch 0), but say it deliberately.
     if (nowEpoch == 0 || CalendarModel::isStale(s, nowEpoch))
     {
+        char noCal[16];
+        snprintf(noCal, sizeof(noCal), "no calendar");
+        fitToRow(gfx, noCal, kCentreY, &fonts::Font4);
         gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
-        gfx.drawString("no calendar", kCentreX, kCentreY, &fonts::Font4);
+        gfx.drawString(noCal, kCentreX, kCentreY, &fonts::Font4);
         if (s.valid && nowEpoch > s.fetchedAtEpoch)
         {
             char buf[32];
             snprintf(buf, sizeof(buf), "last update %u min ago",
                      (unsigned)((nowEpoch - s.fetchedAtEpoch) / 60));
+            fitToRow(gfx, buf, kCountY, &fonts::Font2);
             gfx.drawString(buf, kCentreX, kCountY, &fonts::Font2);
         }
         return;
@@ -223,11 +253,16 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
     const int8_t idx = CalendarModel::nextTimed(s, nowEpoch);
     if (idx < 0)
     {
-        // Nothing timed left today; tomorrow's first event, if the payload
-        // reached that far, goes underneath (spec 4.19).
+        // Nothing timed left today; tomorrow's first *timed* event, if the
+        // payload reached that far, goes underneath (spec 4.19). An all-day
+        // event has no meaningful clock time, so it is skipped here — showing
+        // e.g. "Tomorrow 01:00 Bank Holiday" would be wrong.
+        char nothing[24];
+        snprintf(nothing, sizeof(nothing), "nothing more today");
+        fitToRow(gfx, nothing, kCentreY, &fonts::Font4);
         gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
-        gfx.drawString("nothing more today", kCentreX, kCentreY, &fonts::Font4);
-        const int8_t j = CalendarModel::firstOnLaterDay(s, nowEpoch, &localDayOf);
+        gfx.drawString(nothing, kCentreX, kCentreY, &fonts::Font4);
+        const int8_t j = CalendarModel::firstTimedOnLaterDay(s, nowEpoch, &localDayOf);
         if (j >= 0)
         {
             char when[8];
@@ -235,6 +270,7 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
             char buf[48];
             snprintf(buf, sizeof(buf), "Tomorrow %s %.*s", when, (int)kFollowTitleMax,
                      s.ev[j].title);
+            fitToRow(gfx, buf, kCountY, &fonts::Font2);
             gfx.drawString(buf, kCentreX, kCountY, &fonts::Font2);
         }
         return;
@@ -251,11 +287,14 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
     wrapTitle(next.title, lines);
     if (lines.two)
     {
+        fitToRow(gfx, lines.l1, kTitleY1, &fonts::Font4);
+        fitToRow(gfx, lines.l2, kTitleY2, &fonts::Font4);
         gfx.drawString(lines.l1, kCentreX, kTitleY1, &fonts::Font4);
         gfx.drawString(lines.l2, kCentreX, kTitleY2, &fonts::Font4);
     }
     else
     {
+        fitToRow(gfx, lines.l1, kTitleY, &fonts::Font4);
         gfx.drawString(lines.l1, kCentreX, kTitleY, &fonts::Font4);
     }
 
@@ -265,6 +304,7 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
     char countBuf[24];
     if (CalendarModel::countdownText(next, nowEpoch, countBuf, sizeof(countBuf)) > 0)
     {
+        fitToRow(gfx, countBuf, kCountY, &fonts::Font2);
         gfx.setTextColor(theme.col(nowEpoch >= next.start ? Col::PENDING : Col::TEXT),
                          theme.col(Col::BG));
         gfx.drawString(countBuf, kCentreX, kCountY, &fonts::Font2);
@@ -284,6 +324,7 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
         hhmm(s.ev[i].start, when, sizeof(when));
         char buf[40];
         snprintf(buf, sizeof(buf), "%s %.*s", when, (int)kFollowTitleMax, s.ev[i].title);
+        fitToRow(gfx, buf, kFollowY[row], &fonts::Font2);
         gfx.drawString(buf, kCentreX, kFollowY[row], &fonts::Font2);
         ++row;
     }

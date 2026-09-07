@@ -54,6 +54,14 @@ int8_t firstOnLaterDay(const Snapshot& s, uint32_t nowEpoch, uint32_t (*localDay
     return -1;
 }
 
+int8_t firstTimedOnLaterDay(const Snapshot& s, uint32_t nowEpoch, uint32_t (*localDayOf)(uint32_t))
+{
+    const uint32_t today = localDayOf(nowEpoch);
+    for (uint8_t i = 0; i < s.count; ++i)
+        if (!s.ev[i].allDay && localDayOf(s.ev[i].start) > today) return (int8_t)i;
+    return -1;
+}
+
 size_t countdownText(const Event& e, uint32_t nowEpoch, char* buf, size_t cap)
 {
     if (buf == nullptr || cap == 0) return 0;

@@ -93,6 +93,34 @@ static void test_firstOnLaterDay_findsTomorrow(void)
     TEST_ASSERT_EQUAL_INT8(-1, CalendarModel::firstOnLaterDay(s, 1757340000u, fakeDay));
 }
 
+static const char* kTomorrowMixedPayload =
+    "{\"t\":1757260000,\"ev\":["
+    "{\"s\":1757340000,\"e\":1757343600,\"n\":\"Tomorrow AllDay\",\"a\":1,\"l\":\"\"},"
+    "{\"s\":1757344000,\"e\":1757347600,\"n\":\"Tomorrow Timed\",\"a\":0,\"l\":\"\"}"
+    "]}";
+
+static const char* kTomorrowAllDayOnlyPayload =
+    "{\"t\":1757260000,\"ev\":["
+    "{\"s\":1757340000,\"e\":1757343600,\"n\":\"Tomorrow AllDay\",\"a\":1,\"l\":\"\"}"
+    "]}";
+
+static void test_firstTimedOnLaterDay_skipsAllDay(void)
+{
+    CalendarModel::Snapshot s;
+    TEST_ASSERT_TRUE(CalendarModel::parse(kTomorrowMixedPayload, strlen(kTomorrowMixedPayload), s));
+    // Index 0 (tomorrow) is all-day and must be skipped; index 1 (also
+    // tomorrow, timed) is the one that should be reported.
+    TEST_ASSERT_EQUAL_INT8(1, CalendarModel::firstTimedOnLaterDay(s, 1757260000u, fakeDay));
+}
+
+static void test_firstTimedOnLaterDay_allDayOnlyIsMinusOne(void)
+{
+    CalendarModel::Snapshot s;
+    TEST_ASSERT_TRUE(
+        CalendarModel::parse(kTomorrowAllDayOnlyPayload, strlen(kTomorrowAllDayOnlyPayload), s));
+    TEST_ASSERT_EQUAL_INT8(-1, CalendarModel::firstTimedOnLaterDay(s, 1757260000u, fakeDay));
+}
+
 static void test_countdownText_forms(void)
 {
     char buf[32];
@@ -131,6 +159,8 @@ int main(int, char**)
     RUN_TEST(test_parse_malformedOrMissingEvLeavesOutUntouched);
     RUN_TEST(test_nextTimed_skipsAllDayAndFinished_inProgressWins);
     RUN_TEST(test_firstOnLaterDay_findsTomorrow);
+    RUN_TEST(test_firstTimedOnLaterDay_skipsAllDay);
+    RUN_TEST(test_firstTimedOnLaterDay_allDayOnlyIsMinusOne);
     RUN_TEST(test_countdownText_forms);
     RUN_TEST(test_allDayCount_and_isStale);
     return UNITY_END();

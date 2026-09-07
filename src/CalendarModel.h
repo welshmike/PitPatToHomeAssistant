@@ -41,6 +41,13 @@ int8_t nextTimed(const Snapshot& s, uint32_t nowEpoch);
 // `localDayOf(epoch)` is the caller-supplied day number (e.g. days since epoch in local time).
 int8_t firstOnLaterDay(const Snapshot& s, uint32_t nowEpoch, uint32_t (*localDayOf)(uint32_t epoch));
 
+// Same as firstOnLaterDay(), but skips all-day events: an all-day event has no
+// meaningful start time to show next to "Tomorrow", so it would otherwise
+// misreport e.g. a bank holiday as "Tomorrow 01:00 Bank Holiday". Returns the
+// first *timed* event on a later local day than nowEpoch, or -1.
+int8_t firstTimedOnLaterDay(const Snapshot& s, uint32_t nowEpoch,
+                            uint32_t (*localDayOf)(uint32_t epoch));
+
 // Writes one of: "in N min" (N < 60), "in H h MM" (>= 60 min), "now, N min left", "starts now"
 // (|start - now| < 30 s, not yet ended). Returns chars written (0 if event has ended).
 size_t countdownText(const Event& e, uint32_t nowEpoch, char* buf, size_t cap);
