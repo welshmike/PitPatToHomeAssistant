@@ -14,7 +14,6 @@
 namespace
 {
 
-constexpr int32_t kDialFaceCx = 120;
 constexpr int32_t kDialFaceCy = 120;
 constexpr int32_t kDialFaceR  = 120;
 
