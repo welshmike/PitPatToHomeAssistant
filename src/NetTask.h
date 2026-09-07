@@ -16,6 +16,10 @@
 #include "LightsService.h"
 #endif
 
+#if HAS_CALENDAR
+#include "CalendarService.h"
+#endif
+
 class NetManager;
 class MqttView;
 class TreadmillHandler;
@@ -70,6 +74,13 @@ public:
     LightsService &lights() { return m_lights; }
 #endif
 
+#if HAS_CALENDAR
+    // Plan 17, spec 4.19. CalendarService::begin()/tick() only ever run
+    // here (see NetTask::begin()/run()); the loop task talks to it only
+    // through requestRefresh(), snapshot() and fetchedOnce().
+    CalendarService &calendar() { return m_calendar; }
+#endif
+
 private:
     void drainPublishQueue();
     // Publishes up to 4 queued RemoteLog lines (spec 4.14). Net task only —
@@ -105,6 +116,10 @@ private:
 #if HAS_DIAL_UI
     FlightsService m_flights;
     LightsService  m_lights;
+#endif
+
+#if HAS_CALENDAR
+    CalendarService m_calendar;
 #endif
 };
 

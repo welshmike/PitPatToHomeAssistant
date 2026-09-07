@@ -1,5 +1,17 @@
 #pragma once
 // Per-target pins and features. Selected by -DBOARD_DEVKIT or -DBOARD_M5DIAL.
+//
+// config.h first (Plan 17, spec 4.19): HAS_CALENDAR below is decided from
+// CALENDAR_URL, which only config.h defines. Every device build already
+// pulls config.h in (FlightsService.h, TimeService.h, main.cpp all include
+// it directly, same as MQTT_SERVER etc.), so this is just moving that
+// dependency one level up to where HAS_CALENDAR needs it. Native (host)
+// builds never reach this include: no file in the native build_src_filter
+// (platformio.ini env:native) includes board.h, so config.h — gitignored
+// and not guaranteed to exist on a fresh checkout — is never required
+// there.
+#include "config.h"
+
 #if defined(BOARD_M5DIAL)
   #define BOARD_NAME        "m5dial"
   #define HAS_STATUS_LED    0
@@ -14,4 +26,12 @@
   #define BOARD_NAME        "native"
   #define HAS_STATUS_LED    0
   #define HAS_DIAL_UI       0
+#endif
+
+// Calendar card (Plan 17, spec 4.19): compiled in whenever config.h defines
+// CALENDAR_URL (the Apps Script feed endpoint), independent of board type.
+#if defined(CALENDAR_URL)
+  #define HAS_CALENDAR 1
+#else
+  #define HAS_CALENDAR 0
 #endif

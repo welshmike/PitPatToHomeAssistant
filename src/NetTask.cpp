@@ -39,6 +39,20 @@ constexpr int kDiagPerLoop = 4;
 // with the TLS stack: the resync/OTA paths are unchanged and the headroom
 // is cheap. The one-shot high-water-mark log after the first resync
 // confirms actual headroom on hardware.
+//
+// CalendarService (spec 4.19, Plan 17) reintroduces the WiFiClientSecure/
+// HTTPClient path on builds that define CALENDAR_URL — the same shape
+// FlightsService moved away from in Plan 7, deliberately, because it's
+// deeper than a plain WiFiClient. mbedTLS's own session state is
+// heap-allocated (the heap guard in CalendarService::fetchNow() covers
+// that), so the stack cost here is "only" the HTTPClient/WiFiClientSecure
+// call frames and local buffers, not the TLS record buffers themselves.
+// CalendarService::tick() runs serially with FlightsService::tick() and
+// the MQTT callback (net task is single-threaded), so nothing overlaps,
+// and CalendarService logs its own one-shot stack high-water mark after
+// its first successful fetch to confirm actual headroom on hardware. Left
+// at 12 KB rather than bumped pre-emptively; revisit if that log ever
+// shows headroom getting thin.
 constexpr uint32_t kStackBytes = 12288;
 
 constexpr UBaseType_t kPriority = 1;
@@ -97,6 +111,9 @@ NetTask::NetTask(NetManager &net, MqttView &view, TreadmillHandler &treadmill)
 #if HAS_DIAL_UI
     , m_flights(net)
 #endif
+#if HAS_CALENDAR
+    , m_calendar(net)
+#endif
 {
 }
 
@@ -132,6 +149,12 @@ void NetTask::begin(const char *clientId)
     m_flights.begin();
 #endif
 
+#if HAS_CALENDAR
+    // Same reasoning as m_flights.begin() above: a one-time boot-time call
+    // on the caller's task, not the spawned net task.
+    m_calendar.begin();
+#endif
+
     if (xTaskCreatePinnedToCore(taskTrampoline, "net", kStackBytes, this, kPriority, &m_task, kCore) != pdPASS)
     {
         log_e("NetTask: task creation failed — networking disabled");
@@ -152,6 +175,9 @@ void NetTask::run()
         drainDiagQueue();
 #if HAS_DIAL_UI
         m_flights.tick(millis());
+#endif
+#if HAS_CALENDAR
+        m_calendar.tick(millis());
 #endif
         vTaskDelay(pdMS_TO_TICKS(10));
     }
