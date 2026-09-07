@@ -61,7 +61,7 @@ Font2/Font4 cannot draw those glyphs and its `char[41]`/`char[25]` fields are by
 `GET /health` returns `{"ok":…,"stale":…,"age_s":…,"last_error":"…"}` and never needs a
 token — which is why its body is kept deliberately thin. `age_s` is seconds since the
 last *successful* refresh (`-1` if there has never been one); `stale` is true once that
-age passes two refresh cycles (10 minutes at the default `refresh_s`). `last_error` is
+age passes two refresh cycles (4 minutes at the default `refresh_s`). `last_error` is
 the failing exception's **class name only** (e.g. `"ValueError"`), never its message: a
 few of icalendar's own `ValueError`s quote the offending content line verbatim, which can
 be a `SUMMARY:` — a meeting title — so the full (secret-redacted) message goes to the log
