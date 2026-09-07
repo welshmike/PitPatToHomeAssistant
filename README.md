@@ -194,8 +194,8 @@ blocked while the belt is still active).
 ### Desk mode
 
 Away from the belt, the Dial is a small desk gadget: cards sit in a ring — Treadmill, Clock,
-Flights, Office (light), Lamp (light), with more (Calendar, Music) coming in later sub-projects.
-While the belt is idle, a **single click of the side button opens a card menu**: the five cards as
+Flights, Office (light), Lamp (light), Calendar, with more (Music) coming in later sub-projects.
+While the belt is idle, a **single click of the side button opens a card menu**: the six cards as
 glyphs on a ring, the current one highlighted in amber with its name in the middle. Turn the knob
 to move the highlight (it wraps at the ends); tap a glyph to go straight there, or tap anywhere
 else on the face (or click the side button again) to take the highlighted one — the menu is never
@@ -319,6 +319,14 @@ comes back on `pacekeeper-dial/light/{office|lamp}/state`, and the Dial asks for
 on `pacekeeper-dial/light/refresh` once after each MQTT (re)connect. The two Home Assistant
 automations that apply commands and mirror state are documented, with their full YAML, in
 [`doc/HA_LIGHTS_AUTOMATIONS.md`](doc/HA_LIGHTS_AUTOMATIONS.md).
+
+**Calendar** shows the next meeting from your Google Workspace calendar. The card displays: the meeting start time (Font4), title (wrapped to two lines in Font4), countdown timer (amber while in progress), and up to three following events (Font2). Today's all-day events collapse to one line at the top. When the next meeting is due to start, the Dial **nudges** the Clock card — showing the Calendar card 5 minutes before (by default, configurable 1–30 min), and returning to Clock 1 minute after the meeting starts (configurable 0–10 min). Tapping the card while a nudge is active dismisses that specific meeting and returns to Clock immediately; belt running suppresses any nudge. The card is configured in `src/config.h` with `CALENDAR_URL` and `CALENDAR_TOKEN` (the Google Apps Script deployment details; see [`doc/CALENDAR_APPS_SCRIPT.md`](doc/CALENDAR_APPS_SCRIPT.md)) and is compiled out entirely without them. Setup and the full implementation details live in that doc.
+
+Home Assistant settings for the Calendar card (all on by default):
+
+- **Calendar nudge** (switch, `cal_nudge`): enable or disable auto-show on the Clock card
+- **Calendar lead** (number, `cal_lead`, 1–30 min, default **5**): how many minutes before the meeting start time the nudge appears
+- **Calendar stay** (number, `cal_stay`, 0–10 min, default **1**): how many minutes after the meeting starts the Calendar card remains visible before returning to Clock
 
 WiFi and BLE share one antenna, so background treadmill connects are held off while WiFi/MQTT come
 up (first 30 s after boot) and for 6 s after each MQTT connect; a connect you ask for is never held.
