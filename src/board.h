@@ -6,11 +6,14 @@
 // pulls config.h in (FlightsService.h, TimeService.h, main.cpp all include
 // it directly, same as MQTT_SERVER etc.), so this is just moving that
 // dependency one level up to where HAS_CALENDAR needs it. Native (host)
-// builds never reach this include: no file in the native build_src_filter
-// (platformio.ini env:native) includes board.h, so config.h — gitignored
-// and not guaranteed to exist on a fresh checkout — is never required
-// there.
-#include "config.h"
+// builds never reach this include today (no file in the native
+// build_src_filter — platformio.ini env:native — includes board.h), but the
+// guard makes that structural rather than incidental: config.h is gitignored
+// and not guaranteed to exist on a fresh checkout, so a host build must never
+// be able to require it just because some future native test pulls board.h in.
+#if !defined(NATIVE_TEST)
+  #include "config.h"
+#endif
 
 #if defined(BOARD_M5DIAL)
   #define BOARD_NAME        "m5dial"

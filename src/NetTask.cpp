@@ -27,7 +27,7 @@ constexpr UBaseType_t kQueueDepth = 8;
 // and with it the MQTT keepalive — the rest of the loop.
 constexpr int kDiagPerLoop = 4;
 
-// 12 KB (bumped from 8 KB for FlightsService, spec 4.9): the deepest paths
+// History — 12 KB (bumped from 8 KB for FlightsService, spec 4.9): the deepest paths
 // were the discovery resync (a 255-byte topic buffer plus String/JSON
 // scratch, roughly 3 KB with log formatting) and ArduinoOTA's 1460-byte
 // read buffer during an update, which left ~4.5 KB headroom on 8 KB. On the
@@ -35,25 +35,30 @@ constexpr int kDiagPerLoop = 4;
 // with a heap-allocated body buffer (shallower than the WiFiClientSecure/
 // HTTPClient path it replaced in Plan 7), and its onStateMessage() JSON
 // parse rides on the MQTT receive callback below. Neither overlaps the
-// other (net task is single-threaded). Left at 12 KB rather than trimmed
-// with the TLS stack: the resync/OTA paths are unchanged and the headroom
-// is cheap. The one-shot high-water-mark log after the first resync
-// confirms actual headroom on hardware.
+// other (net task is single-threaded). That 12 KB was kept rather than
+// trimmed when Plan 7 removed the TLS path: the resync/OTA paths were
+// unchanged and the headroom is cheap. The one-shot high-water-mark log
+// after the first resync confirms actual headroom on hardware.
 //
-// CalendarService (spec 4.19, Plan 17) reintroduces the WiFiClientSecure/
-// HTTPClient path on builds that define CALENDAR_URL — the same shape
-// FlightsService moved away from in Plan 7, deliberately, because it's
-// deeper than a plain WiFiClient. mbedTLS's own session state is
-// heap-allocated (the heap guard in CalendarService::fetchNow() covers
-// that), so the stack cost here is "only" the HTTPClient/WiFiClientSecure
-// call frames and local buffers, not the TLS record buffers themselves.
-// CalendarService::tick() runs serially with FlightsService::tick() and
-// the MQTT callback (net task is single-threaded), so nothing overlaps,
-// and CalendarService logs its own one-shot stack high-water mark after
-// its first successful fetch to confirm actual headroom on hardware. Left
-// at 12 KB rather than bumped pre-emptively; revisit if that log ever
-// shows headroom getting thin.
-constexpr uint32_t kStackBytes = 12288;
+// Now 16 KB (bumped from 12 KB for CalendarService, spec 4.19, Plan 17).
+// CalendarService reintroduces the WiFiClientSecure/HTTPClient path on
+// builds that define CALENDAR_URL — the same shape FlightsService moved
+// away from in Plan 7, deliberately, because it's deeper than a plain
+// WiFiClient — and this time with certificate verification rather than
+// setInsecure(). That difference is the reason for the bump: the 12 KB
+// figure was only ever validated against handshakes that skipped
+// verification, and verifying adds a chain of mbedTLS frames (x509 parse
+// and signature verify per certificate, RSA-2048 against the GTS roots)
+// on top of the handshake itself, none of which the old measurements
+// covered. mbedTLS's session state and record buffers are heap-allocated
+// (the heap guard in CalendarService::fetchNow() covers those), so what
+// lands here is call frames and locals, but the verify path is deep enough
+// that guessing on 4.5 KB of headroom is not worth it. CalendarService::
+// tick() runs serially with FlightsService::tick() and the MQTT callback
+// (net task is single-threaded), so nothing overlaps, and CalendarService
+// logs a one-shot stack high-water mark after its first fetch attempt —
+// success or failure — to confirm the real headroom on hardware.
+constexpr uint32_t kStackBytes = 16384;
 
 constexpr UBaseType_t kPriority = 1;
 
