@@ -234,6 +234,15 @@ void NetTask::drainPublishQueue()
         case PubType::FLIGHTS_AUTO_SHOW:
             m_view.publishFlightsAutoShowSetting(item.b);
             break;
+        case PubType::CALENDAR_NUDGE:
+            m_view.publishCalendarNudgeSetting(item.b);
+            break;
+        case PubType::CALENDAR_LEAD:
+            m_view.publishCalendarLeadSetting(item.u16);
+            break;
+        case PubType::CALENDAR_STAY:
+            m_view.publishCalendarStaySetting(item.u16);
+            break;
         case PubType::CALIB_COUNT:
             m_view.publishCalibrationPoints(item.u8);
             break;
@@ -369,6 +378,9 @@ void NetTask::onMqttConnected()
     client.subscribe(m_view.getPauseTimeoutNumber().getCommandTopic(), 1);
     client.subscribe(m_view.getStartSpeedNumber().getCommandTopic(), 1);
     client.subscribe(m_view.getFlightsAutoShowSwitch().getCommandTopic(), 1);
+    client.subscribe(m_view.getCalendarNudgeSwitch().getCommandTopic(), 1);
+    client.subscribe(m_view.getCalendarLeadNumber().getCommandTopic(), 1);
+    client.subscribe(m_view.getCalendarStayNumber().getCommandTopic(), 1);
 
     client.subscribe(m_restoreTotalsTopic);
     log_i("Restore-totals topic: %s", m_restoreTotalsTopic);
@@ -420,6 +432,9 @@ void NetTask::fullResync()
     m_view.publishPauseTimeoutSetting(m_treadmill.getPauseTimeoutMins());
     m_view.publishStartSpeedSetting(m_treadmill.getStartSpeedMph());
     m_view.publishFlightsAutoShowSetting(m_treadmill.getFlightsAutoShow());
+    m_view.publishCalendarNudgeSetting(m_treadmill.getCalendarNudge());
+    m_view.publishCalendarLeadSetting(m_treadmill.getCalendarLeadMin());
+    m_view.publishCalendarStaySetting(m_treadmill.getCalendarStayMin());
     m_view.publishCalibrationPoints(m_treadmill.getCalibrationPointCount());
 
     if (!m_stackLogged)
@@ -624,6 +639,55 @@ void NetTask::onMqttMessage(char *topic, uint8_t *payload, unsigned int length)
             return;
         }
         cmd.type = CmdType::SET_FLIGHTS_AUTO_SHOW;
+        enqueueCommand(cmd);
+        return;
+    }
+
+    if (strcmp(topic, m_view.getCalendarLeadNumber().getCommandTopic()) == 0 ||
+        strcmp(topic, m_view.getCalendarStayNumber().getCommandTopic()) == 0)
+    {
+        if (!payloadToBuf(payload, length, buf, sizeof(buf)))
+        {
+            return;
+        }
+        trimInPlace(buf);
+        cmd.u16 = (uint16_t)strtoul(buf, nullptr, 10);
+        if (strcmp(topic, m_view.getCalendarLeadNumber().getCommandTopic()) == 0)
+        {
+            log_i("Calendar lead setting received: %u min", cmd.u16);
+            cmd.type = CmdType::SET_CALENDAR_LEAD;
+        }
+        else
+        {
+            log_i("Calendar stay setting received: %u min", cmd.u16);
+            cmd.type = CmdType::SET_CALENDAR_STAY;
+        }
+        enqueueCommand(cmd);
+        return;
+    }
+
+    if (strcmp(topic, m_view.getCalendarNudgeSwitch().getCommandTopic()) == 0)
+    {
+        if (!payloadToBuf(payload, length, buf, sizeof(buf)))
+        {
+            return;
+        }
+        trimInPlace(buf);
+        log_i("Calendar nudge command received: %s", buf);
+        const MqttSwitch &sw = m_view.getCalendarNudgeSwitch();
+        if (strcasecmp(buf, sw.getOnState()) == 0)
+        {
+            cmd.b = true;
+        }
+        else if (strcasecmp(buf, sw.getOffState()) == 0)
+        {
+            cmd.b = false;
+        }
+        else
+        {
+            return;
+        }
+        cmd.type = CmdType::SET_CALENDAR_NUDGE;
         enqueueCommand(cmd);
         return;
     }

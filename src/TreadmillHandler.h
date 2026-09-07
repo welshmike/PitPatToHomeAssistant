@@ -95,6 +95,32 @@ public:
         return m_flightsAutoShow;
     }
 
+    // Calendar nudge (spec 4.19): whether the Dial may raise a nudge screen
+    // ahead of an upcoming calendar event. Belt-unrelated, but persisted here
+    // per the same rationale as flights auto-show above.
+    void setCalendarNudge(bool on);
+
+    bool getCalendarNudge() const
+    {
+        return m_calendarNudge;
+    }
+
+    // Minutes before the event start that the nudge appears. Clamped [1, 30].
+    void setCalendarLeadMin(uint16_t mins);
+
+    uint16_t getCalendarLeadMin() const
+    {
+        return m_calendarLeadMin;
+    }
+
+    // Extra minutes the nudge stays up after the event starts. Clamped [0, 10].
+    void setCalendarStayMin(uint16_t mins);
+
+    uint16_t getCalendarStayMin() const
+    {
+        return m_calendarStayMin;
+    }
+
     // Dynamic Step Calibration
     void toggleCalibration() { m_state.toggleCalibration(m_snapshot.read().speedFeedback); }
     uint8_t getCalibrationPointCount() const { return m_state.getCalibrationPointCount(); }
@@ -294,6 +320,11 @@ private:
 
     // Flights auto-show setting (NVS key "fl_auto"), default on.
     bool m_flightsAutoShow = true;
+
+    // Calendar nudge settings (spec 4.19), NVS keys "cal_nudge"/"cal_lead"/"cal_stay".
+    bool     m_calendarNudge   = true;
+    uint16_t m_calendarLeadMin = 5;
+    uint16_t m_calendarStayMin = 1;
 
     // Pending command — queued when start()/setSpeed() is called while disconnected.
     // Executed in handle() once reconnected and POST_CONNECT_COOLDOWN has elapsed.

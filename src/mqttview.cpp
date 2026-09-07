@@ -27,6 +27,9 @@ MqttView::MqttView(PubSubClient *client)
       m_pauseTimeoutMins(&m_device, "pause-timeout-mins", "Pause Timeout Minutes"),
       m_startSpeed(&m_device, "start-speed", "Start Speed"),
       m_flightsAutoShow(&m_device, "flights-auto-show", "Flights Auto-show"),
+      m_calendarNudge(&m_device, "calendar-nudge", "Calendar nudge"),
+      m_calendarLead(&m_device, "calendar-lead", "Calendar lead"),
+      m_calendarStay(&m_device, "calendar-stay", "Calendar stay"),
       // Cumulative totals
       m_totalDistance(&m_device, "total-distance", "Total Distance"),
       m_totalSteps(&m_device, "total-steps", "Total Steps"),
@@ -124,6 +127,26 @@ MqttView::MqttView(PubSubClient *client)
     // over the Clock while aircraft are nearby.
     m_flightsAutoShow.setEntityType(EntityCategory::CONFIG);
     m_flightsAutoShow.setIcon("mdi:airplane-clock");
+
+    // Calendar nudge (spec 4.19): a heads-up screen ahead of an upcoming
+    // calendar event, shown for [lead, event start + stay] minutes.
+    m_calendarNudge.setEntityType(EntityCategory::CONFIG);
+    m_calendarNudge.setIcon("mdi:calendar-clock");
+
+    m_calendarLead.setEntityType(EntityCategory::CONFIG);
+    m_calendarLead.setMin(1.0f);
+    m_calendarLead.setMax(30.0f);
+    m_calendarLead.setStep(1.0f);
+    m_calendarLead.setMode(NumberMode::BOX);
+    m_calendarLead.setIcon("mdi:timer-sand");
+    m_calendarLead.setUnit("min");
+
+    m_calendarStay.setEntityType(EntityCategory::CONFIG);
+    m_calendarStay.setMin(0.0f);
+    m_calendarStay.setMax(10.0f);
+    m_calendarStay.setStep(1.0f);
+    m_calendarStay.setMode(NumberMode::BOX);
+    m_calendarStay.setUnit("min");
 
     // Cumulative totals — each has its own state topic so they can use retain=true
     // and survive MQTT reconnects without waiting for the next live packet.
@@ -234,6 +257,9 @@ void MqttView::publishAllConfigs()
     publishConfig(m_pauseTimeoutMins);
     publishConfig(m_startSpeed);
     publishConfig(m_flightsAutoShow);
+    publishConfig(m_calendarNudge);
+    publishConfig(m_calendarLead);
+    publishConfig(m_calendarStay);
 
     // Diagnostics
     publishConfig(m_maxSpeed);
@@ -284,6 +310,32 @@ void MqttView::publishFlightsAutoShowSetting(bool enabled)
     {
         publishMqttState(m_flightsAutoShow, m_flightsAutoShow.getOffState());
     }
+}
+
+void MqttView::publishCalendarNudgeSetting(bool enabled)
+{
+    if (enabled)
+    {
+        publishMqttState(m_calendarNudge, m_calendarNudge.getOnState());
+    }
+    else
+    {
+        publishMqttState(m_calendarNudge, m_calendarNudge.getOffState());
+    }
+}
+
+void MqttView::publishCalendarLeadSetting(uint16_t mins)
+{
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%u", mins);
+    publishMqttState(m_calendarLead, buf);
+}
+
+void MqttView::publishCalendarStaySetting(uint16_t mins)
+{
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%u", mins);
+    publishMqttState(m_calendarStay, buf);
 }
 
 void MqttView::publishState(TreadMillData data)

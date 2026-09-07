@@ -167,6 +167,24 @@ static void drainCommands()
       enqueue(PubType::FLIGHTS_AUTO_SHOW, cmd.b);
       break;
 
+    case CmdType::SET_CALENDAR_NUDGE:
+      treadmill.setCalendarNudge(cmd.b);
+      // Task 7: dialUi.setCalendarNudge(cmd.b);
+      enqueue(PubType::CALENDAR_NUDGE, cmd.b);
+      break;
+
+    case CmdType::SET_CALENDAR_LEAD:
+      treadmill.setCalendarLeadMin(cmd.u16);
+      // Task 7: dialUi.setCalendarLeadMin(cmd.u16);
+      enqueue(PubType::CALENDAR_LEAD, false, cmd.u16);
+      break;
+
+    case CmdType::SET_CALENDAR_STAY:
+      treadmill.setCalendarStayMin(cmd.u16);
+      // Task 7: dialUi.setCalendarStayMin(cmd.u16);
+      enqueue(PubType::CALENDAR_STAY, false, cmd.u16);
+      break;
+
     case CmdType::TOGGLE_CALIBRATION:
       treadmill.toggleCalibration();
       enqueue(PubType::CALIB_COUNT, false, 0, treadmill.getCalibrationPointCount());

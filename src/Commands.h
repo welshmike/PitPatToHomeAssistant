@@ -27,6 +27,9 @@ enum class CmdType : uint8_t
     SET_PAUSE_MINS,
     SET_START_SPEED,
     SET_FLIGHTS_AUTO_SHOW,
+    SET_CALENDAR_NUDGE,
+    SET_CALENDAR_LEAD,
+    SET_CALENDAR_STAY,
     TOGGLE_CALIBRATION,
     RESTORE_TOTALS,
     RESTORE_CALIBRATION,
@@ -37,8 +40,8 @@ struct Command
 {
     CmdType  type = CmdType::NONE;
     float    f    = 0;     // SET_SPEED_MPH / SET_START_SPEED
-    bool     b    = false; // SET_AUTO_RECONNECT / SET_FLIGHTS_AUTO_SHOW
-    uint16_t u16  = 0;     // SET_IDLE_MINS / SET_PAUSE_MINS
+    bool     b    = false; // SET_AUTO_RECONNECT / SET_FLIGHTS_AUTO_SHOW / SET_CALENDAR_NUDGE
+    uint16_t u16  = 0;     // SET_IDLE_MINS / SET_PAUSE_MINS / SET_CALENDAR_LEAD / SET_CALENDAR_STAY
 
     // RESTORE_TOTALS. has[] marks which fields the JSON payload actually carried;
     // the loop task fills the rest from the current NVS values.
@@ -67,6 +70,9 @@ enum class PubType : uint8_t
     PAUSE_MINS,
     START_SPEED,
     FLIGHTS_AUTO_SHOW,
+    CALENDAR_NUDGE,
+    CALENDAR_LEAD,
+    CALENDAR_STAY,
     CALIB_COUNT,
     FULL_RESYNC,
     LIGHT_CMD,
@@ -76,8 +82,8 @@ struct PublishItem
 {
     PubType       type = PubType::SNAPSHOT;
     TreadMillData snap;         // SNAPSHOT
-    bool          b    = false; // AUTO_RECONNECT / FLIGHTS_AUTO_SHOW
-    uint16_t      u16  = 0;     // IDLE_MINS / PAUSE_MINS
+    bool          b    = false; // AUTO_RECONNECT / FLIGHTS_AUTO_SHOW / CALENDAR_NUDGE
+    uint16_t      u16  = 0;     // IDLE_MINS / PAUSE_MINS / CALENDAR_LEAD / CALENDAR_STAY
     uint8_t       u8   = 0;     // CALIB_COUNT
     float         f    = 0;     // START_SPEED
     uint8_t       lightKey  = 0;     // LIGHT_CMD: LightsModel::LightKey

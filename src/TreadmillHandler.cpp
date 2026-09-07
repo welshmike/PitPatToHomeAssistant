@@ -272,6 +272,9 @@ void TreadmillHandler::begin(NimBLEAddress address)
         m_pauseTimeoutMins   = prefs.getUShort("pause", 10);
         m_startSpeedTenths   = prefs.getUShort("start", 10);
         m_flightsAutoShow    = prefs.getBool("fl_auto", true);
+        m_calendarNudge      = prefs.getBool("cal_nudge", true);
+        m_calendarLeadMin    = prefs.getUShort("cal_lead", 5);
+        m_calendarStayMin    = prefs.getUShort("cal_stay", 1);
         prefs.end();
         // Clamp on load too — guards against a stale/out-of-range value written
         // by an older firmware or a manual NVS edit.
@@ -280,10 +283,13 @@ void TreadmillHandler::begin(NimBLEAddress address)
             const uint16_t maxTenths = (uint16_t)lroundf(SPEED_MAX_MPH * 10.0f);
             if (m_startSpeedTenths < minTenths) m_startSpeedTenths = minTenths;
             if (m_startSpeedTenths > maxTenths) m_startSpeedTenths = maxTenths;
+            if (m_calendarLeadMin < 1)  m_calendarLeadMin = 1;
+            if (m_calendarLeadMin > 30) m_calendarLeadMin = 30;
+            if (m_calendarStayMin > 10) m_calendarStayMin = 10;
         }
-        log_i("Settings loaded: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min startSpeed=%u tenths flightsAutoShow=%d",
+        log_i("Settings loaded: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min startSpeed=%u tenths flightsAutoShow=%d calendarNudge=%d calendarLead=%u min calendarStay=%u min",
               m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins, m_startSpeedTenths,
-              m_flightsAutoShow);
+              m_flightsAutoShow, m_calendarNudge, m_calendarLeadMin, m_calendarStayMin);
     }
 
     // Pre-populate m_snapshot totals from NVS so that the first publishState()
@@ -311,10 +317,13 @@ void TreadmillHandler::saveSettings()
     prefs.putUShort("pause", m_pauseTimeoutMins);
     prefs.putUShort("start", m_startSpeedTenths);
     prefs.putBool("fl_auto", m_flightsAutoShow);
+    prefs.putBool("cal_nudge", m_calendarNudge);
+    prefs.putUShort("cal_lead", m_calendarLeadMin);
+    prefs.putUShort("cal_stay", m_calendarStayMin);
     prefs.end();
-    log_i("Settings saved: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min startSpeed=%u tenths flightsAutoShow=%d",
+    log_i("Settings saved: autoReconnect=%d idleDisconnect=%u min pauseTimeout=%u min startSpeed=%u tenths flightsAutoShow=%d calendarNudge=%d calendarLead=%u min calendarStay=%u min",
           m_autoReconnect, m_idleDisconnectMins, m_pauseTimeoutMins, m_startSpeedTenths,
-          m_flightsAutoShow);
+          m_flightsAutoShow, m_calendarNudge, m_calendarLeadMin, m_calendarStayMin);
 }
 
 void TreadmillHandler::setStartSpeedMph(float mph)
@@ -331,6 +340,30 @@ void TreadmillHandler::setFlightsAutoShow(bool on)
     m_flightsAutoShow = on;
     saveSettings();
     log_i("Flights auto-show set: %d", m_flightsAutoShow);
+}
+
+void TreadmillHandler::setCalendarNudge(bool on)
+{
+    m_calendarNudge = on;
+    saveSettings();
+    log_i("Calendar nudge set: %d", m_calendarNudge);
+}
+
+void TreadmillHandler::setCalendarLeadMin(uint16_t mins)
+{
+    if (mins < 1)  mins = 1;
+    if (mins > 30) mins = 30;
+    m_calendarLeadMin = mins;
+    saveSettings();
+    log_i("Calendar lead time set: %u min", m_calendarLeadMin);
+}
+
+void TreadmillHandler::setCalendarStayMin(uint16_t mins)
+{
+    if (mins > 10) mins = 10;
+    m_calendarStayMin = mins;
+    saveSettings();
+    log_i("Calendar stay time set: %u min", m_calendarStayMin);
 }
 
 void TreadmillHandler::setConnectHold(bool hold)

@@ -69,6 +69,21 @@ public:
         return m_flightsAutoShow;
     }
 
+    const MqttSwitch &getCalendarNudgeSwitch() const
+    {
+        return m_calendarNudge;
+    }
+
+    const MqttNumber &getCalendarLeadNumber() const
+    {
+        return m_calendarLead;
+    }
+
+    const MqttNumber &getCalendarStayNumber() const
+    {
+        return m_calendarStay;
+    }
+
     const MqttButton &getCalibrate20StepsButton() const
     {
         return m_calibrate20StepsBtn;
@@ -81,6 +96,9 @@ public:
     void publishPauseTimeoutSetting(uint16_t mins);
     void publishStartSpeedSetting(float mph);
     void publishFlightsAutoShowSetting(bool enabled);
+    void publishCalendarNudgeSetting(bool enabled);
+    void publishCalendarLeadSetting(uint16_t mins);
+    void publishCalendarStaySetting(uint16_t mins);
     void publishState(TreadMillData data);
 
 private:
@@ -123,6 +141,9 @@ private:
     MqttNumber m_pauseTimeoutMins;
     MqttNumber m_startSpeed;
     MqttSwitch m_flightsAutoShow;
+    MqttSwitch m_calendarNudge;
+    MqttNumber m_calendarLead;
+    MqttNumber m_calendarStay;
 
     // Diagnostics
     MqttSensor m_maxSpeed;
