@@ -240,7 +240,11 @@ bool CalendarService::fetchNow(uint32_t nowMs)
     const uint32_t deadline     = millis() + readWindowMs;
     size_t         total        = 0;
     bool           timedOut     = false;
-    while (http.connected() && total < kBufCap - 1)
+    // Drain-first condition, as in the pre-Plan-7 FlightsService loop: bytes
+    // already buffered by the client must be taken even after the server has
+    // closed the connection (http.connected() false), which is exactly what a
+    // short HTTP/1.0 reply looks like once the last segment has landed.
+    while ((stream->available() > 0 || http.connected()) && total < kBufCap - 1)
     {
         if ((int32_t)(millis() - deadline) >= 0)
         {
@@ -248,8 +252,10 @@ bool CalendarService::fetchNow(uint32_t nowMs)
             timedOut = true;
             break;
         }
-        const size_t avail = stream->available();
-        if (avail == 0)
+        // available() returns int and can report an error as a negative value;
+        // that must not become a huge size_t below.
+        const int avail = stream->available();
+        if (avail <= 0)
         {
             if (contentLength > 0 && total >= (size_t)contentLength)
             {
@@ -258,7 +264,7 @@ bool CalendarService::fetchNow(uint32_t nowMs)
             delay(1);
             continue;
         }
-        size_t toRead = avail;
+        size_t toRead = (size_t)avail;
         if (toRead > kBufCap - 1 - total)
         {
             toRead = kBufCap - 1 - total;
@@ -294,8 +300,21 @@ bool CalendarService::fetchNow(uint32_t nowMs)
     {
         m_backoffMs   = nextBackoffMs(m_backoffMs);
         m_nextFetchMs = nowMs + m_backoffMs;
-        log_w("Calendar: fetch failed code=%d (parse failed, %u bytes), retry in %u s", code, (unsigned)total,
-              (unsigned)(m_backoffMs / 1000));
+        // A body that filled the buffer was almost certainly cut mid-JSON, so
+        // it will never parse however many times it is retried. Say that
+        // rather than "parse failed", which points at the feed's JSON: the
+        // fix is a shorter payload (fewer events, shorter titles) or a bigger
+        // kBufCap, not the Apps Script's output format.
+        if (total == kBufCap - 1)
+        {
+            log_w("Calendar: fetch failed code=%d (body truncated at %u bytes), retry in %u s", code,
+                  (unsigned)total, (unsigned)(m_backoffMs / 1000));
+        }
+        else
+        {
+            log_w("Calendar: fetch failed code=%d (parse failed, %u bytes), retry in %u s", code, (unsigned)total,
+                  (unsigned)(m_backoffMs / 1000));
+        }
         return false;
     }
 

@@ -80,6 +80,30 @@ static void test_leadAndStaySetters(void)
     TEST_ASSERT_TRUE(A::RETURN_TO_CLOCK == n.update(START, true, START, CardId::CALENDAR, true, true));
 }
 
+static void test_noShow_forEventAlreadyStarted(void)
+{
+    // Arriving at the Clock mid-meeting (boot, or a belt session that ended
+    // during one) must not raise the card: it would be handed straight back.
+    CalendarAutoShow n;
+    TEST_ASSERT_TRUE(A::NONE == n.update(START + 10, true, START, CardId::CLOCK, true, true));
+    TEST_ASSERT_FALSE(n.isShowing());
+    // stay = 0 makes the return deadline the start itself, so even the exact
+    // start instant is already too late.
+    CalendarAutoShow z;
+    z.setStaySec(0);
+    TEST_ASSERT_TRUE(A::NONE == z.update(START, true, START, CardId::CLOCK, true, true));
+    TEST_ASSERT_FALSE(z.isShowing());
+}
+
+static void test_noShow_beforeClockIsValid(void)
+{
+    // nowEpoch 0 is TimeService saying "no time yet" (boot before NTP): every
+    // comparison here is against wall-clock epochs, so nothing may fire.
+    CalendarAutoShow n;
+    TEST_ASSERT_TRUE(A::NONE == n.update(0, true, START, CardId::CLOCK, true, true));
+    TEST_ASSERT_FALSE(n.isShowing());
+}
+
 static void test_disableMidEpisode_forgets(void)
 {
     CalendarAutoShow n;
@@ -99,6 +123,8 @@ int main(int, char**)
     RUN_TEST(test_manualNavigation_forgetsEpisode_noReturn);
     RUN_TEST(test_leavingViaOtherCard_forgetsEpisode);
     RUN_TEST(test_leadAndStaySetters);
+    RUN_TEST(test_noShow_forEventAlreadyStarted);
+    RUN_TEST(test_noShow_beforeClockIsValid);
     RUN_TEST(test_disableMidEpisode_forgets);
     return UNITY_END();
 }

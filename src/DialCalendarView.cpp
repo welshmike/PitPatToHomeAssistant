@@ -39,14 +39,16 @@ constexpr size_t kWrapCols = 16;
 constexpr size_t kFollowTitleMax = 20;
 
 // The epoch -> local time converter for this draw call. drawCalendarCard()
-// is handed one as an argument (DialUi owns the localtime_r wrapper), but
-// CalendarModel::firstOnLaterDay() takes a plain function pointer that cannot
-// carry it, so it is parked here for localDayOf() below to reach. Loop task
-// only, one draw at a time — no re-entrancy to worry about.
+// is handed one as an argument (DialUi owns the localtime_r wrapper), but the
+// day-aware CalendarModel helpers (nextTimedToday(), allDayCountToday(),
+// firstAllDayToday(), firstTimedOnLaterDay()) take a plain function pointer
+// that cannot carry it, so it is parked here for localDayOf() below to reach.
+// Loop task only, one draw at a time — no re-entrancy to worry about.
 bool (*s_localTime)(uint32_t, struct tm&) = nullptr;
 
-// Day number for firstOnLaterDay(): monotonic across a year boundary
-// (tm_year * 400 + tm_yday), which is all that helper compares.
+// Day number for those helpers: monotonic across a year boundary
+// (tm_year * 400 + tm_yday). They only ever compare two of these for equality
+// or order, so the exact scale does not matter.
 uint32_t localDayOf(uint32_t epoch)
 {
     struct tm t;
@@ -173,22 +175,15 @@ void wrapTitle(const char* title, TitleLines& out)
 }
 
 // "All day: Standup" for a single all-day event, "All day: 2 events" for more.
+// `first` is the index of today's first all-day event (firstAllDayToday()) and
+// `count` how many there are today — tomorrow's are not on this line.
 void drawAllDayLine(LovyanGFX& gfx, const DialTheme& theme, const CalendarModel::Snapshot& s,
-                    uint8_t count)
+                    int8_t first, uint8_t count)
 {
     char buf[40];
-    if (count == 1)
+    if (count == 1 && first >= 0)
     {
-        const char* title = "";
-        for (uint8_t i = 0; i < s.count; ++i)
-        {
-            if (s.ev[i].allDay)
-            {
-                title = s.ev[i].title;
-                break;
-            }
-        }
-        snprintf(buf, sizeof(buf), "All day: %.20s", title);
+        snprintf(buf, sizeof(buf), "All day: %.20s", s.ev[first].title);
     }
     else
     {
@@ -224,8 +219,10 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
     }
 
     // No clock yet is as unusable as a stale snapshot: every line on the face
-    // below is relative to now. isStale() itself would say so anyway (its
-    // unsigned age underflows against nowEpoch 0), but say it deliberately.
+    // below is relative to now, and localDayOf() has no local day to work
+    // with either. isStale() deliberately does *not* cover this (it treats
+    // nowEpoch <= fetchedAtEpoch as fresh rather than underflowing), so the
+    // check is spelled out here.
     if (nowEpoch == 0 || CalendarModel::isStale(s, nowEpoch))
     {
         char noCal[16];
@@ -244,13 +241,19 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
         return;
     }
 
-    const uint8_t allDay = CalendarModel::allDayCount(s);
+    const uint32_t today  = localDayOf(nowEpoch);
+    const uint8_t  allDay = CalendarModel::allDayCountToday(s, nowEpoch, &localDayOf);
     if (allDay > 0)
     {
-        drawAllDayLine(gfx, theme, s, allDay);
+        drawAllDayLine(gfx, theme, s, CalendarModel::firstAllDayToday(s, nowEpoch, &localDayOf),
+                       allDay);
     }
 
-    const int8_t idx = CalendarModel::nextTimed(s, nowEpoch);
+    // Today's next meeting, not the feed's: the payload runs to the end of
+    // tomorrow, so nextTimed() would report tomorrow's 09:00 as "next" all
+    // evening (with an "in 18 h 30" countdown) and the empty face below would
+    // never be reached.
+    const int8_t idx = CalendarModel::nextTimedToday(s, nowEpoch, &localDayOf);
     if (idx < 0)
     {
         // Nothing timed left today; tomorrow's first *timed* event, if the
@@ -300,23 +303,27 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
 
     // Amber while the meeting is under way, plain text while it is still
     // ahead (spec 4.19). countdownText() returns 0 only for an event that has
-    // ended, which nextTimed() has already ruled out.
+    // ended, which nextTimedToday() has already ruled out. The colour uses the
+    // same predicate as the text: countdownText() switches to "starts now" 30 s
+    // before the start, so flipping the colour at `start` itself would leave
+    // half a minute of "starts now" still drawn in plain TEXT.
     char countBuf[24];
     if (CalendarModel::countdownText(next, nowEpoch, countBuf, sizeof(countBuf)) > 0)
     {
+        const bool underway = (nowEpoch + 30 >= next.start);
         fitToRow(gfx, countBuf, kCountY, &fonts::Font2);
-        gfx.setTextColor(theme.col(nowEpoch >= next.start ? Col::PENDING : Col::TEXT),
-                         theme.col(Col::BG));
+        gfx.setTextColor(theme.col(underway ? Col::PENDING : Col::TEXT), theme.col(Col::BG));
         gfx.drawString(countBuf, kCentreX, kCountY, &fonts::Font2);
     }
 
-    // Up to three following timed events, "14:30 Title", dim. All-day events
-    // are already summarised on their own line above.
+    // Up to three following timed events *today*, "14:30 Title", dim. All-day
+    // events are already summarised on their own line above, and tomorrow's
+    // events belong to the "Tomorrow …" line on the empty face, not here.
     gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
     uint8_t row = 0;
     for (uint8_t i = static_cast<uint8_t>(idx) + 1; i < s.count && row < kFollowMax; ++i)
     {
-        if (s.ev[i].allDay)
+        if (s.ev[i].allDay || localDayOf(s.ev[i].start) != today)
         {
             continue;
         }

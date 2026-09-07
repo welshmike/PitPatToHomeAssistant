@@ -46,11 +46,29 @@ int8_t nextTimed(const Snapshot& s, uint32_t nowEpoch)
     return -1;
 }
 
-int8_t firstOnLaterDay(const Snapshot& s, uint32_t nowEpoch, uint32_t (*localDayOf)(uint32_t))
+int8_t nextTimedToday(const Snapshot& s, uint32_t nowEpoch, uint32_t (*localDayOf)(uint32_t))
 {
     const uint32_t today = localDayOf(nowEpoch);
     for (uint8_t i = 0; i < s.count; ++i)
-        if (localDayOf(s.ev[i].start) > today) return (int8_t)i;
+        if (!s.ev[i].allDay && s.ev[i].end > nowEpoch && localDayOf(s.ev[i].start) == today)
+            return (int8_t)i;
+    return -1;
+}
+
+uint8_t allDayCountToday(const Snapshot& s, uint32_t nowEpoch, uint32_t (*localDayOf)(uint32_t))
+{
+    const uint32_t today = localDayOf(nowEpoch);
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < s.count; ++i)
+        if (s.ev[i].allDay && localDayOf(s.ev[i].start) == today) ++n;
+    return n;
+}
+
+int8_t firstAllDayToday(const Snapshot& s, uint32_t nowEpoch, uint32_t (*localDayOf)(uint32_t))
+{
+    const uint32_t today = localDayOf(nowEpoch);
+    for (uint8_t i = 0; i < s.count; ++i)
+        if (s.ev[i].allDay && localDayOf(s.ev[i].start) == today) return (int8_t)i;
     return -1;
 }
 
@@ -94,6 +112,11 @@ uint8_t allDayCount(const Snapshot& s)
 
 bool isStale(const Snapshot& s, uint32_t nowEpoch)
 {
-    return !s.valid || nowEpoch - s.fetchedAtEpoch >= kStaleSec;
+    // nowEpoch <= fetchedAtEpoch is "not stale", not an unsigned underflow into
+    // a huge age: the feed stamps "t" from Google's clock, so a device whose
+    // NTP sync lands a second or two behind it must not read the fresh
+    // snapshot it just received as half a century old.
+    if (!s.valid) return true;
+    return nowEpoch > s.fetchedAtEpoch && nowEpoch - s.fetchedAtEpoch >= kStaleSec;
 }
 } // namespace CalendarModel

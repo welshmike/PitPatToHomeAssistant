@@ -47,6 +47,16 @@ CalendarAutoShow::Action CalendarAutoShow::update(uint32_t nowEpoch, bool hasNex
     if (!beltIdle || !dataValid || !hasNext || currentCard != CardId::CLOCK) return Action::NONE;
     if (m_haveDismissed && nextStart == m_dismissedStart) return Action::NONE;
     if (nextStart > nowEpoch + m_leadSec) return Action::NONE;
+    // Lower bound as well as upper: an event already under way is not
+    // something to interrupt the Clock for. Without this, arriving at the
+    // Clock mid-meeting (boot, or a belt session that ends during one) shows
+    // the card and then immediately hands it back on the next tick — a 250 ms
+    // flash plus a backlight wake, and with stay = 0 that is guaranteed. Both
+    // halves are needed: `nextStart < nowEpoch` catches a meeting still inside
+    // its stay window, and the deadline test catches the moment the window has
+    // already closed (including stay = 0 exactly at the start).
+    if (nextStart < nowEpoch) return Action::NONE;
+    if (nextStart + m_staySec <= nowEpoch) return Action::NONE;
 
     m_showing = true;
     m_shownStart = nextStart;

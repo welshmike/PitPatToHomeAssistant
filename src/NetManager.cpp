@@ -24,8 +24,12 @@ constexpr uint16_t kMqttSocketTimeoutS = 5;
 // CalendarService fetch on the same net task (spec 4.19): a pathological
 // Apps Script redirect can hold the task for ~20-22 s (see
 // CalendarService::kFetchBudgetMs). 60 s gives the broker 90 s of tolerance
-// (PubSubClient waits 1.5x the keepalive before dropping the session) and
-// HA's availability (LWT) still fires promptly on an actual disconnect.
+// (PubSubClient waits 1.5x the keepalive before dropping the session). The
+// cost is availability latency: on a *clean* disconnect the broker publishes
+// the LWT at once, but on a hard drop (power loss, AP gone) it only notices
+// when the keepalive window expires, so HA's availability now goes unavailable
+// up to ~90 s later instead of ~22 s. Accepted — a stale "online" for a minute
+// and a half beats being dropped mid-fetch every time the calendar is slow.
 constexpr uint16_t kMqttKeepAliveS = 60;
 
 // 2048 (bumped from 1024 for the Dial's flights topic, spec 4.11):

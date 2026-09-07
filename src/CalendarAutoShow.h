@@ -59,8 +59,10 @@ public:
     // the clock is not valid -> treated as !dataValid, i.e. no action).
     // Returns:
     //  - SHOW_CALENDAR: enabled, beltIdle, currentCard == CLOCK, data valid,
-    //    hasNext, nextStart is within leadSec of nowEpoch, and nextStart is
-    //    not the dismissed-start (see above).
+    //    hasNext, nextStart is within leadSec of nowEpoch, the event has not
+    //    already started (and its return deadline, nextStart + staySec, is
+    //    still in the future — otherwise the card would show and be handed
+    //    straight back), and nextStart is not the dismissed-start (see above).
     //  - RETURN_TO_CLOCK: this machine auto-showed Calendar earlier, the
     //    stay window has elapsed, and currentCard is still CALENDAR (the
     //    user hasn't navigated away themselves).

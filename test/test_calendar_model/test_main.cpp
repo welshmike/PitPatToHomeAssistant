@@ -86,18 +86,47 @@ static void test_nextTimed_skipsAllDayAndFinished_inProgressWins(void)
 
 static uint32_t fakeDay(uint32_t epoch) { return epoch / 86400u; }
 
-static void test_firstOnLaterDay_findsTomorrow(void)
-{
-    CalendarModel::Snapshot s = parsed();
-    TEST_ASSERT_EQUAL_INT8(3, CalendarModel::firstOnLaterDay(s, 1757260000u, fakeDay));
-    TEST_ASSERT_EQUAL_INT8(-1, CalendarModel::firstOnLaterDay(s, 1757340000u, fakeDay));
-}
-
 static const char* kTomorrowMixedPayload =
     "{\"t\":1757260000,\"ev\":["
     "{\"s\":1757340000,\"e\":1757343600,\"n\":\"Tomorrow AllDay\",\"a\":1,\"l\":\"\"},"
     "{\"s\":1757344000,\"e\":1757347600,\"n\":\"Tomorrow Timed\",\"a\":0,\"l\":\"\"}"
     "]}";
+
+// Events 0-2 fall on fakeDay 20338, event 3 ("Tomorrow first") on 20339.
+static void test_nextTimedToday_stopsAtTheDayBoundary(void)
+{
+    CalendarModel::Snapshot s = parsed();
+    // Standup is in progress at 1757260000 -> index 0.
+    TEST_ASSERT_EQUAL_INT8(0, CalendarModel::nextTimedToday(s, 1757260000u, fakeDay));
+    // After Standup ends the all-day Offsite is skipped -> the 1:1 (index 2).
+    TEST_ASSERT_EQUAL_INT8(2, CalendarModel::nextTimedToday(s, 1757262601u, fakeDay));
+    // After the 1:1 ends there is nothing more *today*: tomorrow's event is
+    // excluded, unlike nextTimed(), which reports it (index 3).
+    TEST_ASSERT_EQUAL_INT8(-1, CalendarModel::nextTimedToday(s, 1757268001u, fakeDay));
+    TEST_ASSERT_EQUAL_INT8(3, CalendarModel::nextTimed(s, 1757268001u));
+}
+
+static void test_allDayToday_countsOnlyTodaysAllDayEvents(void)
+{
+    CalendarModel::Snapshot s = parsed();
+    // The all-day Offsite starts 1757246400, which is fakeDay 20338 = today.
+    TEST_ASSERT_EQUAL_UINT8(1, CalendarModel::allDayCountToday(s, 1757260000u, fakeDay));
+    TEST_ASSERT_EQUAL_INT8(1, CalendarModel::firstAllDayToday(s, 1757260000u, fakeDay));
+    // Standing on day 20339 it is yesterday's, and there is no all-day event
+    // of its own that day.
+    TEST_ASSERT_EQUAL_UINT8(0, CalendarModel::allDayCountToday(s, 1757340000u, fakeDay));
+    TEST_ASSERT_EQUAL_INT8(-1, CalendarModel::firstAllDayToday(s, 1757340000u, fakeDay));
+}
+
+static void test_allDayToday_findsTomorrowsAllDayOnItsOwnDay(void)
+{
+    CalendarModel::Snapshot s;
+    TEST_ASSERT_TRUE(CalendarModel::parse(kTomorrowMixedPayload, strlen(kTomorrowMixedPayload), s));
+    // Index 0 is an all-day event on day 20339: none today, one that day.
+    TEST_ASSERT_EQUAL_UINT8(0, CalendarModel::allDayCountToday(s, 1757260000u, fakeDay));
+    TEST_ASSERT_EQUAL_UINT8(1, CalendarModel::allDayCountToday(s, 1757340000u, fakeDay));
+    TEST_ASSERT_EQUAL_INT8(0, CalendarModel::firstAllDayToday(s, 1757340000u, fakeDay));
+}
 
 static const char* kTomorrowAllDayOnlyPayload =
     "{\"t\":1757260000,\"ev\":["
@@ -147,6 +176,10 @@ static void test_allDayCount_and_isStale(void)
     TEST_ASSERT_TRUE(CalendarModel::isStale(s, 1757260000u + 1800));
     CalendarModel::Snapshot none;
     TEST_ASSERT_TRUE(CalendarModel::isStale(none, 1757260000u));
+    // A device clock a little behind the feed's "t" must not underflow into a
+    // huge age and report a snapshot that has only just arrived as stale.
+    TEST_ASSERT_FALSE(CalendarModel::isStale(s, 1757260000u - 5));
+    TEST_ASSERT_FALSE(CalendarModel::isStale(s, 1757260000u));
 }
 
 int main(int, char**)
@@ -158,7 +191,9 @@ int main(int, char**)
     RUN_TEST(test_parse_capsAtFiveEvents);
     RUN_TEST(test_parse_malformedOrMissingEvLeavesOutUntouched);
     RUN_TEST(test_nextTimed_skipsAllDayAndFinished_inProgressWins);
-    RUN_TEST(test_firstOnLaterDay_findsTomorrow);
+    RUN_TEST(test_nextTimedToday_stopsAtTheDayBoundary);
+    RUN_TEST(test_allDayToday_countsOnlyTodaysAllDayEvents);
+    RUN_TEST(test_allDayToday_findsTomorrowsAllDayOnItsOwnDay);
     RUN_TEST(test_firstTimedOnLaterDay_skipsAllDay);
     RUN_TEST(test_firstTimedOnLaterDay_allDayOnlyIsMinusOne);
     RUN_TEST(test_countdownText_forms);

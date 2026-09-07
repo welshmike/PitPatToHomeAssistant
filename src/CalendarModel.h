@@ -34,17 +34,38 @@ struct Snapshot
 // returns true; on malformed JSON / missing "ev" returns false and leaves `out` untouched.
 bool parse(const char* json, size_t len, Snapshot& out);
 
-// Index of the first non-all-day event whose end > nowEpoch, or -1.
+// Index of the first non-all-day event whose end > nowEpoch, or -1. Day-blind:
+// the feed runs to the end of *tomorrow*, so after today's last meeting this
+// resolves to tomorrow's first one. That is what the nudge wants (a 09:00
+// meeting should still nudge from the Clock at 08:55, even though 08:55 and
+// 09:00 straddle no day boundary but a late-night session might), but it is
+// not what the card face wants — see nextTimedToday() for that.
 int8_t nextTimed(const Snapshot& s, uint32_t nowEpoch);
 
-// Index of the first event on a later local day than nowEpoch (used for "Tomorrow …"), or -1.
-// `localDayOf(epoch)` is the caller-supplied day number (e.g. days since epoch in local time).
-int8_t firstOnLaterDay(const Snapshot& s, uint32_t nowEpoch, uint32_t (*localDayOf)(uint32_t epoch));
+// Index of the first non-all-day event on the *same local day* as nowEpoch
+// whose end > nowEpoch, or -1. This is the card face's "next meeting": once
+// today's last one has ended it returns -1, which is what makes the
+// "nothing more today" + "Tomorrow …" face reachable.
+// `localDayOf(epoch)` is the caller-supplied day number (e.g. days since epoch
+// in local time); a plain function pointer, so the caller parks whatever
+// timezone context it needs somewhere the callback can reach.
+int8_t nextTimedToday(const Snapshot& s, uint32_t nowEpoch, uint32_t (*localDayOf)(uint32_t epoch));
 
-// Same as firstOnLaterDay(), but skips all-day events: an all-day event has no
-// meaningful start time to show next to "Tomorrow", so it would otherwise
-// misreport e.g. a bank holiday as "Tomorrow 01:00 Bank Holiday". Returns the
-// first *timed* event on a later local day than nowEpoch, or -1.
+// Number of all-day events whose start falls on nowEpoch's local day. The feed
+// carries tomorrow's all-day events too, and they must not be counted into
+// today's "All day: …" line.
+uint8_t allDayCountToday(const Snapshot& s, uint32_t nowEpoch,
+                         uint32_t (*localDayOf)(uint32_t epoch));
+
+// Index of the first all-day event on nowEpoch's local day, or -1. Used for the
+// single-event form of that line ("All day: Offsite").
+int8_t firstAllDayToday(const Snapshot& s, uint32_t nowEpoch,
+                        uint32_t (*localDayOf)(uint32_t epoch));
+
+// Index of the first *timed* event on a later local day than nowEpoch, or -1
+// (used for "Tomorrow …"). All-day events are skipped: one has no meaningful
+// start time to show next to "Tomorrow", so it would otherwise misreport e.g. a
+// bank holiday as "Tomorrow 01:00 Bank Holiday".
 int8_t firstTimedOnLaterDay(const Snapshot& s, uint32_t nowEpoch,
                             uint32_t (*localDayOf)(uint32_t epoch));
 
@@ -52,7 +73,8 @@ int8_t firstTimedOnLaterDay(const Snapshot& s, uint32_t nowEpoch,
 // (|start - now| < 30 s, not yet ended). Returns chars written (0 if event has ended).
 size_t countdownText(const Event& e, uint32_t nowEpoch, char* buf, size_t cap);
 
-// Count of all-day events in the snapshot.
+// Count of all-day events in the whole snapshot, today's and tomorrow's alike.
+// The card face wants allDayCountToday(); this is the day-blind total.
 uint8_t allDayCount(const Snapshot& s);
 
 bool isStale(const Snapshot& s, uint32_t nowEpoch);

@@ -44,7 +44,13 @@ function whereOf(ev) {
   return '';
 }
 
+// Clips to n *bytes*, which is what the Dial's fixed char[41]/char[25] fields
+// hold. Non-ASCII is stripped first (curly quotes, emoji, accents): the Dial's
+// Font2/Font4 cannot draw those glyphs anyway, and stripping them means one
+// character is always one byte, so a slice can never cut a multi-byte UTF-8
+// sequence in half and hand the device an invalid string. The overflow marker
+// is three ASCII dots for the same reason - U+2026 is itself non-ASCII.
 function clip(s, n) {
-  s = String(s).replace(/[\r\n]+/g, ' ').trim();
-  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+  s = String(s).replace(/[\r\n]+/g, ' ').replace(/[^\x20-\x7E]/g, '').trim();
+  return s.length > n ? s.slice(0, n - 3).trim() + '...' : s;
 }

@@ -175,20 +175,23 @@ static void drainCommands()
       enqueue(PubType::CALENDAR_NUDGE, cmd.b);
       break;
 
+    // The setters clamp (lead 1-30, stay 0-10), so everything downstream of
+    // them uses the stored value, not the requested one: HA must be echoed the
+    // clamp too, or its number box keeps showing a value the Dial is not using.
     case CmdType::SET_CALENDAR_LEAD:
       treadmill.setCalendarLeadMin(cmd.u16);
 #if HAS_DIAL_UI && HAS_CALENDAR
-      dialUi.setCalendarLeadMin(cmd.u16);
+      dialUi.setCalendarLeadMin(treadmill.getCalendarLeadMin());
 #endif
-      enqueue(PubType::CALENDAR_LEAD, false, cmd.u16);
+      enqueue(PubType::CALENDAR_LEAD, false, treadmill.getCalendarLeadMin());
       break;
 
     case CmdType::SET_CALENDAR_STAY:
       treadmill.setCalendarStayMin(cmd.u16);
 #if HAS_DIAL_UI && HAS_CALENDAR
-      dialUi.setCalendarStayMin(cmd.u16);
+      dialUi.setCalendarStayMin(treadmill.getCalendarStayMin());
 #endif
-      enqueue(PubType::CALENDAR_STAY, false, cmd.u16);
+      enqueue(PubType::CALENDAR_STAY, false, treadmill.getCalendarStayMin());
       break;
 
     case CmdType::TOGGLE_CALIBRATION:

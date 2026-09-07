@@ -146,6 +146,7 @@ MqttView::MqttView(PubSubClient *client)
     m_calendarStay.setMax(10.0f);
     m_calendarStay.setStep(1.0f);
     m_calendarStay.setMode(NumberMode::BOX);
+    m_calendarStay.setIcon("mdi:timer-outline");
     m_calendarStay.setUnit("min");
 
     // Cumulative totals — each has its own state topic so they can use retain=true
