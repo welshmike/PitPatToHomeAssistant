@@ -17,11 +17,14 @@
 
 class NetManager;
 
-// Apps Script calendar feed (spec 4.19): the Calendar card's only network
-// call, and the only TLS fetch in this project (everything else — MQTT,
-// FlightsService's logo GETs — is plain-TCP on the LAN). Fetches
-// CALENDAR_URL over HTTPS, verified against Google's own root CAs
-// (CalendarCerts.h), on a poll interval with exponential back-off on
+// Calendar feed (spec 4.19, amended 2026-09-07): the Calendar card's only
+// network call. CALENDAR_URL is normally the Mac-mini relay's plain-HTTP
+// address on the LAN (doc/CALENDAR_FEED.md) — the same shape as
+// FlightsService's logo GETs — but an https:// URL (e.g. talking to Google
+// directly) is still supported and is this project's only TLS fetch,
+// verified against Google's own root CAs (CalendarCerts.h). CalendarService
+// picks the client from the URL scheme at compile time; see kIsHttps in
+// CalendarService.cpp. Polls on an interval with exponential back-off on
 // failure.
 //
 // Threading, mirroring FlightsService: begin()/tick() run on the network
@@ -37,12 +40,10 @@ class NetManager;
 // without CALENDAR_URL never instantiates or calls it.
 #if HAS_CALENDAR
 
-// The URL carries the shared secret as a query parameter, so one is useless
-// without the other; catch a half-filled config.h at compile time rather than
-// building a firmware that GETs "<url>?k=" and always 401s.
-#if !defined(CALENDAR_TOKEN)
-#error "CALENDAR_URL needs CALENDAR_TOKEN"
-#endif
+// CALENDAR_TOKEN is optional (doc/CALENDAR_FEED.md): the Mac-mini relay only
+// checks `?k=` when its own TOKEN is configured. When CALENDAR_TOKEN is
+// defined it is appended as "?k=" CALENDAR_TOKEN; otherwise the fetch uses
+// CALENDAR_URL as-is. See kUrl in CalendarService.cpp.
 
 class CalendarService
 {
@@ -66,8 +67,9 @@ public:
     // (12 s) bounds only the body read; HTTPClient::GET()'s header phase
     // (connect + response headers) runs before that budget is even set and
     // is bounded per hop by the connect/read timeouts (4 s + 6 s), not
-    // interruptibly. Apps Script's /exec redirects to a second host, so a
-    // server that stalls before headers on both hops can hold the net task
+    // interruptibly. The Mac-mini relay answers directly (one hop), but an
+    // https:// CALENDAR_URL pointed at Google redirects to a second host, so
+    // a server that stalls before headers on both hops can hold the net task
     // for ~2 * (4 + 6) = 20 s before the read window even starts — worst
     // case ≈ 20-22 s on a pathological server. NetManager sets a 60 s MQTT
     // keepalive (rather than PubSubClient's 15 s default) to give the

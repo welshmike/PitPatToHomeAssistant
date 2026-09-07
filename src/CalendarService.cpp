@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <HTTPClient.h>
+#include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #include <string.h>
 
@@ -13,6 +14,14 @@
 // -DUSE_ESP_IDF_LOG (spec 4.14) makes log_x() expand to
 // ESP_LOG_LEVEL_LOCAL(..., TAG, ...); esp32-hal-log.h has no default TAG.
 static const char *TAG = "Calendar";
+
+// CALENDAR_URL is a string literal (config.h), so the scheme can be read at
+// compile time rather than strncmp'd on every fetch. Asserted rather than
+// assumed: a URL that doesn't start "http" would otherwise silently take the
+// plain-WiFiClient branch below and fail to connect at all.
+static_assert(CALENDAR_URL[0] == 'h' && CALENDAR_URL[1] == 't' && CALENDAR_URL[2] == 't' && CALENDAR_URL[3] == 'p',
+              "CALENDAR_URL must start with \"http\"");
+constexpr bool kIsHttps = (CALENDAR_URL[4] == 's');
 
 namespace
 {
@@ -154,26 +163,58 @@ bool CalendarService::fetchNow(uint32_t nowMs)
     // bound HTTPClient::GET()'s header phase, which runs before this
     // deadline is even set. That phase is bounded per hop by the
     // connect/read timeouts below (4 s + 6 s), and is not interruptible
-    // mid-hop, so a server that connects then stalls before headers on both
-    // the Apps Script host and its redirect target can hold the net task
-    // for up to 2 * (4 + 6) = 20 s before this budget's read window (below)
-    // even starts — worst case ≈ 20-22 s on a pathological server. That is
-    // why NetManager sets a 60 s MQTT keepalive rather than relying on
-    // PubSubClient's 15 s default: the net task drives MQTT too, and a
-    // 20-22 s stall would otherwise get us dropped by the broker.
+    // mid-hop. The Mac-mini relay is a single hop (worst case ≈ 10 s), but
+    // an https:// CALENDAR_URL pointed at Google's Apps Script redirects to
+    // a second host, so a server that connects then stalls before headers
+    // on both hops can hold the net task for up to 2 * (4 + 6) = 20 s before
+    // this budget's read window (below) even starts — worst case ≈ 20-22 s
+    // on a pathological server. That is why NetManager sets a 60 s MQTT
+    // keepalive rather than relying on PubSubClient's 15 s default: the net
+    // task drives MQTT too, and a 20-22 s stall would otherwise get us
+    // dropped by the broker.
     const uint32_t budgetEndMs = millis() + kFetchBudgetMs;
 
     // Not logged anywhere, ever: the token rides in the query string, and
     // RemoteLog forwards warnings to MQTT (spec 4.14) where anyone on the
-    // broker would see it.
+    // broker would see it. CALENDAR_TOKEN is optional (doc/CALENDAR_FEED.md
+    // — the Mac-mini relay only checks "?k=" when its own TOKEN is set).
+#ifdef CALENDAR_TOKEN
     static const char kUrl[] = CALENDAR_URL "?k=" CALENDAR_TOKEN;
-
-    WiFiClientSecure client;
-#ifdef CALENDAR_TLS_INSECURE
-    client.setInsecure();
 #else
-    client.setCACert(kCalendarRootCAs);
+    static const char kUrl[] = CALENDAR_URL;
 #endif
+
+    // Both clients are function locals so only the branch actually taken
+    // pays for it: WiFiClientSecure's constructor `new`s its fixed-size
+    // sslclient_context (a few hundred bytes — the mbedtls_ssl_context /
+    // mbedtls_ssl_config / x509_crt members are plain fields inside it, not
+    // pointers), but the multi-KB mbedTLS handshake and session buffers are
+    // only allocated inside connect() (start_ssl_client() ->
+    // mbedtls_ssl_setup() / mbedtls_x509_crt_parse()) — verified in the
+    // core's WiFiClientSecure.cpp / ssl_client.cpp. http.begin() below does
+    // not connect by itself, and on the plain-http path client->connect()
+    // never runs against the tls object at all, so the relay path never
+    // touches mbedTLS's heap.
+    //
+    // Typed WiFiClient* rather than Client*: WiFiClientSecure derives from
+    // WiFiClient (which derives from Client), but HTTPClient::begin() in
+    // this core only overloads on WiFiClient&, not the Client& base — a
+    // Client* here would not bind to it. The pointer still lets one line
+    // below reach either object; the dynamic type (and therefore which
+    // connect()/read()/write() actually runs) is whichever local it points
+    // at.
+    WiFiClient       plain;
+    WiFiClientSecure tls;
+    WiFiClient      *client = &plain;
+    if (kIsHttps)
+    {
+#ifdef CALENDAR_TLS_INSECURE
+        tls.setInsecure();
+#else
+        tls.setCACert(kCalendarRootCAs);
+#endif
+        client = &tls;
+    }
 
     HTTPClient http;
     http.setConnectTimeout(4000);
@@ -185,15 +226,18 @@ bool CalendarService::fetchNow(uint32_t nowMs)
     // bytes straight off getStreamPtr(), which is the raw client — only
     // HTTPClient::writeToStream() de-chunks — so a chunked reply would land
     // in s_buf as "2b\r\n{...}\r\n0\r\n\r\n" and fail CalendarModel::parse
-    // every single time. Apps Script's exec URL redirects to a
-    // googleusercontent host that does reply chunked over HTTP/1.1, so this
-    // is the normal case here, not an edge one. Same reason (and the same
-    // call) as the pre-Plan-7 FlightsService::httpsGet helper. It also
-    // means a Content-Length is present whenever the server sends one,
-    // which the loop below uses to finish early.
+    // every single time. The Mac-mini relay (doc/CALENDAR_FEED.md, the
+    // normal case) answers HTTP/1.0 directly with a Content-Length, so this
+    // is largely belt-and-braces there; an https:// CALENDAR_URL pointed at
+    // Google's Apps Script instead redirects to a googleusercontent host
+    // that does reply chunked over HTTP/1.1, which is what makes this not
+    // cosmetic on that path. Same reason (and the same call) as the
+    // pre-Plan-7 FlightsService::httpsGet helper. It also means a
+    // Content-Length is present whenever the server sends one, which the
+    // loop below uses to finish early. Kept for both schemes.
     http.useHTTP10(true);
 
-    if (!http.begin(client, kUrl))
+    if (!http.begin(*client, kUrl))
     {
         // No URL in the message — see the kUrl comment above.
         http.end();
