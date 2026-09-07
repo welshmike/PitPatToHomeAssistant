@@ -37,8 +37,8 @@ sed -e "s|__PYTHON__|$VENV/bin/python|g" \
 if [ "$FRESH_ENV" = "1" ]; then
     cat <<EOF
 
-  $ENV_FILE was created from the example and still has placeholders.
-  Edit it (ICS_URL, MY_EMAIL) and then run:
+  $ENV_FILE was created from the example, with ICS_URL commented out.
+  Edit it (uncomment and fill in ICS_URL, and set MY_EMAIL) and then run:
 
       launchctl kickstart -k gui/$UID_NUM/$LABEL
 

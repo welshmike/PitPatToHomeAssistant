@@ -158,6 +158,130 @@ def test_today_standup_uses_the_recurrence_id_override():
     assert epoch(2026, 9, 8, 9, 30) not in starts
 
 
+# --- cancelled ------------------------------------------------------------------
+
+
+def test_cancelled_one_off_event_is_absent():
+    ics = _mini_ics(
+        "BEGIN:VEVENT\r\nUID:cancelled@example.com\r\nDTSTAMP:20260901T080000Z\r\n"
+        "DTSTART;TZID=Europe/London:20260908T113000\r\n"
+        "DTEND;TZID=Europe/London:20260908T120000\r\n"
+        "SUMMARY:Cancelled meeting\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\n"
+    )
+    assert calendar_feed.build_payload(ics, NOW, ME)["ev"] == []
+
+
+def test_cancelled_recurrence_instance_drops_only_that_instance():
+    # A weekday series; only today's instance is cancelled, via a
+    # RECURRENCE-ID override carrying STATUS:CANCELLED. Tomorrow's instance
+    # (no override) is untouched.
+    ics = _mini_ics(
+        "BEGIN:VEVENT\r\nUID:cseries@example.com\r\nDTSTAMP:20260901T080000Z\r\n"
+        "DTSTART;TZID=Europe/London:20260601T093000\r\n"
+        "DTEND;TZID=Europe/London:20260601T100000\r\n"
+        "RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR\r\n"
+        "SUMMARY:Weekday sync\r\nEND:VEVENT\r\n"
+        "BEGIN:VEVENT\r\nUID:cseries@example.com\r\n"
+        "RECURRENCE-ID;TZID=Europe/London:20260908T093000\r\n"
+        "DTSTAMP:20260901T080000Z\r\n"
+        "DTSTART;TZID=Europe/London:20260908T093000\r\n"
+        "DTEND;TZID=Europe/London:20260908T100000\r\n"
+        "SUMMARY:Weekday sync\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\n"
+    )
+    p = calendar_feed.build_payload(ics, NOW, ME)
+    starts = [e["s"] for e in p["ev"]]
+    assert epoch(2026, 9, 8, 9, 30) not in starts  # today's instance, cancelled
+    assert epoch(2026, 9, 9, 9, 30) in starts  # tomorrow's instance, untouched
+
+
+# --- malformed input --------------------------------------------------------------
+
+
+def test_one_malformed_vevent_does_not_abort_the_whole_refresh():
+    # DTSTART:NOTADATE fails to parse; icalendar drops the property rather
+    # than raising, leaving a VEVENT with no DTSTART at all, which used to
+    # make recurring_ical_events raise for the *whole* calendar.
+    ics = _mini_ics(
+        "BEGIN:VEVENT\r\nUID:broken@example.com\r\nDTSTAMP:20260901T080000Z\r\n"
+        "DTSTART:NOTADATE\r\nSUMMARY:Broken\r\nEND:VEVENT\r\n"
+        "BEGIN:VEVENT\r\nUID:fine@example.com\r\nDTSTAMP:20260901T080000Z\r\n"
+        "DTSTART;TZID=Europe/London:20260908T113000\r\n"
+        "DTEND;TZID=Europe/London:20260908T120000\r\n"
+        "SUMMARY:Fine\r\nEND:VEVENT\r\n"
+    )
+    assert titles(calendar_feed.build_payload(ics, NOW, ME)) == ["Fine"]
+
+
+def test_zero_length_event_is_skipped():
+    # No DTEND and no DURATION: recurring_ical_events fills in DTEND ==
+    # DTSTART, which is not a meeting the Dial has anything to show.
+    ics = _mini_ics(
+        "BEGIN:VEVENT\r\nUID:instant@example.com\r\nDTSTAMP:20260901T080000Z\r\n"
+        "DTSTART;TZID=Europe/London:20260908T113000\r\n"
+        "SUMMARY:No duration\r\nEND:VEVENT\r\n"
+    )
+    assert calendar_feed.build_payload(ics, NOW, ME)["ev"] == []
+
+
+# --- recurrence edge cases --------------------------------------------------------
+
+
+def test_exdate_excludes_just_that_instance():
+    ics = _mini_ics(
+        "BEGIN:VEVENT\r\nUID:exdate@example.com\r\nDTSTAMP:20260901T080000Z\r\n"
+        "DTSTART;TZID=Europe/London:20260601T093000\r\n"
+        "DTEND;TZID=Europe/London:20260601T100000\r\n"
+        "RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR\r\n"
+        "EXDATE;TZID=Europe/London:20260908T093000\r\n"
+        "SUMMARY:Exdate series\r\nEND:VEVENT\r\n"
+    )
+    p = calendar_feed.build_payload(ics, NOW, ME)
+    starts = [e["s"] for e in p["ev"]]
+    assert epoch(2026, 9, 8, 9, 30) not in starts  # excluded by EXDATE
+    assert epoch(2026, 9, 9, 9, 30) in starts  # untouched
+
+
+def test_duration_without_dtend_is_expanded():
+    ics = _mini_ics(
+        "BEGIN:VEVENT\r\nUID:duration@example.com\r\nDTSTAMP:20260901T080000Z\r\n"
+        "DTSTART;TZID=Europe/London:20260908T113000\r\n"
+        "DURATION:PT1H30M\r\nSUMMARY:Duration event\r\nEND:VEVENT\r\n"
+    )
+    e = by_title(calendar_feed.build_payload(ics, NOW, ME), "Duration event")
+    assert e["s"] == epoch(2026, 9, 8, 11, 30)
+    assert e["e"] == epoch(2026, 9, 8, 13, 0)  # DTSTART + PT1H30M
+
+
+def test_floating_time_is_read_in_the_configured_timezone():
+    # No TZID and no trailing Z: a "floating" local time, read in whatever
+    # timezone build_payload is told (default Europe/London).
+    ics = _mini_ics(
+        "BEGIN:VEVENT\r\nUID:floating@example.com\r\nDTSTAMP:20260901T080000Z\r\n"
+        "DTSTART:20260908T113000\r\nDTEND:20260908T120000\r\n"
+        "SUMMARY:Floating event\r\nEND:VEVENT\r\n"
+    )
+    e = by_title(calendar_feed.build_payload(ics, NOW, ME), "Floating event")
+    assert e["s"] == epoch(2026, 9, 8, 11, 30)
+    assert e["e"] == epoch(2026, 9, 8, 12, 0)
+
+
+def test_all_day_event_spans_the_dst_transition():
+    # UK clocks go back on Sunday 25 Oct 2026 (BST -> GMT at 02:00 local),
+    # so an all-day event's local-midnight-to-local-midnight span that day
+    # is 25 hours of Unix time, not 24.
+    ics = _mini_ics(
+        "BEGIN:VEVENT\r\nUID:dst@example.com\r\nDTSTAMP:20260901T080000Z\r\n"
+        "DTSTART;VALUE=DATE:20261025\r\nDTEND;VALUE=DATE:20261026\r\n"
+        "SUMMARY:Clocks change\r\nEND:VEVENT\r\n"
+    )
+    now = datetime(2026, 10, 24, 8, 0, 0, tzinfo=LONDON)
+    e = by_title(calendar_feed.build_payload(ics, now, ME), "Clocks change")
+    assert e["a"] == 1
+    assert e["s"] == epoch(2026, 10, 25)
+    assert e["e"] == epoch(2026, 10, 26)
+    assert e["e"] - e["s"] == 25 * 3600
+
+
 # --- all-day --------------------------------------------------------------------
 
 
@@ -369,18 +493,65 @@ def test_secret_url_never_appears_in_the_error_text(message):
     assert "SECRET-TOKEN" not in calendar_feed.payload_json(feed.health()).decode()
 
 
-def test_health_reports_state():
+def test_health_reports_state(monkeypatch):
+    # health()'s age_s is measured against the real wall clock (so it stays
+    # meaningful even if a test, or a future caller, fakes Feed's own
+    # `clock`), so pin `time.time()` too for a deterministic age_s.
+    monkeypatch.setattr(calendar_feed.time, "time", lambda: NOW.timestamp())
     feed = calendar_feed.Feed(
         {"ICS_URL": "https://example.invalid/basic.ics"},
         fetcher=lambda url, timeout=20: ICS,
         clock=lambda: NOW,
     )
-    assert feed.health()["ok"] is False
+    h0 = feed.health()
+    assert h0["ok"] is False
+    assert h0["stale"] is True  # never fetched
+    assert h0["age_s"] == -1
+    assert h0["last_error"] == ""
     feed.refresh()
     h = feed.health()
     assert h["ok"] is True
-    assert h["events"] == 5
-    assert h["last_ok"] == int(NOW.timestamp())
+    assert h["stale"] is False
+    assert h["age_s"] == 0
+    assert h["last_error"] == ""
+    assert set(h) == {"ok", "stale", "age_s", "last_error"}
+
+
+def test_health_last_error_is_exception_class_only_never_the_message():
+    # icalendar puts the offending content line straight into some of its
+    # ValueErrors, so a malformed body containing something like a meeting
+    # SUMMARY must never reach /health, token or no token.
+    def html_body(url, timeout=20):
+        return b"<html>Sign in</html>"
+
+    feed = calendar_feed.Feed(
+        {"ICS_URL": "https://example.invalid/basic.ics"},
+        fetcher=html_body,
+        clock=lambda: NOW,
+    )
+    assert feed.refresh() is False
+    assert feed.last_error.startswith("ValueError")  # full message, log-only
+    body = calendar_feed.payload_json(feed.health())
+    assert b'"last_error":"ValueError"' in body
+    assert b"Sign in" not in body
+
+
+def test_health_is_stale_after_two_missed_refresh_cycles(monkeypatch):
+    fixed_wall_clock = NOW.timestamp()
+    monkeypatch.setattr(calendar_feed.time, "time", lambda: fixed_wall_clock)
+    feed = calendar_feed.Feed(
+        {"ICS_URL": "https://example.invalid/basic.ics"},
+        fetcher=lambda url, timeout=20: ICS,
+        clock=lambda: NOW,
+    )
+    assert feed.refresh() is True
+    assert feed.health()["stale"] is False
+    monkeypatch.setattr(
+        calendar_feed.time,
+        "time",
+        lambda: fixed_wall_clock + calendar_feed.REFRESH_S * 2 + 1,
+    )
+    assert feed.health()["stale"] is True
 
 
 def test_token_check():
@@ -388,6 +559,37 @@ def test_token_check():
     assert calendar_feed.token_ok("s3cret", "/calendar.json?k=s3cret") is True
     assert calendar_feed.token_ok("s3cret", "/calendar.json?k=nope") is False
     assert calendar_feed.token_ok("s3cret", "/calendar.json") is False
+
+
+def test_token_check_non_ascii_token_never_raises():
+    # hmac.compare_digest() raises TypeError given a non-ASCII str, so both
+    # sides must be encoded to bytes first: a non-ASCII TOKEN must fail the
+    # check, never crash the request handler.
+    assert calendar_feed.token_ok("café", "/calendar.json?k=nope") is False
+    assert calendar_feed.token_ok("café", "/calendar.json?k=caf%C3%A9") is True
+
+
+def test_serve_exits_cleanly_when_the_port_is_already_in_use(monkeypatch):
+    import socket
+
+    # No network in this test: the port clash is the only thing under test.
+    monkeypatch.setattr(calendar_feed.Feed, "start", lambda self: None)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    port = sock.getsockname()[1]
+    try:
+        with pytest.raises(SystemExit) as exc_info:
+            calendar_feed.serve(
+                {
+                    "ICS_URL": "https://example.invalid/basic.ics",
+                    "PORT": str(port),
+                    "BIND": "127.0.0.1",
+                }
+            )
+        assert exc_info.value.code == 1
+    finally:
+        sock.close()
 
 
 @pytest.fixture

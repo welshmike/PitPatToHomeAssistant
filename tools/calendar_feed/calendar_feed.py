@@ -158,6 +158,25 @@ def _as_aware(value, tz) -> datetime:
     return datetime.combine(value, datetime.min.time(), tz)
 
 
+def _drop_unparseable_vevents(cal: "icalendar.Calendar") -> int:
+    """icalendar silently drops a VEVENT property it cannot parse (e.g. a
+    malformed `DTSTART:NOTADATE`), leaving the component with no DTSTART key
+    at all. recurring_ical_events then raises a bare KeyError for the whole
+    calendar rather than just that one event. Strip such VEVENTs before
+    expansion so one broken meeting cannot take the rest of the feed down
+    with it. Returns the number of components dropped (for a log line, never
+    the event content itself)."""
+    kept = []
+    dropped = 0
+    for comp in cal.subcomponents:
+        if comp.name == "VEVENT" and "DTSTART" not in comp:
+            dropped += 1
+            continue
+        kept.append(comp)
+    cal.subcomponents = kept
+    return dropped
+
+
 def build_payload(
     ics_bytes: bytes,
     now: datetime,
@@ -172,21 +191,39 @@ def build_payload(
     end = window_end(local_now, tz)
 
     cal = icalendar.Calendar.from_ical(ics_bytes)
+    dropped = _drop_unparseable_vevents(cal)
+    if dropped:
+        log.warning("skipping %d unparseable VEVENT(s)", dropped)
+
+    try:
+        # between() expands RRULEs, honours RECURRENCE-ID overrides and
+        # EXDATEs, and already keeps events that are under way but not those
+        # that ended. skip_bad_series drops individual bad RRULE/series
+        # errors instead of aborting the whole expansion.
+        occurrences = recurring_ical_events.of(cal, skip_bad_series=True).between(
+            local_now, end
+        )
+    except Exception as exc:  # noqa: BLE001 - one bad calendar must not 500
+        log.warning("recurrence expansion failed: %s", type(exc).__name__)
+        occurrences = []
+
     out = []  # type: List[Dict[str, Any]]
-    # between() expands RRULEs, honours RECURRENCE-ID overrides and EXDATEs,
-    # and already keeps events that are under way but not those that ended.
-    for ev in recurring_ical_events.of(cal).between(local_now, end):
-        if declined_by(ev, my_email):
-            continue
-        ds = ev["DTSTART"].dt
-        de = ev.get("DTEND", ev["DTSTART"]).dt
-        all_day = isinstance(ds, date) and not isinstance(ds, datetime)
-        start = _as_aware(ds, tz)
-        finish = _as_aware(de, tz)
-        if finish <= now:  # belt and braces; between() excludes these already
-            continue
-        out.append(
-            {
+    for ev in occurrences:
+        try:
+            if str(ev.get("STATUS", "") or "").strip().upper() == "CANCELLED":
+                continue
+            if declined_by(ev, my_email):
+                continue
+            ds = ev["DTSTART"].dt
+            de = ev.get("DTEND", ev["DTSTART"]).dt
+            all_day = isinstance(ds, date) and not isinstance(ds, datetime)
+            start = _as_aware(ds, tz)
+            finish = _as_aware(de, tz)
+            if finish <= start:  # zero (or negative) length - nothing to show
+                continue
+            if finish <= now:  # belt and braces; between() excludes these already
+                continue
+            entry = {
                 "s": int(start.timestamp()),
                 "e": int(finish.timestamp()),
                 "n": ascii_clip(ev.get("SUMMARY", "(no title)"), TITLE_MAX)
@@ -194,7 +231,10 @@ def build_payload(
                 "a": 1 if all_day else 0,
                 "l": ascii_clip(where_of(ev), WHERE_MAX),
             }
-        )
+        except Exception as exc:  # noqa: BLE001 - one bad event must not drop the rest
+            log.warning("skipping malformed event: %s", type(exc).__name__)
+            continue
+        out.append(entry)
     out.sort(key=lambda x: (x["s"], x["e"], x["n"]))
     return {"t": int(now.timestamp()), "ev": out[:MAX_EVENTS]}
 
@@ -250,6 +290,7 @@ class Feed(object):
         self._count = 0
         self.last_ok = 0
         self.last_error = ""
+        self.last_error_type = ""
         self._stop = threading.Event()
 
     @property
@@ -262,12 +303,9 @@ class Feed(object):
 
     def refresh(self) -> bool:
         url = self.url
-        if not url:
-            with self._lock:
-                self.last_error = "ICS_URL is not set"
-            log.warning("refresh skipped: ICS_URL is not set")
-            return False
         try:
+            if not url:
+                raise ValueError("ICS_URL is not set")
             ics = self._fetch(url, timeout=FETCH_TIMEOUT_S)
             payload = build_payload(
                 ics,
@@ -277,9 +315,15 @@ class Feed(object):
             )
             body = payload_json(payload)
         except Exception as exc:  # noqa: BLE001 - any failure keeps the old body
+            # The full, redacted message is only ever logged. /health only
+            # ever gets the exception's class name (see health() below) -
+            # the message can quote raw calendar content (icalendar puts the
+            # offending content line, e.g. a SUMMARY, straight into some of
+            # its ValueErrors), and /health needs no token to read.
             message = "%s: %s" % (type(exc).__name__, _redact(exc, url))
             with self._lock:
                 self.last_error = message
+                self.last_error_type = type(exc).__name__
             log.warning("calendar refresh failed (%s)", message)
             return False
         with self._lock:
@@ -287,20 +331,25 @@ class Feed(object):
             self._count = len(payload["ev"])
             self.last_ok = payload["t"]
             self.last_error = ""
+            self.last_error_type = ""
         log.info("calendar refreshed: %d event(s), %d bytes", self._count, len(body))
         return True
 
     def health(self) -> Dict[str, Any]:
+        """Deliberately thin: no token guards /health, so nothing here may
+        reveal calendar content. `last_error` is the failing exception's
+        class name only (e.g. "ValueError"), never its message."""
         with self._lock:
             ok = self._body is not None
             age = int(time.time()) - self.last_ok if self.last_ok else -1
+            # A body old enough to have missed at least one refresh cycle -
+            # or one that was never fetched at all (age < 0) - counts stale.
+            stale = age < 0 or age > REFRESH_S * 2
             return {
                 "ok": ok,
-                "events": self._count,
-                "last_ok": self.last_ok,
+                "stale": stale,
                 "age_s": age,
-                "last_error": _redact(self.last_error, self.url),
-                "refresh_s": REFRESH_S,
+                "last_error": self.last_error_type,
             }
 
     def run_forever(self) -> None:
@@ -321,12 +370,17 @@ class Feed(object):
 
 
 def token_ok(token: Optional[str], path: str) -> bool:
-    """No TOKEN configured means no check; otherwise `?k=` must match."""
+    """No TOKEN configured means no check; otherwise `?k=` must match.
+
+    hmac.compare_digest() raises TypeError on a `str` argument that is not
+    pure ASCII, so both sides are encoded to bytes first - a non-ASCII
+    TOKEN (or query value) must fail the comparison, never crash it."""
     if not token:
         return True
+    token_bytes = token.encode("utf-8", "surrogateescape")
     query = urllib.parse.urlparse(path).query
     for value in urllib.parse.parse_qs(query).get("k", []):
-        if hmac.compare_digest(value, token):
+        if hmac.compare_digest(value.encode("utf-8", "surrogateescape"), token_bytes):
             return True
     return False
 
@@ -379,7 +433,12 @@ def serve(config: Dict[str, str]) -> int:
     token = config.get("TOKEN") or None
     feed = Feed(config)
     feed.start()
-    httpd = ThreadingHTTPServer((bind, port), make_handler(feed, token))
+    try:
+        httpd = ThreadingHTTPServer((bind, port), make_handler(feed, token))
+    except OSError:
+        feed.stop()
+        log.error("port %d already in use", port)
+        sys.exit(1)
     httpd.daemon_threads = True
     log.info(
         "serving /calendar.json on %s:%d (token %s, refresh %ds)",

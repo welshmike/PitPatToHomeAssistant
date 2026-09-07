@@ -46,16 +46,26 @@ Google Calendar  --https/.ics-->  Mac mini relay  --http/LAN-->  Dial
 each event has `s`/`e` start and end (Unix, UTC), `n` title (≤ 40 printable-ASCII chars,
 overflow marked `...`), `a` = 1 for all-day, `l` location or meeting host (≤ 24 chars).
 At most 5 events, sorted by start, now → end of tomorrow, declined events omitted,
-recurring events expanded with `RECURRENCE-ID` overrides honoured. An all-day event's
-`s`/`e` are local midnight and the next local midnight.
+recurring events expanded with `RECURRENCE-ID` overrides honoured. `STATUS:CANCELLED`
+events are dropped too — a cancelled one-off never appears, and a single cancelled
+instance of a recurring series (a `RECURRENCE-ID` override carrying `STATUS:CANCELLED`)
+drops only that instance, not the series. An all-day event's `s`/`e` are local midnight
+and the next local midnight; a single malformed `VEVENT` (bad or missing `DTSTART`, say)
+is skipped and logged rather than failing the whole refresh.
 
 `l` follows the old Apps Script rule: `LOCATION` unless it is a bare URL, else
 `Google Meet` / `Zoom` / `Teams` if one of those appears in the description or location,
 else empty. Non-ASCII is stripped rather than truncated mid-sequence — the Dial's
 Font2/Font4 cannot draw those glyphs and its `char[41]`/`char[25]` fields are byte-sized.
 
-`GET /health` returns `{"ok":…,"events":…,"last_ok":…,"age_s":…,"last_error":"…","refresh_s":300}`
-and never needs a token.
+`GET /health` returns `{"ok":…,"stale":…,"age_s":…,"last_error":"…"}` and never needs a
+token — which is why its body is kept deliberately thin. `age_s` is seconds since the
+last *successful* refresh (`-1` if there has never been one); `stale` is true once that
+age passes two refresh cycles (10 minutes at the default `refresh_s`). `last_error` is
+the failing exception's **class name only** (e.g. `"ValueError"`), never its message: a
+few of icalendar's own `ValueError`s quote the offending content line verbatim, which can
+be a `SUMMARY:` — a meeting title — so the full (secret-redacted) message goes to the log
+only, never to an unauthenticated HTTP response.
 
 ## Install on the Mac mini
 
@@ -80,7 +90,9 @@ and never needs a token.
    > Anyone holding this URL can read the entire calendar. Keep it in `calendar.env`
    > only — never in the repo, an issue, or a chat.
 
-4. Edit `~/.config/pacekeeper/calendar.env`:
+4. Edit `~/.config/pacekeeper/calendar.env` — `ICS_URL` ships **commented out**, so an
+   unedited copy fails clearly (`ICS_URL is not set`) rather than trying `CHANGE-ME` as a
+   real URL. Uncomment it and fill it in:
 
    ```sh
    ICS_URL=https://calendar.google.com/calendar/ical/…/basic.ics
@@ -103,25 +115,51 @@ and never needs a token.
 
    Both open in a browser too. `/calendar.json` should show your next few meetings.
 
-## Give the mini a fixed address
+## Point the Dial at the mini by name, not by IP
 
-The Dial's `CALENDAR_URL` is baked in at build time, so the mini's IP must not move.
-On the router, find the mini's Wi-Fi/Ethernet MAC and add a **DHCP reservation** for it
-(often "Static DHCP", "Address reservation" or "DHCP fixed IP"). A reservation is better
-than a manually configured static IP: the mini keeps using DHCP, so DNS and gateway stay
-correct, and the router will not hand the address to anything else.
+The Dial's `CALENDAR_URL` is baked in at build time, but it does not need to be an IP
+address. The Dial's `CALENDAR_URL` fetch uses a plain `WiFiClient`, and a plain
+`WiFiClient` resolves hostnames through **unicast DNS** — whatever server the router hands
+out over DHCP, normally the router itself. That is different from **mDNS**
+(`http://mac-mini.local:8765/…`), which only Bonjour-aware stacks (like a Mac's) speak;
+the Dial's HTTP client does not, and never will — `.local` names still do not work here.
 
-mDNS (`http://mac-mini.local:8765/…`) also works from a Mac, but the Dial's HTTP client
-does not resolve `.local` names — use the IP.
+This home router happens to also answer unicast DNS queries for its DHCP clients by
+hostname, under the `.lan` suffix — so `macmini.lan` resolves for the Dial exactly the way
+it resolves for any other unicast-DNS client. Verified from another machine on the same
+network:
 
-## Point the Dial at it
+```
+$ nslookup macmini.lan 192.168.1.1
+Server:		192.168.1.1
+Address:	192.168.1.1#53
 
-In `src/config.h` (gitignored):
+Name:	macmini.lan
+Address: 192.168.1.142
+```
+
+So `src/config.h` should point at the name, not an IP that can (and, on 2026-09-07, did —
+three times) drift out from under it:
 
 ```c
-#define CALENDAR_URL   "http://192.168.1.42:8765/calendar.json"
+#define CALENDAR_URL   "http://macmini.lan:8765/calendar.json"
 // #define CALENDAR_TOKEN "…"   // optional; only if TOKEN is set in calendar.env
 ```
+
+If this router is ever swapped for one that does not do DHCP-hostname DNS, or the mini is
+moved to a network that does not, fall back to a fixed IP: on the router, find the mini's
+Wi-Fi/Ethernet MAC and add a **DHCP reservation** for it (often "Static DHCP", "Address
+reservation" or "DHCP fixed IP"). A reservation is better than a manually configured
+static IP: the mini keeps using DHCP, so DNS and gateway stay correct, and the router will
+not hand the address to anything else. Then use that IP in `CALENDAR_URL` instead of the
+hostname.
+
+> **A DHCP reservation will not stick if macOS is rotating the mini's MAC address.**
+> "Private Wi-Fi Address" (System Settings → Wi-Fi → *(this network)* → Details) makes
+> macOS present a different MAC on each join, which defeats a MAC-based reservation —
+> this is what actually caused the mini's IP to change three times on 2026-09-07. Turn it
+> **off** for this network before relying on a reservation (or on `macmini.lan` resolving
+> to a stable address at all): Wi-Fi → Details → **Private Wi-Fi Address: Off**.
 
 Then rebuild and flash. Without `CALENDAR_URL` the fetch service and the Calendar face
 are compiled out; the menu entry stays and lands on the Clock face.
@@ -160,10 +198,11 @@ One-shot, outside launchd — fetches once, prints the JSON, exits non-zero on f
 
 | Symptom | Likely cause |
 | --- | --- |
-| `ICS_URL is not set` | `calendar.env` still has the placeholder, or the agent started before you edited it — `launchctl kickstart -k gui/$(id -u)/com.pacekeeper.calendar-feed` |
+| `ICS_URL is not set` | `calendar.env`'s `ICS_URL` line is still commented out (the shipped default) or still has the placeholder, or the agent started before you edited it — `launchctl kickstart -k gui/$(id -u)/com.pacekeeper.calendar-feed` |
 | `{"error":"no data"}` (503) | no fetch has succeeded yet; check the log |
 | `HTTPError: HTTP Error 404` | the secret address was regenerated in Google Calendar; copy the new one |
-| Dial shows `no calendar` | the mini is asleep, the agent is not running, or its IP moved — `curl` `/health` from another machine |
+| `port N already in use` in the log, relay not running | another process already has the port; the relay logs this and exits (`launchctl` will keep restarting and re-failing it) — free the port or change `PORT` |
+| Dial shows `no calendar` | the mini is asleep or the agent is not running — `curl` `/health` from another machine; if `macmini.lan` itself does not resolve, check "Private Wi-Fi Address" (see above) and `nslookup macmini.lan <router-ip>` |
 | Nothing on the LAN, works on the mini | `BIND` is set to `127.0.0.1`, or macOS's firewall is blocking the Python binary |
 | Meetings an hour out | wrong `TZ` in `calendar.env` (default `Europe/London`) |
 
@@ -177,6 +216,34 @@ To stop or remove it:
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.pacekeeper.calendar-feed.plist
 rm ~/Library/LaunchAgents/com.pacekeeper.calendar-feed.plist
 ```
+
+### Log rotation
+
+The plist logs stdout/stderr straight to `~/Library/Logs/pacekeeper-calendar.log` with no
+rotation of its own — there is no `logrotate` on macOS, and this relay does not need
+anything as heavyweight as a full `newsyslog.d` entry. At one line per 5-minute refresh
+it grows slowly, but for an always-on process it is still worth bounding. Either:
+
+- truncate it by hand occasionally (`launchctl kickstart` reopens the file, so this is
+  safe with the agent running):
+
+  ```sh
+  : > ~/Library/Logs/pacekeeper-calendar.log
+  ```
+
+  (`truncate -s 0 ~/Library/Logs/pacekeeper-calendar.log` works the same way; either can
+  be dropped in a monthly cron/launchd job), or
+
+- let macOS's own log rotation daemon handle it, with a `newsyslog.d` drop-in:
+
+  ```
+  # /etc/newsyslog.d/pacekeeper-calendar.conf
+  # logfilename                                mode count size(KB) when
+  /Users/<you>/Library/Logs/pacekeeper-calendar.log  644  4     1024      *     J
+  ```
+
+  (keeps 4 rotated, gzip-compressed (`J`) copies, each capped at 1 MB — `man newsyslog.conf`
+  for the field meanings). Requires `sudo` to install, since `/etc/newsyslog.d` is root-owned.
 
 ## Developing
 
