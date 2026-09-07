@@ -1,0 +1,4 @@
+# PaceKeeper Dial calendar relay (spec 4.19, feed-source amendment).
+# Pinned to the majors verified on Python 3.9 (Xcode CLT) on 2026-09-07.
+icalendar>=6.0,<7
+recurring-ical-events>=3.0,<4

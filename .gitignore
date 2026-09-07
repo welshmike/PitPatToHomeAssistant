@@ -23,3 +23,8 @@ treadmill_log.txt
 .idea/
 *.DS_Store
 .superpowers/
+
+# Python (calendar relay tooling)
+__pycache__/
+*.pyc
+.pytest_cache/
