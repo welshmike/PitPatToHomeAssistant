@@ -35,4 +35,6 @@
 // to resolve promptly can stall well past the connect timeout.
 #define FLIGHTS_LOGO_BASE_URL "http://" MQTT_SERVER ":8123/local"
 
-
+// Calendar card (spec 4.19). Leave both undefined to build without the card.
+// #define CALENDAR_URL   "https://script.google.com/macros/s/XXXXXXXX/exec"
+// #define CALENDAR_TOKEN "long-random-string"
