@@ -20,6 +20,14 @@ constexpr uint32_t kWifiConnectTimeoutMs = 15000;
 // Bounds how long PubSubClient::connect() can block waiting for CONNACK.
 constexpr uint16_t kMqttSocketTimeoutS = 5;
 
+// PubSubClient's default 15 s keepalive is shorter than the worst-case
+// CalendarService fetch on the same net task (spec 4.19): a pathological
+// Apps Script redirect can hold the task for ~20-22 s (see
+// CalendarService::kFetchBudgetMs). 60 s gives the broker 90 s of tolerance
+// (PubSubClient waits 1.5x the keepalive before dropping the session) and
+// HA's availability (LWT) still fires promptly on an actual disconnect.
+constexpr uint16_t kMqttKeepAliveS = 60;
+
 // 2048 (bumped from 1024 for the Dial's flights topic, spec 4.11):
 // PubSubClient's buffer has to hold a whole inbound message — fixed header,
 // topic and payload — and HA's retained flights JSON runs ~900 bytes for a
@@ -94,6 +102,7 @@ void NetManager::begin(const char *hostname)
 
     m_client.setBufferSize(kMqttBufferSize);
     m_client.setSocketTimeout(kMqttSocketTimeoutS);
+    m_client.setKeepAlive(kMqttKeepAliveS);
     m_client.setServer(m_mqttHost, m_mqttPort);
 
     WiFi.setHostname(m_hostname);

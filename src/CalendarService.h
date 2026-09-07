@@ -4,7 +4,14 @@
 #include <stddef.h>
 
 #include "board.h"
+// board.h already pulls config.h in (guarded the same way) to decide
+// HAS_CALENDAR, but the CALENDAR_TOKEN check below needs it directly too;
+// same guard as board.h so a native build that somehow reached this header
+// (it doesn't today — see the HAS_CALENDAR comment below) can't be made to
+// require the gitignored config.h just by being compiled with NATIVE_TEST.
+#if !defined(NATIVE_TEST)
 #include "config.h"
+#endif
 #include "CalendarModel.h"
 #include "Guarded.h"
 
@@ -55,12 +62,16 @@ public:
     // (fetchNow()), and immediately if requestRefresh() was called and the
     // last fetch is more than 60 s old.
     //
-    // Blocks the net task for the duration of a fetch. Worst case is
-    // kFetchBudgetMs (12 s) plus the tail of whichever blocking socket call
-    // was in flight when the budget ran out: the connect timeouts are per
-    // hop (5 s each for the Apps Script host and its redirect target) and
-    // are not interruptible, so the true ceiling is ~13 s — still inside
-    // PubSubClient's 15 s keepalive. Every other tick returns in µs.
+    // Blocks the net task for the duration of a fetch. kFetchBudgetMs
+    // (12 s) bounds only the body read; HTTPClient::GET()'s header phase
+    // (connect + response headers) runs before that budget is even set and
+    // is bounded per hop by the connect/read timeouts (4 s + 6 s), not
+    // interruptibly. Apps Script's /exec redirects to a second host, so a
+    // server that stalls before headers on both hops can hold the net task
+    // for ~2 * (4 + 6) = 20 s before the read window even starts — worst
+    // case ≈ 20-22 s on a pathological server. NetManager sets a 60 s MQTT
+    // keepalive (rather than PubSubClient's 15 s default) to give the
+    // broker enough tolerance for that. Every other tick returns in µs.
     void tick(uint32_t nowMs);
 
     // Loop task asks for an early refresh (nudge due within 60 s); honoured
@@ -77,10 +88,13 @@ public:
     bool fetchedOnce() const;
 
 private:
-    // Wall-clock budget for one whole fetch attempt, connect included. The
-    // net task also drives NetManager::tick(), and PubSubClient's keepalive
-    // is 15 s: block for longer than that and the broker drops us, so a
-    // fetch that is going badly is abandoned (and backed off) inside it.
+    // Wall-clock budget for the body read, once headers are in — it does
+    // not bound HTTPClient::GET()'s header phase (see tick()'s comment for
+    // the worst case there). The net task also drives NetManager::tick(),
+    // which is why NetManager gives PubSubClient a 60 s keepalive rather
+    // than its 15 s default: a fetch that is going badly past this budget
+    // is abandoned (and backed off) inside it, but the header phase alone
+    // can already run past the old 15 s default.
     static constexpr uint32_t kFetchBudgetMs = 12000;
 
     // Net task only. Heap-guards, then performs the HTTPS GET + JSON parse;

@@ -150,14 +150,17 @@ bool CalendarService::fetchNow(uint32_t nowMs)
     // Deep-path measurement, first attempt only, success or failure.
     StackLogOnce stackLog{m_stackLogged};
 
-    // Wall-clock budget for everything below (spec 4.19). The connect
-    // timeouts are per hop, so the untrimmed worst case is 5 s to the Apps
-    // Script host + 5 s to its redirect target + 8 s of reading ≈ 18 s,
-    // which is longer than PubSubClient's 15 s keepalive — the net task
-    // drives that too, so the broker would drop us on every bad fetch. The
-    // budget bounds the part we can bound (the read window, below); the
-    // individual connects stay per hop because HTTPClient offers no way to
-    // shorten them mid-request.
+    // Wall-clock budget for the body read only (spec 4.19) — it does not
+    // bound HTTPClient::GET()'s header phase, which runs before this
+    // deadline is even set. That phase is bounded per hop by the
+    // connect/read timeouts below (4 s + 6 s), and is not interruptible
+    // mid-hop, so a server that connects then stalls before headers on both
+    // the Apps Script host and its redirect target can hold the net task
+    // for up to 2 * (4 + 6) = 20 s before this budget's read window (below)
+    // even starts — worst case ≈ 20-22 s on a pathological server. That is
+    // why NetManager sets a 60 s MQTT keepalive rather than relying on
+    // PubSubClient's 15 s default: the net task drives MQTT too, and a
+    // 20-22 s stall would otherwise get us dropped by the broker.
     const uint32_t budgetEndMs = millis() + kFetchBudgetMs;
 
     // Not logged anywhere, ever: the token rides in the query string, and
@@ -173,8 +176,8 @@ bool CalendarService::fetchNow(uint32_t nowMs)
 #endif
 
     HTTPClient http;
-    http.setConnectTimeout(5000);
-    http.setTimeout(8000);
+    http.setConnectTimeout(4000);
+    http.setTimeout(6000);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     http.setReuse(false);
     // Forces HTTP/1.0 so the server cannot answer with a chunked
@@ -228,12 +231,12 @@ bool CalendarService::fetchNow(uint32_t nowMs)
         return false;
     }
 
-    // Read window: the 8 s socket timeout, or whatever is left of the
+    // Read window: the 6 s socket timeout, or whatever is left of the
     // overall fetch budget if the connects have already eaten into it. A
     // budget that is already spent means no window at all, so the loop
     // exits on its first deadline check and the attempt is backed off.
     const int32_t  budgetLeftMs = (int32_t)(budgetEndMs - millis());
-    const uint32_t readWindowMs = (budgetLeftMs <= 0) ? 0 : (budgetLeftMs > 8000) ? 8000 : (uint32_t)budgetLeftMs;
+    const uint32_t readWindowMs = (budgetLeftMs <= 0) ? 0 : (budgetLeftMs > 6000) ? 6000 : (uint32_t)budgetLeftMs;
     const uint32_t deadline     = millis() + readWindowMs;
     size_t         total        = 0;
     bool           timedOut     = false;
