@@ -48,4 +48,8 @@ void drawPlaneGlyph(LovyanGFX& gfx, int cx, int cy, int r, uint32_t colour);
 // Light bulb: a circle on a small rectangular base. Card menu, Lamp card.
 void drawBulbGlyph(LovyanGFX& gfx, int cx, int cy, int r, uint32_t colour);
 
+// Calendar: a page with a thicker date bar across the top and two binder
+// rings. Card menu, Calendar card.
+void drawCalendarGlyph(LovyanGFX& gfx, int cx, int cy, int r, uint32_t colour);
+
 #endif // HAS_DIAL_UI

@@ -22,6 +22,7 @@ const char* cardName(CardId id)
     case CardId::FLIGHTS:      return "Flights";
     case CardId::LIGHT_OFFICE: return "Office";
     case CardId::LIGHT_LAMP:   return "Lamp";
+    case CardId::CALENDAR:     return "Calendar";
     case CardId::COUNT:
     default:                   return "";
     }
@@ -36,6 +37,7 @@ void drawCardGlyph(LovyanGFX& gfx, CardId id, int x, int y, int r, uint32_t colo
     case CardId::FLIGHTS:      drawPlaneGlyph(gfx, x, y, r, colour); break;
     case CardId::LIGHT_OFFICE: drawSunGlyph(gfx, x, y, r, colour);   break;
     case CardId::LIGHT_LAMP:   drawBulbGlyph(gfx, x, y, r, colour);  break;
+    case CardId::CALENDAR:     drawCalendarGlyph(gfx, x, y, r, colour); break;
     case CardId::COUNT:
     default:                                                         break;
     }

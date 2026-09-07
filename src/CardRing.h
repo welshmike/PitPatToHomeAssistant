@@ -4,8 +4,8 @@
 // Which desk-mode card is on screen while the belt is idle. Pure state
 // machine — no Arduino, no display — driven by knob detents in DialUi. Ring
 // order is TREADMILL -> CLOCK -> FLIGHTS -> LIGHT_OFFICE -> LIGHT_LAMP ->
-// (wraps to TREADMILL). New cards (Calendar, Music — spec 4.8) are added to
-// this ring by later sub-projects; keep COUNT last.
+// CALENDAR -> (wraps to TREADMILL). New cards (Music — spec 4.8) may be
+// added to this ring by later sub-projects; keep COUNT last.
 enum class CardId : uint8_t
 {
     TREADMILL,
@@ -13,6 +13,7 @@ enum class CardId : uint8_t
     FLIGHTS,
     LIGHT_OFFICE,
     LIGHT_LAMP,
+    CALENDAR,
     COUNT
 };
 

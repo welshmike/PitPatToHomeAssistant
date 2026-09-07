@@ -16,7 +16,7 @@ static void test_startsAtClock(void)
 
 // ---------------------------------------------------------------------------
 // next() / prev() with wraparound (ring order: TREADMILL -> CLOCK -> FLIGHTS
-// -> LIGHT_OFFICE -> LIGHT_LAMP)
+// -> LIGHT_OFFICE -> LIGHT_LAMP -> CALENDAR)
 // ---------------------------------------------------------------------------
 
 static void test_next_advancesThroughAllCards_thenWraps(void)
@@ -29,6 +29,8 @@ static void test_next_advancesThroughAllCards_thenWraps(void)
     ring.next();
     TEST_ASSERT_TRUE(CardId::LIGHT_LAMP == ring.current());
     ring.next();
+    TEST_ASSERT_TRUE(CardId::CALENDAR == ring.current());
+    ring.next();
     TEST_ASSERT_TRUE(CardId::TREADMILL == ring.current());
     ring.next();
     TEST_ASSERT_TRUE(CardId::CLOCK == ring.current());
@@ -39,6 +41,8 @@ static void test_prev_wrapsBackwardThroughAllCards(void)
     CardRing ring; // starts at CLOCK
     ring.prev();
     TEST_ASSERT_TRUE(CardId::TREADMILL == ring.current());
+    ring.prev();
+    TEST_ASSERT_TRUE(CardId::CALENDAR == ring.current());
     ring.prev();
     TEST_ASSERT_TRUE(CardId::LIGHT_LAMP == ring.current());
     ring.prev();
@@ -64,6 +68,9 @@ static void test_set_movesDirectlyToGivenCard(void)
 
     ring.set(CardId::LIGHT_LAMP);
     TEST_ASSERT_TRUE(CardId::LIGHT_LAMP == ring.current());
+
+    ring.set(CardId::CALENDAR);
+    TEST_ASSERT_TRUE(CardId::CALENDAR == ring.current());
 
     ring.set(CardId::CLOCK);
     TEST_ASSERT_TRUE(CardId::CLOCK == ring.current());

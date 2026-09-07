@@ -45,7 +45,9 @@ static void test_detents_advancesThroughRing_wrapsForward(void)
     TEST_ASSERT_TRUE(CardId::LIGHT_OFFICE == menu.highlight());
     menu.detents(1, 1040);
     TEST_ASSERT_TRUE(CardId::LIGHT_LAMP == menu.highlight());
-    menu.detents(1, 1050); // wraps past the end back to TREADMILL
+    menu.detents(1, 1050);
+    TEST_ASSERT_TRUE(CardId::CALENDAR == menu.highlight());
+    menu.detents(1, 1060); // wraps past the end back to TREADMILL
     TEST_ASSERT_TRUE(CardId::TREADMILL == menu.highlight());
 }
 
@@ -54,10 +56,10 @@ static void test_detents_negative_wrapsBackward(void)
     CardMenu menu;
     menu.open(CardId::TREADMILL, 1000);
 
-    menu.detents(-1, 1010); // wraps past the start to LIGHT_LAMP
-    TEST_ASSERT_TRUE(CardId::LIGHT_LAMP == menu.highlight());
+    menu.detents(-1, 1010); // wraps past the start to CALENDAR
+    TEST_ASSERT_TRUE(CardId::CALENDAR == menu.highlight());
     menu.detents(-1, 1020);
-    TEST_ASSERT_TRUE(CardId::LIGHT_OFFICE == menu.highlight());
+    TEST_ASSERT_TRUE(CardId::LIGHT_LAMP == menu.highlight());
 }
 
 static void test_detents_multiStep_wrapsCorrectly(void)
@@ -65,8 +67,8 @@ static void test_detents_multiStep_wrapsCorrectly(void)
     CardMenu menu;
     menu.open(CardId::CLOCK, 1000); // index 1
 
-    menu.detents(7, 1010); // 1 + 7 = 8, mod 5 = 3 -> LIGHT_OFFICE
-    TEST_ASSERT_TRUE(CardId::LIGHT_OFFICE == menu.highlight());
+    menu.detents(7, 1010); // 1 + 7 = 8, mod 6 = 2 -> FLIGHTS
+    TEST_ASSERT_TRUE(CardId::FLIGHTS == menu.highlight());
 }
 
 static void test_detents_whenClosed_isNoOp(void)
@@ -178,13 +180,14 @@ static void test_itemCentre_index0_isTopCentre(void)
 
 static void test_itemCentre_index1_isClockwiseFromTop(void)
 {
+    // Six items, 60 degrees apart: index 1 is at -90 + 60 = -30 degrees.
     int x = 0, y = 0;
     CardMenu::itemCentre(1, x, y);
-    TEST_ASSERT_EQUAL_INT(204, x);
-    TEST_ASSERT_EQUAL_INT(93, y);
+    TEST_ASSERT_EQUAL_INT(196, x);
+    TEST_ASSERT_EQUAL_INT(76, y);
 }
 
-static void test_itemCentre_allFiveFitWithinRing(void)
+static void test_itemCentre_allSixFitWithinRing(void)
 {
     for (uint8_t i = 0; i < static_cast<uint8_t>(CardId::COUNT); ++i) {
         int x = 0, y = 0;
@@ -197,6 +200,19 @@ static void test_itemCentre_allFiveFitWithinRing(void)
     }
 }
 
+static void test_ring_hasSixItems_sixtyDegreesApart(void)
+{
+    TEST_ASSERT_EQUAL_UINT8(6, static_cast<uint8_t>(CardId::COUNT));
+    int x0, y0, x1, y1;
+    CardMenu::itemCentre(0, x0, y0); // Treadmill at 12 o'clock
+    TEST_ASSERT_EQUAL_INT(120, x0);
+    TEST_ASSERT_EQUAL_INT(120 - CardMenu::kRingRadius, y0);
+    CardMenu::itemCentre(5, x1, y1); // Calendar at 10 o'clock: (-sin60, -cos60) * 88
+    TEST_ASSERT_INT_WITHIN(1, 120 - 76, x1);
+    TEST_ASSERT_INT_WITHIN(1, 120 - 44, y1);
+    TEST_ASSERT_EQUAL_INT(5, CardMenu::hitTest(x1, y1));
+}
+
 // ---------------------------------------------------------------------------
 // hitTest() — centre / margin / miss
 // ---------------------------------------------------------------------------
@@ -204,7 +220,7 @@ static void test_itemCentre_allFiveFitWithinRing(void)
 static void test_hitTest_exactCentre_hitsThatItem(void)
 {
     TEST_ASSERT_EQUAL_INT8(0, CardMenu::hitTest(120, 32));
-    TEST_ASSERT_EQUAL_INT8(1, CardMenu::hitTest(204, 93));
+    TEST_ASSERT_EQUAL_INT8(1, CardMenu::hitTest(196, 76));
 }
 
 static void test_hitTest_withinHitRadius_stillHits(void)
@@ -248,7 +264,8 @@ int main(int argc, char **argv)
 
     RUN_TEST(test_itemCentre_index0_isTopCentre);
     RUN_TEST(test_itemCentre_index1_isClockwiseFromTop);
-    RUN_TEST(test_itemCentre_allFiveFitWithinRing);
+    RUN_TEST(test_itemCentre_allSixFitWithinRing);
+    RUN_TEST(test_ring_hasSixItems_sixtyDegreesApart);
 
     RUN_TEST(test_hitTest_exactCentre_hitsThatItem);
     RUN_TEST(test_hitTest_withinHitRadius_stillHits);

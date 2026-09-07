@@ -3,11 +3,11 @@
 #include "CardRing.h"
 
 // Pure state machine + shared geometry for the side-button ring menu that
-// picks one of the five cards. Ring order matches CardId's declaration order
-// (TREADMILL, CLOCK, FLIGHTS, LIGHT_OFFICE, LIGHT_LAMP), COUNT excluded — see
-// the static_assert below. No Arduino/display dependency: DialUi drives the
-// state machine and reuses itemCentre()/hitTest() so the view draws and
-// hit-tests the exact same five spots.
+// picks one of the six cards. Ring order matches CardId's declaration order
+// (TREADMILL, CLOCK, FLIGHTS, LIGHT_OFFICE, LIGHT_LAMP, CALENDAR), COUNT
+// excluded — see the static_assert below. No Arduino/display dependency:
+// DialUi drives the state machine and reuses itemCentre()/hitTest() so the
+// view draws and hit-tests the exact same six spots.
 class CardMenu
 {
 public:
@@ -53,7 +53,7 @@ public:
     static int8_t hitTest(int x, int y);
 
 private:
-    static_assert(static_cast<uint8_t>(CardId::COUNT) == 5, "CardMenu ring assumes 5 cards");
+    static_assert(static_cast<uint8_t>(CardId::COUNT) == 6, "CardMenu ring assumes 6 cards");
 
     bool m_open = false;
     CardId m_highlight = CardId::TREADMILL;

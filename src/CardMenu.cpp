@@ -11,6 +11,9 @@ namespace
 constexpr int kCentreX = 120;
 constexpr int kCentreY = 120;
 constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
+// Items are spaced evenly around the ring, derived from CardId::COUNT so a
+// new card added to the ring reflows the geometry automatically.
+constexpr float kDegPerItem = 360.0f / static_cast<float>(static_cast<uint8_t>(CardId::COUNT));
 
 } // namespace
 
@@ -63,7 +66,7 @@ bool CardMenu::tick(uint32_t nowMs)
 
 void CardMenu::itemCentre(uint8_t index, int& x, int& y)
 {
-    const float angleDeg = -90.0f + static_cast<float>(index) * 72.0f;
+    const float angleDeg = -90.0f + static_cast<float>(index) * kDegPerItem;
     const float angleRad = angleDeg * kDegToRad;
     x = static_cast<int>(lroundf(static_cast<float>(kCentreX) + static_cast<float>(kRingRadius) * cosf(angleRad)));
     y = static_cast<int>(lroundf(static_cast<float>(kCentreY) + static_cast<float>(kRingRadius) * sinf(angleRad)));

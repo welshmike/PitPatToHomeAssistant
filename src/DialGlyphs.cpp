@@ -136,4 +136,18 @@ void drawBulbGlyph(LovyanGFX& gfx, int cx, int cy, int r, uint32_t colour)
     gfx.fillRect(cx - baseW / 2, baseY + 3, baseW, 2, colour);
 }
 
+// Calendar: a page with a thicker date bar across the top and two binder rings.
+void drawCalendarGlyph(LovyanGFX& gfx, int cx, int cy, int r, uint32_t colour)
+{
+    const int w = r * 2 - 4, h = r * 2 - 6;
+    const int x0 = cx - w / 2, y0 = cy - h / 2 + 2;
+    gfx.drawRoundRect(x0, y0, w, h, 3, colour);
+    gfx.fillRect(x0, y0, w, 5, colour);                    // date bar
+    gfx.fillRect(x0 + w / 4 - 1, y0 - 3, 2, 6, colour);    // ring 1
+    gfx.fillRect(x0 + (3 * w) / 4 - 1, y0 - 3, 2, 6, colour); // ring 2
+    // two rows of "days"
+    for (int i = 0; i < 3; ++i) gfx.fillRect(x0 + 3 + i * (w / 3), y0 + 9, 3, 3, colour);
+    for (int i = 0; i < 3; ++i) gfx.fillRect(x0 + 3 + i * (w / 3), y0 + 15, 3, 3, colour);
+}
+
 #endif // HAS_DIAL_UI

@@ -171,7 +171,10 @@ void DialUi::tick(uint32_t nowMs)
         // with no belt) and MENU (a card-level overlay, not a belt screen):
         // adding a card to the ring means adding its screen here, or the
         // belt-idle test silently stops covering it.
-        static_assert(static_cast<int>(CardId::COUNT) == 5, "update beltIdle card list in DialUi::tick");
+        // Calendar (spec 4.19) currently resolves to Screen::CLOCK (Task 7
+        // gives it its own screen), which is already covered below, so no
+        // new screen needs adding to this list for it yet.
+        static_assert(static_cast<int>(CardId::COUNT) == 6, "update beltIdle card list in DialUi::tick");
         const bool beltIdle =
             (screenNow == Screen::DISCONNECTED || screenNow == Screen::CLOCK ||
              screenNow == Screen::FLIGHTS || screenNow == Screen::LIGHT_OFFICE ||
@@ -935,7 +938,8 @@ DialUi::Screen DialUi::currentScreen(bool paused) const
     // Belt idle and no selector open: show whichever card the ring is
     // parked on (spec 4.8). TREADMILL is the existing Disconnected screen;
     // CLOCK is the clock card; FLIGHTS is the flights card (spec 4.9);
-    // LIGHT_OFFICE/LIGHT_LAMP are the two HA lights cards (Plan 6).
+    // LIGHT_OFFICE/LIGHT_LAMP are the two HA lights cards (Plan 6); CALENDAR
+    // (spec 4.19) borrows the clock screen until Task 7 gives it its own.
     switch (m_cards.current())
     {
     case CardId::TREADMILL:
@@ -946,6 +950,8 @@ DialUi::Screen DialUi::currentScreen(bool paused) const
         return Screen::LIGHT_OFFICE;
     case CardId::LIGHT_LAMP:
         return Screen::LIGHT_LAMP;
+    case CardId::CALENDAR:
+        return Screen::CLOCK; // Task 7 gives Calendar its own Screen
     case CardId::CLOCK:
     default:
         return Screen::CLOCK;
