@@ -14,6 +14,9 @@
 #include "DialGlyphs.h"
 #include "DialLightsView.h"
 #include "DialMenuView.h"
+#if HAS_CALENDAR
+#include "DialCalendarView.h"
+#endif
 #include "LightLayout.h"
 
 // -DUSE_ESP_IDF_LOG (spec 4.14) makes log_x() expand to
@@ -86,6 +89,11 @@ DialUi::DialUi(TreadmillController& controller, const TimeService& timeService,
       // Office has no colour control; the Lamp does (Plan 6). Indexed by
       // LightsModel::LightKey, so the order here is OFFICE then LAMP.
       m_lightCards{LightCardState(false), LightCardState(true)}
+#if HAS_CALENDAR
+      // Declared after the lights members, so it is initialised last here too
+      // (NetTask::calendar() is safe before NetTask::begin(), like flights()).
+      , m_calendar(net.calendar())
+#endif
 {
 }
 
@@ -167,18 +175,7 @@ void DialUi::tick(uint32_t nowMs)
     // one of the desk cards rather than Connecting/Starting/Running/Selector
     // — which is exactly what FlightsAutoShow's beltIdle argument means.
     {
-        // One Screen per desk card, plus DISCONNECTED (the Treadmill card
-        // with no belt) and MENU (a card-level overlay, not a belt screen):
-        // adding a card to the ring means adding its screen here, or the
-        // belt-idle test silently stops covering it.
-        // Calendar (spec 4.19) currently resolves to Screen::CLOCK (Task 7
-        // gives it its own screen), which is already covered below, so no
-        // new screen needs adding to this list for it yet.
-        static_assert(static_cast<int>(CardId::COUNT) == 6, "update beltIdle card list in DialUi::tick");
-        const bool beltIdle =
-            (screenNow == Screen::DISCONNECTED || screenNow == Screen::CLOCK ||
-             screenNow == Screen::FLIGHTS || screenNow == Screen::LIGHT_OFFICE ||
-             screenNow == Screen::LIGHT_LAMP || screenNow == Screen::MENU);
+        const bool beltIdle = isDeskScreen(screenNow);
         // The count is only evidence while the snapshot is actually live:
         // stale (HA quiet) or offline (MQTT down) data is passed as
         // dataValid=false, which the state machine treats as zero aircraft.
@@ -207,6 +204,54 @@ void DialUi::tick(uint32_t nowMs)
             screenNow = currentScreen(isPausedState());
         }
     }
+
+#if HAS_CALENDAR
+    // Calendar snapshot and nudge (spec 4.19), same shape as the two blocks
+    // above: the snapshot is pulled on every tick whatever is on screen,
+    // because the nudge needs the next meeting while the Clock card is up,
+    // and the state machine is then run with it every tick.
+    pollCalendar(nowMs);
+    {
+        // Wall-clock epoch, or 0 when TimeService has no time yet — which
+        // CalendarAutoShow treats as "no usable data", so nothing nudges
+        // before the clock is up.
+        const uint32_t nowEpoch = m_time.valid() ? static_cast<uint32_t>(time(nullptr)) : 0;
+        const bool dataValid = (nowEpoch != 0) && m_calSnap.valid &&
+                               !CalendarModel::isStale(m_calSnap, nowEpoch);
+        const int8_t idx = CalendarModel::nextTimed(m_calSnap, nowEpoch);
+        const uint32_t nextStart = (idx >= 0) ? m_calSnap.ev[idx].start : 0;
+        // Early refresh (spec 4.19): as an event's start closes in on the
+        // nudge window, ask for a fetch newer than the 5-minute poll would
+        // give — a meeting cancelled or moved in the last few minutes should
+        // not raise the card. CalendarService rate-limits this to one fetch a
+        // minute, so asking on every tick inside the window is free.
+        if (idx >= 0 && dataValid && nextStart > nowEpoch &&
+            (nextStart - nowEpoch) <= m_calNudge.leadSec() + 60)
+        {
+            m_calendar.requestRefresh();
+        }
+        const CalendarAutoShow::Action action =
+            m_calNudge.update(nowEpoch, idx >= 0, nextStart, m_cards.current(),
+                              isDeskScreen(screenNow), dataValid);
+        if (action == CalendarAutoShow::Action::SHOW_CALENDAR)
+        {
+            m_cards.set(CardId::CALENDAR);
+            // Nobody touched the Dial — wake the backlight ourselves so the
+            // card that just raised itself is readable (as the Flights
+            // auto-show above does).
+            m_input.noteActivity(nowMs);
+            applyBrightness();
+        }
+        else if (action == CalendarAutoShow::Action::RETURN_TO_CLOCK)
+        {
+            m_cards.set(CardId::CLOCK);
+        }
+        if (action != CalendarAutoShow::Action::NONE)
+        {
+            screenNow = currentScreen(isPausedState());
+        }
+    }
+#endif
 
     // Flights card (spec 4.9): tell FlightsService whether the card is on
     // screen every tick (cheap atomic write), then run the visible card's
@@ -368,8 +413,24 @@ void DialUi::handleInput(uint32_t nowMs)
             // auto-show episode must not yank it back to Clock underneath
             // them when the count later drops (spec 4.11).
             m_autoShow.noteManualNavigation();
+#if HAS_CALENDAR
+            m_calNudge.noteManualNavigation();
+#endif
             playAcceptBeep(true);
         }
+#if HAS_CALENDAR
+        else if (screen == Screen::CALENDAR)
+        {
+            // The card owns no value and starts nothing: a tap only dismisses
+            // a nudge that raised it, which returns to the Clock card at once
+            // (spec 4.19). Silent either way, like the Clock card's tap — the
+            // dismiss is not a command that can be refused.
+            if (m_calNudge.dismiss())
+            {
+                m_cards.set(CardId::CLOCK);
+            }
+        }
+#endif
         else if (screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP)
         {
             handleLightTap(screen, ev.tapX, ev.tapY, nowMs);
@@ -430,10 +491,13 @@ void DialUi::handleInput(uint32_t nowMs)
                 }
             }
         }
-        else if (screen == Screen::CLOCK || screen == Screen::FLIGHTS || screen == Screen::MENU)
+        else if (screen == Screen::CLOCK || screen == Screen::FLIGHTS ||
+                 screen == Screen::CALENDAR || screen == Screen::MENU)
         {
-            // Neither card owns a value to skip/confirm, and the menu is
-            // driven by the knob and taps — hold is a no-op, no beep.
+            // None of these cards owns a value to skip/confirm, and the menu
+            // is driven by the knob and taps — hold is a no-op, no beep. The
+            // Calendar card belongs here rather than in the fall-through
+            // below, which would try to stop a belt that isn't running.
         }
         else
         {
@@ -492,7 +556,7 @@ void DialUi::handleInput(uint32_t nowMs)
         }
         else if (screen == Screen::DISCONNECTED || screen == Screen::CLOCK ||
                  screen == Screen::FLIGHTS || screen == Screen::LIGHT_OFFICE ||
-                 screen == Screen::LIGHT_LAMP)
+                 screen == Screen::LIGHT_LAMP || screen == Screen::CALENDAR)
         {
             // The two are never open at once, and this is what makes that
             // true rather than an accident of the branch list above: the
@@ -544,6 +608,9 @@ void DialUi::handleInput(uint32_t nowMs)
             // Reading the card counts as driving it: an auto-show episode
             // must not yank it back to Clock underneath the user (4.11).
             m_autoShow.noteManualNavigation();
+#if HAS_CALENDAR
+            m_calNudge.noteManualNavigation();
+#endif
         }
         else if ((screen == Screen::LIGHT_OFFICE || screen == Screen::LIGHT_LAMP) &&
                  lightCardLive(screen))
@@ -659,6 +726,9 @@ void DialUi::handleLightTap(Screen screen, int x, int y, uint32_t nowMs)
 void DialUi::navigateToCard(CardId id)
 {
     m_autoShow.noteManualNavigation();
+#if HAS_CALENDAR
+    m_calNudge.noteManualNavigation();
+#endif
     resetLightPages();
     m_cards.set(id);
 }
@@ -690,6 +760,21 @@ void DialUi::pollFlights(uint32_t nowMs)
         m_haveFlightsSnap = true;
     }
 }
+
+#if HAS_CALENDAR
+void DialUi::pollCalendar(uint32_t nowMs)
+{
+    // Same rhythm as pollFlights(), an order of magnitude slower: snapshot()
+    // is a Guarded copy, and a calendar feed only changes every 5 minutes.
+    // Unsigned subtraction, so this stays correct across a millis() wrap.
+    if (!m_haveCalSnap || (nowMs - m_lastCalSnapMs) >= kCalendarSnapIntervalMs)
+    {
+        m_lastCalSnapMs = nowMs;
+        m_calSnap = m_calendar.snapshot();
+        m_haveCalSnap = true;
+    }
+}
+#endif
 
 void DialUi::tickFlights()
 {
@@ -874,6 +959,38 @@ void DialUi::setFlightsAutoShow(bool on)
     m_autoShow.setEnabled(on);
 }
 
+// Calendar nudge settings (spec 4.19). HA owns all three; TreadmillHandler
+// persists them and main.cpp pushes them here at boot and on every change.
+// Lead and stay come in whole minutes (the HA numbers) — CalendarAutoShow
+// works in seconds. No-ops on a build without CALENDAR_URL, where there is no
+// calendar card, no service and no nudge to configure.
+void DialUi::setCalendarNudge(bool on)
+{
+#if HAS_CALENDAR
+    m_calNudge.setEnabled(on);
+#else
+    (void)on;
+#endif
+}
+
+void DialUi::setCalendarLeadMin(uint16_t mins)
+{
+#if HAS_CALENDAR
+    m_calNudge.setLeadSec(static_cast<uint32_t>(mins) * 60u);
+#else
+    (void)mins;
+#endif
+}
+
+void DialUi::setCalendarStayMin(uint16_t mins)
+{
+#if HAS_CALENDAR
+    m_calNudge.setStaySec(static_cast<uint32_t>(mins) * 60u);
+#else
+    (void)mins;
+#endif
+}
+
 void DialUi::onSnapshot(const TreadMillData& d)
 {
     m_snapshot = d;
@@ -897,6 +1014,21 @@ bool DialUi::isPausedState() const
     // from "stopped"; PAUSED itself is included for the optimistic snapshot
     // window right after a pause command, before the link flag catches up.
     return m_controller.isPaused() || m_snapshot.status == TreadMillData::PAUSED;
+}
+
+// One Screen per desk card, plus DISCONNECTED (the Treadmill card with no
+// belt) and MENU (a card-level overlay, not a belt screen): adding a card to
+// the ring means adding its screen here, or the belt-idle test silently stops
+// covering it. Both auto-show state machines take this as their beltIdle
+// argument, so this is the one list that decides "the belt is idle and the
+// user is looking at a card".
+bool DialUi::isDeskScreen(Screen s)
+{
+    static_assert(static_cast<int>(CardId::COUNT) == 6,
+                  "update the desk-card screen list in DialUi::isDeskScreen");
+    return s == Screen::DISCONNECTED || s == Screen::CLOCK || s == Screen::FLIGHTS ||
+           s == Screen::LIGHT_OFFICE || s == Screen::LIGHT_LAMP || s == Screen::CALENDAR ||
+           s == Screen::MENU;
 }
 
 DialUi::Screen DialUi::currentScreen(bool paused) const
@@ -939,7 +1071,8 @@ DialUi::Screen DialUi::currentScreen(bool paused) const
     // parked on (spec 4.8). TREADMILL is the existing Disconnected screen;
     // CLOCK is the clock card; FLIGHTS is the flights card (spec 4.9);
     // LIGHT_OFFICE/LIGHT_LAMP are the two HA lights cards (Plan 6); CALENDAR
-    // (spec 4.19) borrows the clock screen until Task 7 gives it its own.
+    // is the calendar card (spec 4.19), which falls back to the clock screen
+    // on a build without CALENDAR_URL.
     switch (m_cards.current())
     {
     case CardId::TREADMILL:
@@ -951,7 +1084,14 @@ DialUi::Screen DialUi::currentScreen(bool paused) const
     case CardId::LIGHT_LAMP:
         return Screen::LIGHT_LAMP;
     case CardId::CALENDAR:
-        return Screen::CLOCK; // Task 7 gives Calendar its own Screen
+#if HAS_CALENDAR
+        return Screen::CALENDAR;
+#else
+        // No CALENDAR_URL, so no calendar service and no face to draw: the
+        // card is still in the ring and the menu (CardId is not conditional),
+        // and it lands on the Clock rather than an empty screen.
+        return Screen::CLOCK;
+#endif
     case CardId::CLOCK:
     default:
         return Screen::CLOCK;
@@ -1105,6 +1245,44 @@ DialUi::FrameKey DialUi::buildFrameKey(uint32_t nowMs) const
         key.lightOn       = false;
     }
 
+#if HAS_CALENDAR
+    // Calendar card (spec 4.19): FNV-1a over the snapshot fields the face
+    // reads, every event start (a replaced list of the same length has to
+    // redraw), the wall clock coarsened to whole minutes (so the countdown
+    // and the "last update N min ago" line tick over once a minute, not 20
+    // times a second), whether the first fetch has landed, and whether a
+    // nudge is showing (a dismiss returns to the Clock, but the flag also
+    // ends the amber episode). Zero unless the Calendar screen is up.
+    if (static_cast<Screen>(key.screen) == Screen::CALENDAR)
+    {
+        const uint32_t nowEpoch = m_time.valid() ? static_cast<uint32_t>(time(nullptr)) : 0;
+        uint32_t h = 2166136261u;
+        const uint32_t fields[5] = {
+            static_cast<uint32_t>(m_calSnap.valid),
+            m_calSnap.fetchedAtEpoch,
+            static_cast<uint32_t>(m_calSnap.count),
+            nowEpoch / 60u,
+            static_cast<uint32_t>(m_calendar.fetchedOnce() ? 1u : 0u) |
+                static_cast<uint32_t>(m_calNudge.isShowing() ? 2u : 0u),
+        };
+        for (uint32_t f : fields)
+        {
+            h ^= f;
+            h *= 16777619u;
+        }
+        for (uint8_t i = 0; i < m_calSnap.count; ++i)
+        {
+            h ^= m_calSnap.ev[i].start;
+            h *= 16777619u;
+        }
+        key.calHash = static_cast<uint16_t>(h ^ (h >> 16));
+    }
+    else
+    {
+        key.calHash = 0;
+    }
+#endif
+
     return key;
 }
 
@@ -1247,7 +1425,7 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     const bool showDots = !(screen == Screen::RUNNING && !paused) &&
                           screen != Screen::CLOCK && screen != Screen::FLIGHTS &&
                           screen != Screen::LIGHT_OFFICE && screen != Screen::LIGHT_LAMP &&
-                          screen != Screen::MENU;
+                          screen != Screen::CALENDAR && screen != Screen::MENU;
     if (showDots)
     {
         drawStatusDots(gfx);
@@ -1278,6 +1456,11 @@ void DialUi::draw(LovyanGFX& gfx, uint32_t nowMs)
     case Screen::LIGHT_LAMP:
         drawLight(gfx, LightsModel::LightKey::LAMP);
         break;
+#if HAS_CALENDAR
+    case Screen::CALENDAR:
+        drawCalendar(gfx);
+        break;
+#endif
     case Screen::MENU:
         drawCardMenu(gfx, m_theme, m_menu);
         break;
@@ -1433,6 +1616,29 @@ void DialUi::drawLight(LovyanGFX& gfx, LightsModel::LightKey key)
                   (key == LightsModel::LightKey::LAMP) ? "Lamp" : "Office",
                   m_netStatus == NetStatus::MQTT_UP);
 }
+
+#if HAS_CALENDAR
+namespace
+{
+// Google hands out UTC epochs and the face shows London times, so every event
+// time goes through localtime_r() — TimeService::localTime() only ever
+// formats *now*, which is no use for a meeting that starts at 14:30. The TZ
+// is set once by TimeService (Europe/London), so localtime_r() here agrees
+// with the clock card.
+bool calendarLocalTime(uint32_t epoch, struct tm& out)
+{
+    const time_t t = static_cast<time_t>(epoch);
+    return localtime_r(&t, &out) != nullptr;
+}
+} // namespace
+
+void DialUi::drawCalendar(LovyanGFX& gfx)
+{
+    const uint32_t nowEpoch = m_time.valid() ? static_cast<uint32_t>(time(nullptr)) : 0;
+    drawCalendarCard(gfx, m_theme, m_calSnap, nowEpoch, &calendarLocalTime,
+                     m_calendar.fetchedOnce());
+}
+#endif
 
 void DialUi::drawConnecting(LovyanGFX& gfx)
 {

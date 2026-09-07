@@ -169,19 +169,25 @@ static void drainCommands()
 
     case CmdType::SET_CALENDAR_NUDGE:
       treadmill.setCalendarNudge(cmd.b);
-      // Task 7: dialUi.setCalendarNudge(cmd.b);
+#if HAS_DIAL_UI && HAS_CALENDAR
+      dialUi.setCalendarNudge(cmd.b);
+#endif
       enqueue(PubType::CALENDAR_NUDGE, cmd.b);
       break;
 
     case CmdType::SET_CALENDAR_LEAD:
       treadmill.setCalendarLeadMin(cmd.u16);
-      // Task 7: dialUi.setCalendarLeadMin(cmd.u16);
+#if HAS_DIAL_UI && HAS_CALENDAR
+      dialUi.setCalendarLeadMin(cmd.u16);
+#endif
       enqueue(PubType::CALENDAR_LEAD, false, cmd.u16);
       break;
 
     case CmdType::SET_CALENDAR_STAY:
       treadmill.setCalendarStayMin(cmd.u16);
-      // Task 7: dialUi.setCalendarStayMin(cmd.u16);
+#if HAS_DIAL_UI && HAS_CALENDAR
+      dialUi.setCalendarStayMin(cmd.u16);
+#endif
       enqueue(PubType::CALENDAR_STAY, false, cmd.u16);
       break;
 
@@ -270,6 +276,15 @@ void setup()
   // Dial's auto-show state machine starts from the stored value (spec 4.11)
   // rather than its own default — HA gets the same value from fullResync().
   dialUi.setFlightsAutoShow(treadmill.getFlightsAutoShow());
+#if HAS_CALENDAR
+  // Same for the calendar nudge (spec 4.19): the switch and the two numbers
+  // come out of NVS with the rest of the settings, so the Dial's nudge starts
+  // from the stored values rather than CalendarAutoShow's own defaults. Lead
+  // and stay are stored (and shown in HA) in whole minutes.
+  dialUi.setCalendarNudge(treadmill.getCalendarNudge());
+  dialUi.setCalendarLeadMin(treadmill.getCalendarLeadMin());
+  dialUi.setCalendarStayMin(treadmill.getCalendarStayMin());
+#endif
 #endif
 
   log_i("Starting BLE Client...");

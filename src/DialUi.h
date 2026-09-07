@@ -20,6 +20,11 @@
 #include "LightCardState.h"
 #include "CardMenu.h"
 #include "NetTask.h"
+#if HAS_CALENDAR
+#include "CalendarService.h"
+#include "CalendarModel.h"
+#include "CalendarAutoShow.h"
+#endif
 
 // Loop-task ISnapshotObserver that renders treadmill/net state to the Dial's
 // round 240x240 display and drives the controller from the encoder, touch
@@ -57,6 +62,17 @@ public:
     // episode in progress (see FlightsAutoShow::setEnabled) — the card the
     // ring is parked on is left alone.
     void setFlightsAutoShow(bool on);
+
+    // Calendar nudge settings (spec 4.19), owned by HA and persisted in NVS
+    // exactly like the flights auto-show above: main.cpp calls these at boot
+    // with the stored values and again on every SET_CALENDAR_* command. Lead
+    // and stay arrive in whole minutes (the HA numbers) and are converted to
+    // the seconds CalendarAutoShow works in. All three are no-ops on a build
+    // without CALENDAR_URL, so main.cpp's command handling needs no extra
+    // guard around the calls themselves.
+    void setCalendarNudge(bool on);
+    void setCalendarLeadMin(uint16_t mins);
+    void setCalendarStayMin(uint16_t mins);
 
     void onSnapshot(const TreadMillData& d) override;
     void onTargetSpeed(float mph, bool pending) override;
@@ -96,6 +112,12 @@ private:
     // Lights cards (spec 4.12): the off face, or the page the card is on,
     // drawn by DialLightsView from the card's own state.
     void drawLight(LovyanGFX& gfx, LightsModel::LightKey key);
+#if HAS_CALENDAR
+    // Calendar card (spec 4.19): the next meeting, its countdown and what
+    // follows it — drawn by DialCalendarView from this class's own snapshot
+    // copy and the wall clock.
+    void drawCalendar(LovyanGFX& gfx);
+#endif
     // Start-speed picker (spec 4.7), opened by a tap on Disconnected.
     void drawSelector(LovyanGFX& gfx);
     // Centre speed overlay (target speed in Font7 amber + "mph" caption, and
@@ -107,7 +129,7 @@ private:
     // screen is showing, on top of it, whenever a hold is in progress (I4).
     void drawHoldArc(LovyanGFX& gfx);
 
-    // Which of the six top-level screens is showing right now. Selection
+    // Which top-level screen is showing right now. Selection
     // order: controller.isConnecting() -> Connecting (checked BEFORE the
     // COUNTDOWN test below — a start() queued while disconnected makes the
     // controller publish an optimistic COUNTDOWN even though nothing is
@@ -118,16 +140,30 @@ private:
     // closes the selector);
     // else the current card (m_cards.current(), spec 4.8): TREADMILL ->
     // Disconnected (the Treadmill card), CLOCK -> Clock, FLIGHTS -> Flights
-    // (spec 4.9). Connecting/Starting/Running all win over an open selector —
+    // (spec 4.9), LIGHT_OFFICE/LIGHT_LAMP -> the two lights cards (spec 4.12),
+    // CALENDAR -> Calendar (spec 4.19, on a build with CALENDAR_URL).
+    // Connecting/Starting/Running all win over an open selector —
     // handleInput() closes it as soon as any of those becomes true, so a
     // stale selector can't resurface once they clear; they also win over the
     // card ring, which simply resumes on its last card once the belt screens
     // clear. `paused` is passed in rather than recomputed so callers that
     // already have it (draw(), handleInput()) don't pay for isPausedState()
     // twice in the same tick.
+    // CALENDAR (spec 4.19) is appended rather than slotted in beside the other
+    // desk cards so the existing values do not shift; nothing persists them,
+    // but the FrameKey compares screens as raw uint8_t and there is no reason
+    // to churn them. It is only ever returned on a build with CALENDAR_URL —
+    // without one the Calendar card resolves to the Clock screen.
     enum class Screen : uint8_t { DISCONNECTED, CLOCK, FLIGHTS, CONNECTING, STARTING, RUNNING,
-                                  SELECTOR, LIGHT_OFFICE, LIGHT_LAMP, MENU };
+                                  SELECTOR, LIGHT_OFFICE, LIGHT_LAMP, MENU, CALENDAR };
     Screen currentScreen(bool paused) const;
+    // Whether `s` is one of the desk-card screens — i.e. the belt is idle and
+    // the ring is showing a card (or the card menu over one) rather than
+    // Connecting/Starting/Running/Selector. This is the single list of
+    // desk-card screens: both auto-show state machines take it as their
+    // beltIdle argument, so adding a card to the ring means adding its screen
+    // here once and nowhere else.
+    static bool isDeskScreen(Screen s);
 
     void handleInput(uint32_t nowMs);
     // The tap handler for a light card (spec 4.12), split out of
@@ -152,6 +188,16 @@ private:
     // Clock card is up, not just while the Flights card is. snapshot() is a
     // Guarded copy — cheap, and rate-limited here exactly as before.
     void pollFlights(uint32_t nowMs);
+#if HAS_CALENDAR
+    // Pulls a fresh CalendarModel::Snapshot at most every
+    // kCalendarSnapIntervalMs (a Guarded copy, as with the flights one, and a
+    // calendar changes far more slowly than a card redraw). Called from tick()
+    // on EVERY call whatever is on screen: the nudge needs the next event
+    // while the Clock card is up, not only while the Calendar card is. The
+    // early-refresh request lives with the nudge in tick(), which already has
+    // the next event and the wall clock it depends on.
+    void pollCalendar(uint32_t nowMs);
+#endif
     // Flights card housekeeping (spec 4.9), called from tick() every call
     // while screen == FLIGHTS: clamps m_flightIdx to the (possibly changed)
     // aircraft count, and tells FlightsService which airline logo the net
@@ -274,6 +320,15 @@ private:
         bool     lightSettling  = false;
         bool     lightOn        = false;
 
+        // Calendar card (spec 4.19): a 16-bit FNV-1a over everything the face
+        // reads — the snapshot's validity/fetch time/count and every event
+        // start, plus nowEpoch/60 so the countdown ticks over once a minute
+        // (and not 20 times a second), fetchedOnce for the "waiting for
+        // calendar" state, and whether a nudge is showing. Zero unless the
+        // Calendar screen is actually up, so no other screen redraws on
+        // calendar state — same idiom as flightHash/lightHash above.
+        uint16_t calHash        = 0;
+
         bool operator==(const FrameKey& o) const
         {
             return status == o.status && screen == o.screen && paused == o.paused &&
@@ -294,7 +349,8 @@ private:
                    flightHash == o.flightHash && radarPhase == o.radarPhase &&
                    lightHash == o.lightHash && lightMqttUp == o.lightMqttUp &&
                    lightPage == o.lightPage && lightHue == o.lightHue &&
-                   lightSettling == o.lightSettling && lightOn == o.lightOn;
+                   lightSettling == o.lightSettling && lightOn == o.lightOn &&
+                   calHash == o.calHash;
         }
     };
     FrameKey buildFrameKey(uint32_t nowMs) const;
@@ -364,6 +420,26 @@ private:
     // did we last pull one" bookkeeping needs to persist across calls.
     bool m_haveLightsSnap = false;
     uint32_t m_lastLightsSnapMs = 0;
+
+#if HAS_CALENDAR
+    // Calendar card (spec 4.19). m_calendar is NetTask's own CalendarService
+    // member, bound at construction like m_flights/m_lights above; every call
+    // made here (snapshot(), fetchedOnce(), requestRefresh()) is loop-task-safe
+    // by that class's own contract. The snapshot is pulled once a second — a
+    // calendar changes on the minute at best, and the face's own redraw key
+    // (FrameKey::calHash) coarsens time to whole minutes anyway.
+    CalendarService& m_calendar;
+    static constexpr uint32_t kCalendarSnapIntervalMs = 1000;
+    CalendarModel::Snapshot m_calSnap{};
+    bool m_haveCalSnap = false;
+    uint32_t m_lastCalSnapMs = 0;
+    // The nudge (spec 4.19): raises the Calendar card over the Clock card
+    // ahead of a meeting and hands it back afterwards. Fed from tick() every
+    // call with the latest snapshot's next timed event; enabled and tuned from
+    // HA via setCalendarNudge()/setCalendarLeadMin()/setCalendarStayMin().
+    // Pure — no time, no Arduino.
+    CalendarAutoShow m_calNudge;
+#endif
 
     // Airline logos are decoded from LittleFS straight onto the display after
     // the frame is pushed (the palette canvas would posterise them). Set by
