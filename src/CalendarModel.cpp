@@ -111,24 +111,25 @@ uint8_t allDayCount(const Snapshot& s)
 }
 
 size_t clockLine(const Snapshot& s, uint32_t nowEpoch, uint32_t (*localDayOf)(uint32_t),
-                 void (*hhmm)(uint32_t epoch, char* out, size_t cap), char* buf, size_t cap,
-                 bool& live)
+                 void (*hhmm)(uint32_t epoch, char* out, size_t cap), char* titleBuf,
+                 size_t titleCap, char* timeBuf, size_t timeCap, bool& live)
 {
     live = false;
-    if (buf == nullptr || cap == 0) return 0;
-    buf[0] = '\0';
+    if (titleBuf != nullptr && titleCap > 0) titleBuf[0] = '\0';
+    if (timeBuf != nullptr && timeCap > 0) timeBuf[0] = '\0';
+    if (titleBuf == nullptr || titleCap == 0) return 0;
 
     const int8_t idx = nextTimedToday(s, nowEpoch, localDayOf);
     if (idx < 0) return 0;
 
     const Event& e = s.ev[idx];
-    char when[8];
-    hhmm(e.start, when, sizeof(when));
     live = (nowEpoch + 30 >= e.start);
 
-    const int n = snprintf(buf, cap, "%s %s", when, e.title);
-    if (n < 0) { buf[0] = '\0'; return 0; }
-    return ((size_t)n >= cap) ? cap - 1 : (size_t)n;
+    if (timeBuf != nullptr && timeCap > 0) hhmm(e.start, timeBuf, timeCap);
+
+    const int n = snprintf(titleBuf, titleCap, "%s", e.title);
+    if (n < 0) { titleBuf[0] = '\0'; return 0; }
+    return ((size_t)n >= titleCap) ? titleCap - 1 : (size_t)n;
 }
 
 bool isStale(const Snapshot& s, uint32_t nowEpoch)

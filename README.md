@@ -210,14 +210,15 @@ idle.
 **The Dial boots into the Clock card**, not Disconnected — there is no idle return to a "home"
 card, so the Treadmill card is reached explicitly via the menu or by holding the side button. The Clock is an analogue
 face on the round display: 12 tick marks, hour/minute/second hands, and a small date (`Mon 3 Sep`)
-at the 6 o'clock position, redrawn once a second. Time comes from NTP over WiFi, using the POSIX TZ
+above the centre, redrawn once a second. Time comes from NTP over WiFi, using the POSIX TZ
 string `TIMEZONE_TZ` from `config.h` (default `Europe/London`), and is also kept in the Dial's
 onboard BM8563 RTC — synced from NTP once it succeeds, and read back at boot — so the clock reads
 correctly immediately after a power cycle even with no WiFi available. Before either source has a
 time (a fresh device, no WiFi yet, an unset RTC), the face shows tick marks with no hands and
-`--:--` instead of a time. When the Calendar feed is configured and fresh, a small line under the
-date shows today's next timed meeting as `HH:MM Title` (Font2, dim), turning amber once the
-meeting is under way; it disappears once today's last meeting has ended.
+`--:--` instead of a time, with a "waiting for time" hint at the date's position. When the Calendar
+feed is configured and fresh, today's next timed meeting appears below the centre on two lines —
+the title, then its time `HH:MM` beneath it (Font2, dim), the time turning amber once the meeting
+is under way; both lines disappear once today's last meeting has ended.
 
 **Flights** shows the aircraft overhead, nearest first, up to 6 at a time. Each one gets its
 airline logo (or the operator name as text when there's no logo) at the top, `callsign - type`

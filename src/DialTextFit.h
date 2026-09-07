@@ -8,8 +8,8 @@
 
 // Round-face text-fit helpers, shared by every card whose lines must stay
 // inside the 240x240 circular display: the Calendar card (spec 4.19) and the
-// Clock card's meeting subline (spec 4.19 amendment, Plan 19). Moved verbatim
-// out of DialCalendarView.cpp so there is one definition instead of two.
+// Clock card's meeting title/time lines (spec 4.19 amendment, Plan 19). Moved
+// verbatim out of DialCalendarView.cpp so there is one definition instead of two.
 
 namespace
 {

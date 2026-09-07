@@ -197,12 +197,14 @@ static void test_clockLine_todaysNextEvent_notYetLive25MinBefore(void)
 {
     CalendarModel::Snapshot s;
     TEST_ASSERT_TRUE(CalendarModel::parse(kClockPayload, strlen(kClockPayload), s));
-    char buf[48];
+    char title[48];
+    char when[8];
     bool live = true;
-    const size_t n = CalendarModel::clockLine(s, 34200u - 25 * 60, fakeDay2, fakeHhmm, buf,
-                                               sizeof(buf), live);
-    TEST_ASSERT_EQUAL_STRING("09:30 Standup", buf);
-    TEST_ASSERT_EQUAL_UINT(strlen(buf), n);
+    const size_t n = CalendarModel::clockLine(s, 34200u - 25 * 60, fakeDay2, fakeHhmm, title,
+                                               sizeof(title), when, sizeof(when), live);
+    TEST_ASSERT_EQUAL_STRING("Standup", title);
+    TEST_ASSERT_EQUAL_STRING("09:30", when);
+    TEST_ASSERT_EQUAL_UINT(strlen(title), n);
     TEST_ASSERT_FALSE(live);
 }
 
@@ -210,18 +212,23 @@ static void test_clockLine_liveWithin30sAndDuring(void)
 {
     CalendarModel::Snapshot s;
     TEST_ASSERT_TRUE(CalendarModel::parse(kClockPayload, strlen(kClockPayload), s));
-    char buf[48];
+    char title[48];
+    char when[8];
     bool live = false;
 
     // 10 s before the start.
-    CalendarModel::clockLine(s, 34200u - 10, fakeDay2, fakeHhmm, buf, sizeof(buf), live);
-    TEST_ASSERT_EQUAL_STRING("09:30 Standup", buf);
+    CalendarModel::clockLine(s, 34200u - 10, fakeDay2, fakeHhmm, title, sizeof(title), when,
+                              sizeof(when), live);
+    TEST_ASSERT_EQUAL_STRING("Standup", title);
+    TEST_ASSERT_EQUAL_STRING("09:30", when);
     TEST_ASSERT_TRUE(live);
 
     // In progress.
     live = false;
-    CalendarModel::clockLine(s, 35000u, fakeDay2, fakeHhmm, buf, sizeof(buf), live);
-    TEST_ASSERT_EQUAL_STRING("09:30 Standup", buf);
+    CalendarModel::clockLine(s, 35000u, fakeDay2, fakeHhmm, title, sizeof(title), when,
+                              sizeof(when), live);
+    TEST_ASSERT_EQUAL_STRING("Standup", title);
+    TEST_ASSERT_EQUAL_STRING("09:30", when);
     TEST_ASSERT_TRUE(live);
 }
 
@@ -229,11 +236,14 @@ static void test_clockLine_afterTodaysLastEvent_ignoresTomorrow(void)
 {
     CalendarModel::Snapshot s;
     TEST_ASSERT_TRUE(CalendarModel::parse(kClockPayload, strlen(kClockPayload), s));
-    char buf[48] = "unset";
+    char title[48] = "unset";
+    char when[8] = "unset";
     bool live = true;
-    const size_t n = CalendarModel::clockLine(s, 36001u, fakeDay2, fakeHhmm, buf, sizeof(buf),
-                                               live);
+    const size_t n = CalendarModel::clockLine(s, 36001u, fakeDay2, fakeHhmm, title, sizeof(title),
+                                               when, sizeof(when), live);
     TEST_ASSERT_EQUAL_UINT(0, (unsigned)n);
+    TEST_ASSERT_EQUAL_STRING("", title);
+    TEST_ASSERT_EQUAL_STRING("", when);
     TEST_ASSERT_FALSE(live);
     // nextTimed() (day-blind) would still find tomorrow's event; clockLine's
     // nextTimedToday() must not.
@@ -245,26 +255,32 @@ static void test_clockLine_allDayOnlyToday_isZero(void)
     CalendarModel::Snapshot s;
     TEST_ASSERT_TRUE(
         CalendarModel::parse(kClockAllDayOnlyPayload, strlen(kClockAllDayOnlyPayload), s));
-    char buf[48];
+    char title[48];
+    char when[8];
     bool live = true;
-    const size_t n = CalendarModel::clockLine(s, 40000u, fakeDay2, fakeHhmm, buf, sizeof(buf),
-                                               live);
+    const size_t n = CalendarModel::clockLine(s, 40000u, fakeDay2, fakeHhmm, title, sizeof(title),
+                                               when, sizeof(when), live);
     TEST_ASSERT_EQUAL_UINT(0, (unsigned)n);
+    TEST_ASSERT_EQUAL_STRING("", title);
+    TEST_ASSERT_EQUAL_STRING("", when);
     TEST_ASSERT_FALSE(live);
 }
 
 static void test_clockLine_invalidSnapshot_isZero(void)
 {
     CalendarModel::Snapshot s; // default: valid=false, count=0
-    char buf[48];
+    char title[48];
+    char when[8];
     bool live = true;
-    const size_t n = CalendarModel::clockLine(s, 34200u, fakeDay2, fakeHhmm, buf, sizeof(buf),
-                                               live);
+    const size_t n = CalendarModel::clockLine(s, 34200u, fakeDay2, fakeHhmm, title, sizeof(title),
+                                               when, sizeof(when), live);
     TEST_ASSERT_EQUAL_UINT(0, (unsigned)n);
+    TEST_ASSERT_EQUAL_STRING("", title);
+    TEST_ASSERT_EQUAL_STRING("", when);
     TEST_ASSERT_FALSE(live);
 }
 
-static void test_clockLine_longTitleTruncatesSafelyIntoSmallBuffer(void)
+static void test_clockLine_longTitleTruncatesSafelyIntoSmallBuffers(void)
 {
     const char* payload =
         "{\"t\":1000000,\"ev\":["
@@ -275,20 +291,34 @@ static void test_clockLine_longTitleTruncatesSafelyIntoSmallBuffer(void)
     TEST_ASSERT_TRUE(CalendarModel::parse(payload, strlen(payload), s));
     TEST_ASSERT_EQUAL_INT(40, (int)strlen(s.ev[0].title));
 
-    // A generous buffer: the 40-char title passes through untrimmed.
-    char big[64];
+    // Generous buffers: the 40-char title and "09:30" pass through untrimmed.
+    char bigTitle[64];
+    char bigWhen[8];
     bool live = false;
-    size_t n = CalendarModel::clockLine(s, 34200u, fakeDay2, fakeHhmm, big, sizeof(big), live);
-    TEST_ASSERT_EQUAL_STRING("09:30 1234567890123456789012345678901234567890", big);
-    TEST_ASSERT_EQUAL_UINT(strlen(big), n);
+    size_t n = CalendarModel::clockLine(s, 34200u, fakeDay2, fakeHhmm, bigTitle, sizeof(bigTitle),
+                                         bigWhen, sizeof(bigWhen), live);
+    TEST_ASSERT_EQUAL_STRING("1234567890123456789012345678901234567890", bigTitle);
+    TEST_ASSERT_EQUAL_STRING("09:30", bigWhen);
+    TEST_ASSERT_EQUAL_UINT(strlen(bigTitle), n);
 
-    // A tight buffer (cap 16): truncated, NUL-terminated, returns what fits,
-    // never overflows.
-    char small[16];
-    n = CalendarModel::clockLine(s, 34200u, fakeDay2, fakeHhmm, small, sizeof(small), live);
+    // Tight title buffer (cap 16): truncated, NUL-terminated, returns what
+    // fits, never overflows. Time buffer stays generous here.
+    char smallTitle[16];
+    n = CalendarModel::clockLine(s, 34200u, fakeDay2, fakeHhmm, smallTitle, sizeof(smallTitle),
+                                  bigWhen, sizeof(bigWhen), live);
     TEST_ASSERT_EQUAL_UINT(15, n);
-    TEST_ASSERT_EQUAL_UINT(15, strlen(small));
-    TEST_ASSERT_EQUAL_UINT('\0', small[15]);
+    TEST_ASSERT_EQUAL_UINT(15, strlen(smallTitle));
+    TEST_ASSERT_EQUAL_UINT('\0', smallTitle[15]);
+    TEST_ASSERT_EQUAL_STRING("09:30", bigWhen);
+
+    // Tight time buffer (cap 4): truncated, NUL-terminated, never overflows.
+    // Title buffer stays generous here.
+    char smallWhen[4];
+    n = CalendarModel::clockLine(s, 34200u, fakeDay2, fakeHhmm, bigTitle, sizeof(bigTitle),
+                                  smallWhen, sizeof(smallWhen), live);
+    TEST_ASSERT_EQUAL_STRING("1234567890123456789012345678901234567890", bigTitle);
+    TEST_ASSERT_EQUAL_UINT(3, strlen(smallWhen));
+    TEST_ASSERT_EQUAL_UINT('\0', smallWhen[3]);
 }
 
 static void test_allDayCount_and_isStale(void)
@@ -325,7 +355,7 @@ int main(int, char**)
     RUN_TEST(test_clockLine_afterTodaysLastEvent_ignoresTomorrow);
     RUN_TEST(test_clockLine_allDayOnlyToday_isZero);
     RUN_TEST(test_clockLine_invalidSnapshot_isZero);
-    RUN_TEST(test_clockLine_longTitleTruncatesSafelyIntoSmallBuffer);
+    RUN_TEST(test_clockLine_longTitleTruncatesSafelyIntoSmallBuffers);
     RUN_TEST(test_allDayCount_and_isStale);
     return UNITY_END();
 }

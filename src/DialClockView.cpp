@@ -28,19 +28,23 @@ constexpr float    kMinuteHandW    = 3.0f;
 constexpr float    kSecondHandW    = 1.0f;
 constexpr int32_t kClockCentreDotR = 4;
 constexpr int32_t kClockSecondDotR = 2;
-constexpr int32_t kClockDateY      = 168; // date when valid, "waiting for time" hint when not
-constexpr int32_t kClockSublineY   = 186; // today's next meeting (spec 4.19 amendment)
+constexpr int32_t kClockDateY       = 72;  // date when valid, "waiting for time" hint when not
+                                            // (spec 4.19 "clock layout" amendment: moved above
+                                            // the centre to make room for the meeting lines below)
+constexpr int32_t kClockEventTitleY = 168; // today's next meeting: title
+constexpr int32_t kClockEventTimeY  = 186; // today's next meeting: time "HH:MM"
 
 } // namespace
 
 // Clock card (spec 4.8): analogue face — 12 tick marks, hour/minute/second
 // hands from TimeService's wall clock (NTP over WiFi, backed by the Dial's
-// RTC so it reads correctly before WiFi comes up), small date at the 6
-// o'clock position. DialUi redraws it once a second via the clockSec field in
-// its FrameKey. When TimeService isn't valid yet (fresh device, no WiFi, empty
-// RTC) draws the ticks with no hands and "--:--" instead of a time.
+// RTC so it reads correctly before WiFi comes up), small date above the
+// centre (spec 4.19 "clock layout" amendment). DialUi redraws it once a
+// second via the clockSec field in its FrameKey. When TimeService isn't
+// valid yet (fresh device, no WiFi, empty RTC) draws the ticks with no hands
+// and "--:--" instead of a time.
 void drawClockCard(LovyanGFX& gfx, const DialTheme& theme, const TimeService& time,
-                   const char* subline, bool live)
+                   const char* title, const char* when, bool live)
 {
     // 12 tick marks; the four cardinal ones (12/3/6/9) run from a slightly
     // larger radius so they read as longer/bolder without a second draw call.
@@ -94,18 +98,30 @@ void drawClockCard(LovyanGFX& gfx, const DialTheme& theme, const TimeService& ti
     gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
     gfx.drawString(dateBuf, kCentreX, kClockDateY, &fonts::Font2);
 
-    // Today's next meeting (spec 4.19 amendment): one Font2 line under the
-    // date, amber (PENDING) once it is under way, dim (DIM) otherwise. Copied
-    // into a fixed stack buffer (no heap) so fitToRow() can trim it in place
-    // without mutating the caller's string.
-    if (subline != nullptr && subline[0] != '\0')
+    // Today's next meeting (spec 4.19 "clock layout" amendment): two Font2
+    // lines below the centre — the title, then its time. The title is always
+    // DIM; the time is amber (PENDING) once the meeting is under way, dim
+    // (DIM) otherwise. Copied into fixed stack buffers (no heap) so
+    // fitToRow() can trim each in place without mutating the caller's
+    // string.
+    if (title != nullptr && title[0] != '\0')
     {
-        char buf[48];
-        strncpy(buf, subline, sizeof(buf) - 1);
-        buf[sizeof(buf) - 1] = '\0';
-        fitToRow(gfx, buf, kClockSublineY, &fonts::Font2);
-        gfx.setTextColor(theme.col(live ? Col::PENDING : Col::DIM), theme.col(Col::BG));
-        gfx.drawString(buf, kCentreX, kClockSublineY, &fonts::Font2);
+        char titleBuf[48];
+        strncpy(titleBuf, title, sizeof(titleBuf) - 1);
+        titleBuf[sizeof(titleBuf) - 1] = '\0';
+        fitToRow(gfx, titleBuf, kClockEventTitleY, &fonts::Font2);
+        gfx.setTextColor(theme.col(Col::DIM), theme.col(Col::BG));
+        gfx.drawString(titleBuf, kCentreX, kClockEventTitleY, &fonts::Font2);
+
+        if (when != nullptr && when[0] != '\0')
+        {
+            char whenBuf[16];
+            strncpy(whenBuf, when, sizeof(whenBuf) - 1);
+            whenBuf[sizeof(whenBuf) - 1] = '\0';
+            fitToRow(gfx, whenBuf, kClockEventTimeY, &fonts::Font2);
+            gfx.setTextColor(theme.col(live ? Col::PENDING : Col::DIM), theme.col(Col::BG));
+            gfx.drawString(whenBuf, kCentreX, kClockEventTimeY, &fonts::Font2);
+        }
     }
 }
 

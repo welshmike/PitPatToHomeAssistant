@@ -10,7 +10,7 @@
 // The epoch -> local time converter for calendarLocalDayOf()/calendarHhmm()
 // below (also used internally by drawCalendarCard()). DialUi owns the
 // localtime_r wrapper and hands it in via setCalendarLocalTime() so the Clock
-// card's meeting subline (spec 4.19 amendment) can reuse the exact same day
+// card's meeting title/time lines (spec 4.19 amendment) can reuse the exact same day
 // number and "HH:MM" formatting as the Calendar face — one definition, not
 // two. Loop task only, one draw at a time — no re-entrancy to worry about.
 namespace

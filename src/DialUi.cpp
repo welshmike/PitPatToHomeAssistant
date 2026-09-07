@@ -1555,15 +1555,17 @@ bool calendarLocalTime(uint32_t epoch, struct tm& out)
 
 // Clock card (spec 4.8): the analogue face is drawn by DialClockView from the
 // live TimeService — see there for the layout and the invalid-time state.
-// Spec 4.19 amendment: when a calendar snapshot is fresh, also builds
-// today's next-meeting subline and hands it to drawClockCard() to draw under
-// the date. Mirrors the dataValid computation in the nudge block above
-// (pollCalendar()'s caller); `m_calendar.fetchedOnce()` guards against a
-// default-constructed (never-fetched) snapshot happening to look "valid".
+// Spec 4.19 "clock layout" amendment: when a calendar snapshot is fresh, also
+// builds today's next-meeting title and time and hands them to
+// drawClockCard() to draw below the centre. Mirrors the dataValid computation
+// in the nudge block above (pollCalendar()'s caller); `m_calendar.fetchedOnce()`
+// guards against a default-constructed (never-fetched) snapshot happening to
+// look "valid".
 void DialUi::drawClock(LovyanGFX& gfx)
 {
 #if HAS_CALENDAR
-    char subline[48] = {0};
+    char title[48] = {0};
+    char when[16]  = {0};
     bool live = false;
     const uint32_t nowEpoch = m_time.valid() ? static_cast<uint32_t>(time(nullptr)) : 0;
     const bool dataValid = (nowEpoch != 0) && m_calSnap.valid &&
@@ -1572,9 +1574,10 @@ void DialUi::drawClock(LovyanGFX& gfx)
     {
         setCalendarLocalTime(&calendarLocalTime);
         CalendarModel::clockLine(m_calSnap, nowEpoch, &calendarLocalDayOf, &calendarHhmm,
-                                  subline, sizeof(subline), live);
+                                  title, sizeof(title), when, sizeof(when), live);
     }
-    drawClockCard(gfx, m_theme, m_time, subline[0] ? subline : nullptr, live);
+    drawClockCard(gfx, m_theme, m_time, title[0] ? title : nullptr, when[0] ? when : nullptr,
+                  live);
 #else
     drawClockCard(gfx, m_theme, m_time);
 #endif

@@ -28,7 +28,7 @@ void drawCalendarCard(LovyanGFX& gfx, const DialTheme& theme, const CalendarMode
 // Sets the localtime_r-based callback used by calendarLocalDayOf() and
 // calendarHhmm() below (drawCalendarCard() also calls this on entry, from the
 // `localTime` argument above). DialUi::drawClock() calls this once before
-// building the Clock card's meeting subline via CalendarModel::clockLine()
+// building the Clock card's meeting title/time lines via CalendarModel::clockLine()
 // (spec 4.19 amendment) so both card faces agree on the same time source and
 // there is exactly one definition of "local day" / "HH:MM" for this feed.
 // Loop task only, one draw at a time.
