@@ -67,6 +67,15 @@ public:
 
     Backlight backlight() const { return m_backlight; }
 
+    // True once at least `ms` have passed since the last activity (any input,
+    // wake, or noteActivity). Shares the clock the backlight dims on, so with
+    // ms == DIM_AFTER_MS it turns true on the same tick the screen dims.
+    // False before the first tick has been seen.
+    bool idleFor(uint32_t nowMs, uint32_t ms) const
+    {
+        return m_haveActivity && (nowMs - m_lastActivityMs) >= ms;
+    }
+
     // Called by the UI on the tick it *acts* on btnStop (the belt's emergency
     // stop, accepted or refused). One physical press is reported twice by
     // M5Unified — wasClicked() at release, then wasSingleClicked() once the

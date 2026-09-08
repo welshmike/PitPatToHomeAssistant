@@ -61,6 +61,10 @@ public:
     // later count drop to 0 doesn't fight the user's own navigation.
     void noteManualNavigation();
 
+    // True while this machine raised the Flights card and still owns its
+    // return (i.e. until RETURN_TO_CLOCK or noteManualNavigation()).
+    bool isShowing() const { return m_autoShown; }
+
 private:
     bool m_enabled = true;
     bool m_autoShown = false;

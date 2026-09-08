@@ -253,6 +253,27 @@ void DialUi::tick(uint32_t nowMs)
     }
 #endif
 
+    // Idle return (spec 4.8 amendment): parked on any desk card but Clock
+    // with no input for kIdleReturnMs -> back to Clock. Only while the belt
+    // is idle (the resolved screen is a desk card; Connecting/Starting/
+    // Running/Paused never get here), never over an open menu or selector
+    // (they have their own shorter timeouts), and never while an auto-show
+    // owns the card — a nudge raised 5 min ahead must outlive 2 min of
+    // nobody touching the Dial. The auto-shows note activity when they raise
+    // a card, so a card the user scrolled to *during* an auto-show is timed
+    // from that scroll. navigateToCard() also lands the light cards on
+    // their first page, as the hold-home gesture does.
+    if (isDeskScreen(screenNow) && screenNow != Screen::MENU &&
+        m_cards.current() != CardId::CLOCK && !m_autoShow.isShowing() &&
+#if HAS_CALENDAR
+        !m_calNudge.isShowing() &&
+#endif
+        m_input.idleFor(nowMs, kIdleReturnMs))
+    {
+        navigateToCard(CardId::CLOCK);
+        screenNow = currentScreen(isPausedState());
+    }
+
     // Flights card (spec 4.9): tell FlightsService whether the card is on
     // screen every tick (cheap atomic write), then run the visible card's
     // own housekeeping (idx clamp, wanted logo) while it is.

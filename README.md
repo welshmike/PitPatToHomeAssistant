@@ -162,9 +162,12 @@ configuration screen for this and similar settings is planned.
 
 ### Dimming
 
-After 2 minutes idle on any card (Treadmill/Disconnected, Clock, or a future card), the backlight
-drops to 20% brightness and stays there — it never turns off. Any input restores full brightness
-(see the wake-only rule above).
+After 2 minutes idle on any card, the backlight drops to 20% brightness and stays there — it
+never turns off. Any input restores full brightness (see the wake-only rule above). On the same
+tick, a desk card other than Clock (Treadmill, Flights, Office, Lamp, Calendar) returns to the
+Clock card, so a dimmed Dial always shows the clock and the next meeting. The return never
+happens while the belt is connecting, counting down, running or paused, over an open menu or
+speed selector, or while a Flights auto-show or Calendar nudge is holding its card up.
 
 ### Buzzer
 

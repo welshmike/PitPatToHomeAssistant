@@ -746,6 +746,41 @@ static void test_time_wraparoundSafe(void)
     TEST_ASSERT_TRUE(DialInput::Backlight::DIM == input.backlight());
 }
 
+// ---------------------------------------------------------------------------
+// idleFor() — the idle-return clock (spec 4.8 amendment 2026-09-08)
+// ---------------------------------------------------------------------------
+
+static void test_idleFor_falseBeforeFirstTick(void)
+{
+    DialInput input;
+    TEST_ASSERT_FALSE(input.idleFor(5000000, 1));
+}
+
+static void test_idleFor_trueOnTheDimTick_resetByInput(void)
+{
+    DialInput input;
+    uint32_t t = 1000;
+    input.tick(0, false, 0, 0, false, false, false, t); // baseline = activity
+
+    TEST_ASSERT_FALSE(input.idleFor(t + DialInput::DIM_AFTER_MS - 1, DialInput::DIM_AFTER_MS));
+    TEST_ASSERT_TRUE(input.idleFor(t + DialInput::DIM_AFTER_MS, DialInput::DIM_AFTER_MS));
+
+    // A detent at t+60 s restarts the clock.
+    input.tick(4, false, 0, 0, false, false, false, t + 60000);
+    TEST_ASSERT_FALSE(input.idleFor(t + DialInput::DIM_AFTER_MS, DialInput::DIM_AFTER_MS));
+    TEST_ASSERT_TRUE(input.idleFor(t + 60000 + DialInput::DIM_AFTER_MS, DialInput::DIM_AFTER_MS));
+}
+
+static void test_idleFor_resetByNoteActivity_andWrapSafe(void)
+{
+    DialInput input;
+    uint32_t t0 = UINT32_MAX - 1000;
+    input.tick(0, false, 0, 0, false, false, false, t0);
+    input.noteActivity(t0 + 500); // e.g. an auto-show raising a card
+    TEST_ASSERT_FALSE(input.idleFor(t0 + 500 + 119999, 120000)); // wraps
+    TEST_ASSERT_TRUE(input.idleFor(t0 + 500 + 120000, 120000));  // wraps
+}
+
 int main(int argc, char **argv)
 {
     UNITY_BEGIN();
@@ -792,6 +827,9 @@ int main(int argc, char **argv)
     RUN_TEST(test_touchBegan_onlyOnTheDownTick);
     RUN_TEST(test_touchBegan_falseWhenWakeSwallowed);
     RUN_TEST(test_time_wraparoundSafe);
+    RUN_TEST(test_idleFor_falseBeforeFirstTick);
+    RUN_TEST(test_idleFor_trueOnTheDimTick_resetByInput);
+    RUN_TEST(test_idleFor_resetByNoteActivity_andWrapSafe);
 
     return UNITY_END();
 }

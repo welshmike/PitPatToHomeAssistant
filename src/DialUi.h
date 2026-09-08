@@ -87,6 +87,11 @@ private:
     static constexpr uint8_t kBrightFull = 255;
     static constexpr uint8_t kBrightDim  = 50;
 
+    // Idle return (spec 4.8 amendment 2026-09-08): a desk card other than
+    // Clock goes back to Clock after this long without input, on the same
+    // tick the backlight dims — so a dimmed Dial always shows the Clock.
+    static constexpr uint32_t kIdleReturnMs = DialInput::DIM_AFTER_MS;
+
     // Every colour drawn goes through the theme (DialTheme.h), which owns the
     // Col enum, the palette table and the canvas/direct-display distinction.
     // Returns the value to pass as a "colour" to any LovyanGFX draw call on
