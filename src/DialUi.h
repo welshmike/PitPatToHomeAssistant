@@ -459,7 +459,9 @@ private:
     // flight. Below these the Flights card draws its text fallback instead
     // of reserving a logo rectangle it cannot fill (seen on hardware as a
     // black hole in the white band showing the previous frame's pixels).
-    static constexpr uint32_t kLogoDecodeMinFreeHeap = 80 * 1024;
+    // 76 KB: steady-state free heap on hardware is ~80.6 KB (2026-09-08 diag), and
+    // decodes at that level succeed; 80 KB left the gate flapping on the margin.
+    static constexpr uint32_t kLogoDecodeMinFreeHeap = 76 * 1024;
     static constexpr uint32_t kLogoDecodeMinLargest  = 48 * 1024;
     static bool logoDecodeHeapOk(uint32_t& freeHeap, uint32_t& largest);
     // IATA whose decode is currently deferred for heap, so the deferral is
