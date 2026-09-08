@@ -1381,11 +1381,11 @@ void DialUi::render(uint32_t nowMs)
         // TLS session open there may not be enough. Defer the decode (the
         // 250 ms frame fallback retries) instead of failing, and only remember
         // a failure as permanent when heap was ample at the time.
-        const uint32_t largest  = ESP.getMaxAllocHeap();
-        const uint32_t freeHeap = ESP.getFreeHeap();
-        // pngle needs ~45 KB of workspace plus line buffers: wait for a quiet
-        // moment (no TLS session open on the net task) before decoding.
-        if (largest >= 48 * 1024 && freeHeap >= 80 * 1024)
+        // drawFlights() only reserves the rectangle when this passes, so the
+        // else branch below is a safety net for heap that moved between the
+        // two calls within one render().
+        uint32_t freeHeap = 0, largest = 0;
+        if (logoDecodeHeapOk(freeHeap, largest))
         {
             const bool pngOk = dialDrawAirlineLogo(m_logoToDraw);
             if (pngOk)
@@ -1623,11 +1623,27 @@ void DialUi::drawFlights(LovyanGFX& gfx, uint32_t nowMs)
         // Only (re)decode a logo the net task actually has cached and that
         // hasn't already failed to decode this session (I4).
         const bool wantLogo = ac.airlineIata[0] != '\0' && !isLogoDecodeFailed(ac.airlineIata);
-        haveLogo = wantLogo && m_flights.logoReady(ac.airlineIata);
+        const bool ready    = wantLogo && m_flights.logoReady(ac.airlineIata);
+        // Reserve the logo rectangle only when render() will actually be able
+        // to fill it this frame: the logo is already on the display, or the
+        // heap can take the decode right now. Otherwise draw the text
+        // fallback; the 250 ms frame fallback re-evaluates and the logo
+        // appears as soon as the heap allows.
+        const bool onScreen = m_logoOnScreen[0] != '\0' && strncmp(m_logoOnScreen, ac.airlineIata, 2) == 0;
+        uint32_t freeHeap = 0, largest = 0;
+        haveLogo = ready && (onScreen || logoDecodeHeapOk(freeHeap, largest));
         if (haveLogo)
         {
             strncpy(m_logoToDraw, ac.airlineIata, 2);
             m_logoToDraw[2] = '\0';
+            m_logoDeferred[0] = '\0';
+        }
+        else if (ready && strncmp(m_logoDeferred, ac.airlineIata, 2) != 0)
+        {
+            strncpy(m_logoDeferred, ac.airlineIata, 2);
+            m_logoDeferred[2] = '\0';
+            log_w("DialUi: logo %.2s deferred for heap (%u free / %u largest), text fallback meanwhile",
+                  ac.airlineIata, (unsigned)freeHeap, (unsigned)largest);
         }
     }
     const uint8_t radarPhase = (!m_flightsSnap.offline && m_flightsSnap.count == 0)
@@ -1639,6 +1655,13 @@ void DialUi::drawFlights(LovyanGFX& gfx, uint32_t nowMs)
 // I4: see m_logoFailed's comment in DialUi.h. `iata` is compared with
 // strncmp(..., 2) throughout, same as m_logoIata/ac.airlineIata elsewhere in
 // drawFlights() — a 2-letter IATA code, not necessarily NUL-padded past that.
+bool DialUi::logoDecodeHeapOk(uint32_t& freeHeap, uint32_t& largest)
+{
+    largest  = ESP.getMaxAllocHeap();
+    freeHeap = ESP.getFreeHeap();
+    return largest >= kLogoDecodeMinLargest && freeHeap >= kLogoDecodeMinFreeHeap;
+}
+
 bool DialUi::isLogoDecodeFailed(const char* iata) const
 {
     for (uint8_t i = 0; i < m_logoFailedCount; i++)

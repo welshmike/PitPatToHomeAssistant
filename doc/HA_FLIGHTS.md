@@ -103,7 +103,7 @@ icon `mdi:airplane-check`. Add it to any dashboard as a normal toggle.
 | --- | --- | --- | --- |
 | HA → Dial (state) | `pacekeeper-dial/flights/state` | JSON, see below | Retained. Published on any change to `sensor.flightradar24_current_in_area` (incl. attributes), at HA start, and in reply to `refresh`. |
 | Dial → HA (refresh) | `pacekeeper-dial/flights/refresh` | `1` | Published once after each MQTT (re)connect — asks HA to re-publish the retained state so the Dial doesn't wait for the next real change. |
-| Dial ← HA (logo) | `http://<HA>:8123/local/logos/{IATA}.png` | PNG, plain HTTP | Not MQTT — a `WiFiClient` GET from `FlightsService`. 404 means no cached logo for that airline; the Dial falls back to text. |
+| Dial ← HA (logo) | `http://<HA>:8123/local/logos/{IATA}.png` | PNG, plain HTTP | Not MQTT — a `WiFiClient` GET from `FlightsService`. 404 means no cached logo for that airline (yet — HA may still be downloading it); the Dial retries after 60 s and falls back to text. |
 
 State payload — nearest first, at most 6 aircraft, compact keys so six aircraft fit in roughly
 800 bytes (`FlightsService`'s MQTT buffer is 2048 bytes):

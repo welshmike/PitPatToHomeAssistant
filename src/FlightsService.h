@@ -239,10 +239,12 @@ private:
     uint32_t  m_httpBufIdleSinceMs = 0; // 0 = not counting down (active, or already freed)
     char      m_lastContentType[40] = {0};
 
-    // 10 minutes: long enough that a genuinely absent logo isn't re-fetched
-    // on every card visit, short enough that one HA has since downloaded
-    // shows up well within a session.
-    static constexpr uint32_t kLogoMissingTtlMs = 10 * 60 * 1000;
+    // 60 s (was 10 min): HA downloads a newly-seen airline's logo from the
+    // internet on first sight, so the Dial's first GET usually races it and
+    // gets 404. One small LAN GET a minute while the card shows that airline
+    // is cheap; ten minutes of text fallback for a logo that arrived a few
+    // seconds later was not (Mike, 2026-09-08).
+    static constexpr uint32_t kLogoMissingTtlMs = 60 * 1000;
     static constexpr uint8_t kMissingLogoSize = 16;
     MissingLogo   m_missingLogos[kMissingLogoSize];
     uint8_t       m_missingCount = 0;
