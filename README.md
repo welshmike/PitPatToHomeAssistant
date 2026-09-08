@@ -203,7 +203,8 @@ glyphs on a ring, the current one highlighted in amber with its name in the midd
 to move the highlight (it wraps at the ends); tap a glyph to go straight there, or tap anywhere
 else on the face (or click the side button again) to take the highlighted one — the menu is never
 a dead end. Eight seconds without input closes it unchanged. **Holding** the side button jumps straight back to the
-Treadmill card from anywhere, closing the menu or the speed picker on the way. While the belt is
+Treadmill card from anywhere, closing the menu or the speed picker on the way; a **double click**
+does the same but lands on the Clock card. While the belt is
 actually running the side button is still the emergency stop, on the instant press rather than
 after the click window. The knob never scrolls cards: it always adjusts whatever the card showing
 owns (see each card below). Connecting/Starting/Running/Paused screens override whichever card is

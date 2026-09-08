@@ -199,6 +199,36 @@ static void test_btnClick_singleClick_setsBtnClickOnlyOnThatTick(void)
     TEST_ASSERT_FALSE(eNext.btnClick);
 }
 
+static void test_btnDoubleClick_setsBtnDoubleClickOnlyOnThatTick(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+    input.tick(0, false, 0, 0, false, false, false, t0); // baseline
+
+    DialEvents e = input.tick(0, false, 0, 0, false, false, false, t0 + 10, true);
+    TEST_ASSERT_TRUE(e.btnDoubleClick);
+    TEST_ASSERT_FALSE(e.btnClick);
+    TEST_ASSERT_FALSE(e.btnHold);
+    TEST_ASSERT_FALSE(e.btnStop);
+
+    DialEvents eNext = input.tick(0, false, 0, 0, false, false, false, t0 + 20);
+    TEST_ASSERT_FALSE(eNext.btnDoubleClick);
+}
+
+static void test_btnDoubleClick_whileDim_wakesOnly(void)
+{
+    DialInput input;
+    uint32_t t0 = 1000;
+    input.tick(0, false, 0, 0, false, false, false, t0);
+    input.tick(0, false, 0, 0, false, false, false, t0 + DialInput::DIM_AFTER_MS + 1);
+    TEST_ASSERT_TRUE(DialInput::Backlight::DIM == input.backlight());
+
+    DialEvents e = input.tick(0, false, 0, 0, false, false, false, t0 + DialInput::DIM_AFTER_MS + 2, true);
+    TEST_ASSERT_TRUE(e.wake);
+    TEST_ASSERT_FALSE(e.btnDoubleClick);
+    TEST_ASSERT_TRUE(DialInput::Backlight::FULL == input.backlight());
+}
+
 static void test_btnHold_setsBtnHoldOnThatTick(void)
 {
     DialInput input;
@@ -797,6 +827,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_wake_touchWhileDim_swallowsGestureUntilRelease);
     RUN_TEST(test_wake_touchWhileDim_swallowsLongPressUntilRelease);
     RUN_TEST(test_btnClick_singleClick_setsBtnClickOnlyOnThatTick);
+    RUN_TEST(test_btnDoubleClick_setsBtnDoubleClickOnlyOnThatTick);
+    RUN_TEST(test_btnDoubleClick_whileDim_wakesOnly);
     RUN_TEST(test_btnHold_setsBtnHoldOnThatTick);
     RUN_TEST(test_btnStop_stillFiresOnRawClick_independentOfSingleClickHold);
     RUN_TEST(test_consumeClick_swallowsTheFollowingSingleClick);

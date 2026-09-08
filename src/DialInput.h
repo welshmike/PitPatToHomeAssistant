@@ -21,6 +21,7 @@ struct DialEvents
     int swipe = 0; // -1 left, +1 right, 0 none
     bool btnClick = false; // decided single click (from btnSingleClicked)
     bool btnHold = false;  // hold threshold reached (from btnHold)
+    bool btnDoubleClick = false; // decided double click (from btnDoubleClicked)
 
     // Finger report (spec 4.18 amendment, hue-ring scrub): true on every tick
     // the finger is down and the gesture is not wake-swallowed, with this
@@ -62,8 +63,12 @@ public:
     // wasHold() edges, fed straight through to btnClick/btnHold; like
     // btnClicked, either counts as activity for the backlight and is
     // swallowed (wake-only) on the tick that wakes a dimmed backlight.
+    // btnDoubleClicked is M5Dial's wasDoubleClicked() edge (decided at the
+    // same point as a single click), fed through to btnDoubleClick; it
+    // trails nowMs only so the many existing 8-argument callers stay valid.
     DialEvents tick(long encoderCount, bool touchDown, int touchX, int touchY,
-                     bool btnClicked, bool btnSingleClicked, bool btnHold, uint32_t nowMs);
+                     bool btnClicked, bool btnSingleClicked, bool btnHold, uint32_t nowMs,
+                     bool btnDoubleClicked = false);
 
     Backlight backlight() const { return m_backlight; }
 

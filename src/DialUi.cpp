@@ -312,9 +312,11 @@ void DialUi::handleInput(uint32_t nowMs)
     const bool btnClicked = M5Dial.BtnA.wasClicked();
     const bool btnSingleClicked = M5Dial.BtnA.wasSingleClicked();
     const bool btnHeld = M5Dial.BtnA.wasHold();
+    const bool btnDoubleClicked = M5Dial.BtnA.wasDoubleClicked();
 
     const DialEvents ev = m_input.tick(encoderCount, touch.isPressed(), touch.x, touch.y,
-                                        btnClicked, btnSingleClicked, btnHeld, nowMs);
+                                        btnClicked, btnSingleClicked, btnHeld, nowMs,
+                                        btnDoubleClicked);
     m_holdProgress = ev.holdProgress;
 
     // Keep the screen awake through an active walk even with no touch/encoder
@@ -563,6 +565,20 @@ void DialUi::handleInput(uint32_t nowMs)
             m_selector.close();
         }
         navigateToCard(CardId::TREADMILL);
+        playAcceptBeep(true);
+    }
+
+    if (ev.btnDoubleClick && !beltScreen)
+    {
+        // Double click: straight to the Clock card from any desk card or the
+        // menu (spec 4.12 amendment 2026-09-08), the same shape as hold-home
+        // above but landing on the Clock, which is where the Dial rests.
+        m_menu.close();
+        if (m_selector.isOpen())
+        {
+            m_selector.close();
+        }
+        navigateToCard(CardId::CLOCK);
         playAcceptBeep(true);
     }
 

@@ -43,14 +43,15 @@ void DialInput::claimTouch()
 }
 
 DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int touchY,
-                            bool btnClicked, bool btnSingleClicked, bool btnHold, uint32_t nowMs)
+                            bool btnClicked, bool btnSingleClicked, bool btnHold, uint32_t nowMs,
+                            bool btnDoubleClicked)
 {
     DialEvents ev;
 
     long rawDelta = m_haveLastCount ? (encoderCount - m_lastCount) : 0;
     bool encoderMoving = rawDelta != 0;
     bool touchBeginning = touchDown && !m_touchActive;
-    bool inputBeginning = touchBeginning || encoderMoving || btnClicked || btnSingleClicked || btnHold;
+    bool inputBeginning = touchBeginning || encoderMoving || btnClicked || btnSingleClicked || btnHold || btnDoubleClicked;
 
     if (inputBeginning && m_backlight != Backlight::FULL) {
         // Wake gating: this tick's input is entirely swallowed. Only wake=true
@@ -91,7 +92,7 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
         m_haveActivity = true;
     }
 
-    bool hasInput = touchDown || encoderMoving || btnClicked || btnSingleClicked || btnHold;
+    bool hasInput = touchDown || encoderMoving || btnClicked || btnSingleClicked || btnHold || btnDoubleClicked;
     if (hasInput) {
         m_backlight = Backlight::FULL;
         m_lastActivityMs = nowMs;
@@ -197,6 +198,12 @@ DialEvents DialInput::tick(long encoderCount, bool touchDown, int touchX, int to
     }
     if (btnHold) {
         ev.btnHold = true;
+    }
+    if (btnDoubleClicked) {
+        // Two raw wasClicked() edges precede this; on the belt screens each
+        // was already an emergency stop, and on the desk cards both were
+        // ignored, so nothing here needs the consumeClick() latch.
+        ev.btnDoubleClick = true;
     }
 
     updateBacklight(nowMs);
