@@ -181,7 +181,7 @@ std::atomic<uint32_t> s_dropped{0};
 // (spec 4.15).
 const char *const kInfoKeywords[] = {
     "connect", "Connect", "kick", "Kick", "Subscribed", "BLE", "Net status", "boot",
-    "Treadmill:", "logo",
+    "Treadmill:", "logo", "Heap:",
 };
 
 bool infoWanted(const char *line)

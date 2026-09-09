@@ -697,3 +697,149 @@ def test_window_end_is_end_of_tomorrow():
     assert calendar_feed.window_end(
         NOW + timedelta(days=1), LONDON
     ) == datetime(2026, 9, 10, 23, 59, 59, tzinfo=LONDON)
+
+
+# --- airline logos (spec 4.11 amendment 2026-09-09) --------------------------
+
+
+def _red_png(w=120, h=48):
+    """An opaque red PNG with a transparent 10-px frame, as bytes."""
+    import io
+
+    from PIL import Image
+
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    for x in range(10, w - 10):
+        for y in range(10, h - 10):
+            img.putpixel((x, y), (255, 0, 0, 255))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _px(data, x, y):
+    i = (y * calendar_feed.LOGO_W + x) * 2
+    return (data[i] << 8) | data[i + 1]
+
+
+def test_png_to_rgb565_geometry_white_ground_and_byte_order():
+    data = calendar_feed.png_to_rgb565(_red_png())
+    assert len(data) == calendar_feed.LOGO_BYTES == 11520
+    # The canvas margin and the PNG's transparent frame come out white.
+    assert _px(data, 0, 0) == 0xFFFF
+    assert _px(data, 119, 47) == 0xFFFF
+    assert _px(data, 8, 24) == 0xFFFF
+    # The opaque red block lands scaled and centred; big-endian 565 red.
+    assert _px(data, 60, 24) == 0xF800
+    assert data[(24 * 120 + 60) * 2] == 0xF8
+    assert data[(24 * 120 + 60) * 2 + 1] == 0x00
+
+
+def test_png_to_rgb565_accepts_other_sizes():
+    data = calendar_feed.png_to_rgb565(_red_png(300, 90))
+    assert len(data) == calendar_feed.LOGO_BYTES
+    assert _px(data, 60, 24) == 0xF800
+
+
+def test_logo_store_caches_hits_and_remembers_misses(tmp_path):
+    calls = []
+
+    def fetcher(iata, timeout=10):
+        calls.append(iata)
+        if iata == "ZZ":
+            return None
+        if iata == "ER":
+            raise OSError("boom")
+        return _red_png()
+
+    now = [1000.0]
+    store = calendar_feed.LogoStore(str(tmp_path / "logos"), fetcher=fetcher, clock=lambda: now[0])
+
+    status, data = store.get("BA")
+    assert status == 200 and len(data) == calendar_feed.LOGO_BYTES
+    assert (tmp_path / "logos" / "BA.565").read_bytes() == data
+    assert store.get("BA") == (200, data)
+    assert calls == ["BA"]  # memory hit, no refetch
+
+    # A fresh store finds the disk cache without fetching.
+    store2 = calendar_feed.LogoStore(str(tmp_path / "logos"), fetcher=fetcher, clock=lambda: now[0])
+    assert store2.get("BA") == (200, data)
+    assert calls == ["BA"]
+
+    # 404 at the source is remembered for LOGO_MISS_TTL_S, then retried.
+    assert store.get("ZZ") == (404, None)
+    assert store.get("ZZ") == (404, None)
+    assert calls == ["BA", "ZZ"]
+    now[0] += calendar_feed.LOGO_MISS_TTL_S + 1
+    assert store.get("ZZ") == (404, None)
+    assert calls == ["BA", "ZZ", "ZZ"]
+
+    # Transient failure is 503 and not remembered.
+    assert store.get("ER") == (503, None)
+    assert store.get("ER") == (503, None)
+    assert calls[-2:] == ["ER", "ER"]
+    assert not (tmp_path / "logos" / "ER.565").exists()
+
+
+def test_logo_store_refetches_a_short_cache_file(tmp_path):
+    d = tmp_path / "logos"
+    d.mkdir()
+    (d / "BA.565").write_bytes(b"\x00" * 100)
+    store = calendar_feed.LogoStore(str(d), fetcher=lambda iata, timeout=10: _red_png())
+    status, data = store.get("BA")
+    assert status == 200 and len(data) == calendar_feed.LOGO_BYTES
+    assert (d / "BA.565").read_bytes() == data
+
+
+@pytest.fixture
+def relay_with_logos(tmp_path):
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    feed = calendar_feed.Feed(
+        {"ICS_URL": "https://example.invalid/basic.ics", "MY_EMAIL": ME},
+        fetcher=lambda url, timeout=20: ICS,
+        clock=lambda: NOW,
+    )
+
+    def fetcher(iata, timeout=10):
+        return None if iata == "ZZ" else _red_png()
+
+    logos = calendar_feed.LogoStore(str(tmp_path / "logos"), fetcher=fetcher)
+    httpd = ThreadingHTTPServer(
+        ("127.0.0.1", 0), calendar_feed.make_handler(feed, "s3cret", logos)
+    )
+    httpd.daemon_threads = True
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    base = "http://127.0.0.1:%d" % httpd.server_address[1]
+    try:
+        yield base
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+def test_logo_endpoint_serves_raw_565_without_a_token(relay_with_logos):
+    base = relay_with_logos
+    status, headers, body = _get(base + "/logo/BA.565")
+    assert status == 200
+    assert headers["Content-Type"] == "application/octet-stream"
+    assert headers["Content-Length"] == str(calendar_feed.LOGO_BYTES)
+    assert len(body) == calendar_feed.LOGO_BYTES
+    assert _px(body, 60, 24) == 0xF800
+
+
+def test_logo_endpoint_404s_for_unknown_airline_and_bad_paths(relay_with_logos):
+    base = relay_with_logos
+    assert _get(base + "/logo/ZZ.565")[0] == 404
+    assert _get(base + "/logo/ba.565")[0] == 404
+    assert _get(base + "/logo/BAX.565")[0] == 404
+    assert _get(base + "/logo/BA.png")[0] == 404
+    assert _get(base + "/logos/BA.565")[0] == 404
+
+
+def test_relay_without_a_logo_store_404s_the_logo_route(relay):
+    base, _feed = relay
+    assert _get(base + "/logo/BA.565")[0] == 404

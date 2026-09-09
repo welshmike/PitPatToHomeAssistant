@@ -29,7 +29,8 @@ Google Calendar  --https/.ics-->  Mac mini relay  --http/LAN-->  Dial
 | --- | --- | --- |
 | `tools/calendar_feed/calendar_feed.py` | Mac mini | one process: refresh thread + `http.server` |
 | `~/.config/pacekeeper/calendar.env` | Mac mini | `ICS_URL`, `MY_EMAIL`, optional `PORT`/`TOKEN`/`TZ`/`BIND`; **never in the repo** |
-| `~/Library/Application Support/pacekeeper-calendar/venv` | Mac mini | `icalendar` + `recurring-ical-events` |
+| `~/Library/Application Support/pacekeeper-calendar/venv` | Mac mini | `icalendar` + `recurring-ical-events` + `Pillow` |
+| `~/Library/Application Support/pacekeeper-calendar/logos/` | Mac mini | converted airline logos, `{IATA}.565` (config `LOGO_DIR`) |
 | `~/Library/LaunchAgents/com.pacekeeper.calendar-feed.plist` | Mac mini | `RunAtLoad` + `KeepAlive` |
 | `~/Library/Logs/pacekeeper-calendar.log` | Mac mini | stdout and stderr |
 | `CALENDAR_URL` / `CALENDAR_TOKEN` | `src/config.h` | gitignored |
@@ -167,6 +168,26 @@ are compiled out; the menu entry stays and lands on the Clock face.
 An `http://` URL uses a plain `WiFiClient`; `https://` still uses the pinned Google Trust
 Services roots in `src/CalendarCerts.h`. When `CALENDAR_TOKEN` is defined the Dial appends
 `?k=<token>`, and the relay checks it whenever `TOKEN` is set in `calendar.env`.
+
+## Airline logos (added 2026-09-09)
+
+The same process also serves the Flights card's airline logos, because the Dial (an ESP32-S3
+without PSRAM) cannot spare the ~60 KB of heap a PNG decode needs once it has been up for a day.
+
+`GET /logo/{IATA}.565` — `IATA` is two characters `[A-Z0-9]`. The relay fetches
+`https://pics.avs.io/120/48/{IATA}.png` once, scales it to 108 × 43, composites it on white inside a
+120 × 48 canvas at (6, 2) and answers with the raw image as **big-endian RGB565**: exactly 11,520
+bytes, `Content-Type: application/octet-stream`. Converted logos are cached on disk under
+`~/Library/Application Support/pacekeeper-calendar/logos/` (override with `LOGO_DIR` in
+`calendar.env`) and in memory, forever — airline marks rarely change; delete the file to force a
+refetch. A 404 at pics.avs.io answers 404 and is remembered for 10 minutes; a network or conversion
+failure answers 503 and is retried on the next request. No token on this route: the logos are
+public. The Dial streams the body into its own flash and draws it a row at a time (`FlightsService`,
+`dialDrawAirlineLogo()`); its `FLIGHTS_LOGO_BASE_URL` (default `http://macmini.lan:8765`) is where
+it looks.
+
+`Pillow` joins the venv for this (`requirements.txt`); re-run `install.sh` on an existing install
+to pick it up, then `launchctl kickstart -k gui/501/com.pacekeeper.calendar-feed`.
 
 ## Privacy
 

@@ -9,13 +9,15 @@
 #include "FlightsModel.h"
 #include "Guarded.h"
 
-// Where the airline logos live (spec 4.11). Home Assistant serves its
-// `config/www/` directory at `/local/`, so `<HA>:8123/local/logos/{IATA}.png`
-// is a plain-HTTP file on the LAN — no TLS, no third-party API. Set
-// FLIGHTS_LOGO_BASE_URL in config.h to override; the default assumes HA runs
-// on the same host as the MQTT broker with the default 8123 port.
+// Where the airline logos live (spec 4.11, amended 2026-09-09). The Mac
+// mini relay (tools/calendar_feed) serves `<relay>/logo/{IATA}.565`: the
+// airline's 120x48 logo already composited on white and converted to raw
+// big-endian RGB565 (11,520 bytes), so the Dial pushes it to the display
+// row by row with no PNG decoder and no heap. Plain HTTP on the LAN. Set
+// FLIGHTS_LOGO_BASE_URL in config.h to override (scheme, host, port, no
+// trailing path).
 #ifndef FLIGHTS_LOGO_BASE_URL
-#define FLIGHTS_LOGO_BASE_URL "http://" MQTT_SERVER ":8123/local"
+#define FLIGHTS_LOGO_BASE_URL "http://macmini.lan:8765"
 #endif
 
 class NetManager;
@@ -134,15 +136,13 @@ private:
     // "wantActive" only ever goes false between requests, not during one).
     void manageHttpBuf(uint32_t nowMs, bool wantActive);
 
-    // C2: cache-hit validation for /logos/{iata}.png — true iff the file
-    // opens, its size is > 8 bytes and its first 8 bytes are the PNG
-    // signature. Does not touch m_httpBuf.
+    // Cache-hit validation for /logos/{iata}.565 — true iff the file opens
+    // and is exactly kLogoBytes long. Does not touch m_httpBuf.
     bool validateLogoFile(const char *path) const;
 
-    // Negative cache with a TTL. HA's logo automation downloads a new
-    // airline's PNG a few seconds AFTER it publishes the aircraft that
-    // needs it, so the Dial's first GET of /local/logos/{IATA}.png very
-    // often 404s meaning "not yet", not "never". A latched miss would then
+    // Negative cache with a TTL. The relay fetches a new airline's logo
+    // from the internet on the Dial's first request, so an early GET can
+    // 404 or 503 meaning "not yet", not "never". A latched miss would then
     // leave that airline logo-less until the next reboot, so an entry
     // older than kLogoMissingTtlMs is dropped and the fetch is retried.
     // Net task only (both mutate the table).
@@ -153,17 +153,17 @@ private:
     bool isLogoMissing(const char *iata, uint32_t nowMs);
     void markLogoMissing(const char *iata, uint32_t nowMs);
 
-    // Plain-HTTP GET of FLIGHTS_LOGO_BASE_URL "/logos/{iata}.png" into
-    // m_httpBuf (HA serves these off its own `config/www/`, so there is no
-    // TLS and no third party involved any more). Raw WiFiClient rather than
-    // HTTPClient: an HTTP/1.0 request line, three headers and a
-    // status-line/header parse is all this needs, and it keeps the net
-    // task's stack and heap cost to the 8 KB body buffer. Connect and
+    // Plain-HTTP GET of FLIGHTS_LOGO_BASE_URL "/logo/{iata}.565", streamed
+    // through m_httpBuf (kHttpBufCap at a time) into the LittleFS file at
+    // `path` — the caller's temp name, promoted by rename once validated.
+    // Raw WiFiClient rather than HTTPClient: an HTTP/1.0 request line, three
+    // headers and a status-line/header parse is all this needs. Connect and
     // response deadlines are both kLogoTimeoutMs. Returns the HTTP status
-    // code, or a negative value on a transport error (-1) or a body over
-    // kHttpBufCap (-2). Leaves the response's Content-Type in
+    // code, or a negative value on a transport/write error (-1) or a body
+    // longer than kLogoBytes (-2); on anything but a complete 200 the file
+    // at `path` is removed. Leaves the response's Content-Type in
     // m_lastContentType and the body length in `len`. Net task only.
-    int fetchLogo(const char *iata, size_t &len);
+    int fetchLogo(const char *iata, const char *path, size_t &len);
 
     NetManager &m_net;
 
@@ -226,14 +226,16 @@ private:
     // which is by definition the wanted logo.
     std::atomic<bool> m_logoRetryReset{false};
 
-    // M2: HTTP scratch buffer for the logo body. Lazily malloc'ed/freed by
-    // manageHttpBuf() (see tick()) rather than a static member, so it only
-    // actually costs heap while the Flights card is visible and WiFi is up
-    // (plus a kHttpBufFreeDelayMs grace window after that stops being true,
-    // so flipping cards doesn't churn malloc/free). 8 KB: HA's logo PNGs
-    // measure 3-5 KB, and an outlier over the cap is treated as
-    // missing-for-session rather than grown into (spec review 2026-09-04).
-    static constexpr size_t   kHttpBufCap = 8192;
+    // A cached logo is the raw 120 x 48 RGB565 image the relay serves:
+    // exactly this many bytes, or it is not a logo.
+    static constexpr size_t   kLogoBytes = 120 * 48 * 2;
+    // M2: HTTP scratch buffer for the logo body, lazily malloc'ed/freed by
+    // manageHttpBuf() (see tick()) so it only costs heap while the Flights
+    // card is visible and WiFi is up (plus a kHttpBufFreeDelayMs grace
+    // window, so flipping cards doesn't churn malloc/free). 1 KB since the
+    // raw-565 format (2026-09-09): the body streams through it into
+    // LittleFS instead of being held whole (it was 8 KB for PNGs).
+    static constexpr size_t   kHttpBufCap = 1024;
     static constexpr uint32_t kHttpBufFreeDelayMs = 60000;
     uint8_t  *m_httpBuf = nullptr;
     uint32_t  m_httpBufIdleSinceMs = 0; // 0 = not counting down (active, or already freed)

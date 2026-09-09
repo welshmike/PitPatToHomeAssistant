@@ -25,15 +25,13 @@
 
 // Airline logos for the Dial's Flights card (spec 4.11). Home Assistant
 // serves its `config/www/` directory at `/local/`, so dropping the PNGs in
-// `config/www/logos/{IATA}.png` makes them plain-HTTP files on the LAN and
-// the Dial fetches `<this>/logos/{IATA}.png`. FlightsService.h falls back
-// to exactly the line below if this is omitted, so existing config.h files
-// keep building — only add it if HA is not on the MQTT broker's host or
-// does not use the default 8123 port.
-// Host should be an IP literal, not a hostname: WiFiClient::connect()'s DNS
-// lookup (if any) is not bounded by kLogoTimeoutMs, so a hostname that fails
-// to resolve promptly can stall well past the connect timeout.
-#define FLIGHTS_LOGO_BASE_URL "http://" MQTT_SERVER ":8123/local"
+// Since 2026-09-09 the Mac mini relay (tools/calendar_feed, the same process
+// that serves the calendar) serves each airline's logo pre-rendered as raw
+// RGB565 at `<this>/logo/{IATA}.565`, so the Dial does no PNG decoding.
+// FlightsService.h falls back to exactly the line below if this is omitted;
+// only add it if the relay is not at macmini.lan:8765. Scheme, host and
+// optional port only — no trailing path.
+#define FLIGHTS_LOGO_BASE_URL "http://macmini.lan:8765"
 
 // Calendar card (spec 4.19, amended 2026-09-07): a small Python relay on the
 // always-on Mac mini turns the work Google Calendar into the compact JSON

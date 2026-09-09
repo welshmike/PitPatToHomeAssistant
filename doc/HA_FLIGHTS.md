@@ -57,6 +57,10 @@ separately.
 
 ### `downloader` integration
 
+**Superseded 2026-09-09:** the Dial now takes its logos from the Mac mini relay as raw RGB565
+(`doc/CALENDAR_FEED.md`, "Airline logos"), so this integration and Automation 2 below are no
+longer used by the Dial. Harmless to leave in place; safe to remove.
+
 Used by the logos automation to save each airline's PNG into HA's own web-served folder.
 
 **Via the UI:** Settings → Devices & Services → Add Integration → "Downloader", set **Download
@@ -103,7 +107,7 @@ icon `mdi:airplane-check`. Add it to any dashboard as a normal toggle.
 | --- | --- | --- | --- |
 | HA → Dial (state) | `pacekeeper-dial/flights/state` | JSON, see below | Retained. Published on any change to `sensor.flightradar24_current_in_area` (incl. attributes), at HA start, and in reply to `refresh`. |
 | Dial → HA (refresh) | `pacekeeper-dial/flights/refresh` | `1` | Published once after each MQTT (re)connect — asks HA to re-publish the retained state so the Dial doesn't wait for the next real change. |
-| Dial ← HA (logo) | `http://<HA>:8123/local/logos/{IATA}.png` | PNG, plain HTTP | Not MQTT — a `WiFiClient` GET from `FlightsService`. 404 means no cached logo for that airline (yet — HA may still be downloading it); the Dial retries after 60 s and falls back to text. |
+| Dial ← HA (logo) | `http://<HA>:8123/local/logos/{IATA}.png` | PNG, plain HTTP | Not MQTT — a `WiFiClient` GET from `FlightsService`. Superseded 2026-09-09 by the relay's `/logo/{IATA}.565` (raw RGB565, see `doc/CALENDAR_FEED.md`); the Dial no longer requests this. 404 meant no cached logo; the Dial retried after 60 s and fell back to text. |
 
 State payload — nearest first, at most 6 aircraft, compact keys so six aircraft fit in roughly
 800 bytes (`FlightsService`'s MQTT buffer is 2048 bytes):
@@ -203,6 +207,8 @@ be computed); every other field falls back to `""`/`0` rather than omitting the 
 `FlightsModel::parseDialFlights` expects on the Dial side.
 
 ## Automation 2: `pacekeeper_dial_airline_logos`
+
+**Superseded 2026-09-09** — see the `downloader` note above. Kept for reference.
 
 For every airline IATA code currently overhead that isn't already recorded in
 `input_text.pacekeeper_dial_logos_cached`, downloads its logo and appends the code.

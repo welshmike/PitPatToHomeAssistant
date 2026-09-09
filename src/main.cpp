@@ -317,10 +317,13 @@ void loop()
   // reset watchdog, important to be called once each loop.
   esp_task_wdt_reset();
   {
-    // Heap diagnostics every 15 s: free/min-free heap plus BLE link state.
+    // Heap diagnostics every 60 s: free/min-free heap plus BLE link state.
+    // Forwarded to pacekeeper-dial/diag by RemoteLog ("Heap:" keyword) since
+    // 2026-09-09 to trend the slow heap drift seen after ~20 h of uptime;
+    // 60 s keeps that to 1,440 lines a day.
     static uint32_t s_lastHeapLog = 0;
     const uint32_t nowDiag = millis();
-    if ((uint32_t)(nowDiag - s_lastHeapLog) >= 15000)
+    if ((uint32_t)(nowDiag - s_lastHeapLog) >= 60000)
     {
       s_lastHeapLog = nowDiag;
       log_i("Heap: free=%u minFree=%u largestBlock=%u ble=%d",

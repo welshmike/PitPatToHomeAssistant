@@ -1393,45 +1393,30 @@ void DialUi::render(uint32_t nowMs)
     // canvas would posterise it), and only when the airline changed.
     if (m_logoToDraw[0] != '\0' && strncmp(m_logoToDraw, m_logoOnScreen, 2) != 0)
     {
-        // The PNG decoder needs a few tens of KB; while the network task has a
-        // TLS session open there may not be enough. Defer the decode (the
-        // 250 ms frame fallback retries) instead of failing, and only remember
-        // a failure as permanent when heap was ample at the time.
-        // drawFlights() only reserves the rectangle when this passes, so the
-        // else branch below is a safety net for heap that moved between the
-        // two calls within one render().
-        uint32_t freeHeap = 0, largest = 0;
-        if (logoDecodeHeapOk(freeHeap, largest))
+        // A raw-565 copy from LittleFS to the panel: no decoder, no heap, so
+        // the only way this fails is a bad or short cache file.
+        const bool drawn = dialDrawAirlineLogo(m_logoToDraw);
+        if (drawn)
         {
-            const bool pngOk = dialDrawAirlineLogo(m_logoToDraw);
-            if (pngOk)
-            {
-                strncpy(m_logoOnScreen, m_logoToDraw, 2);
-                m_logoOnScreen[2] = '\0';
-            }
-            else if (!isLogoRetried(m_logoToDraw))
-            {
-                // First failure for this airline: the cached file may be bad
-                // (seen with files written by an earlier session). Drop it and
-                // let FlightsService download a fresh copy once.
-                log_w("DialUi: logo %s decode failed (%u free / %u largest), dropping cache and retrying once",
-                      m_logoToDraw, (unsigned)freeHeap, (unsigned)largest);
-                markLogoRetried(m_logoToDraw);
-                m_flights.invalidateLogo(m_logoToDraw);
-                m_logoOnScreen[0] = '\0';
-                m_lastFrame.flightHash ^= 0x5A5A;
-            }
-            else
-            {
-                log_w("DialUi: logo %s decode failed again, using text fallback for this session", m_logoToDraw);
-                markLogoDecodeFailed(m_logoToDraw);
-                m_logoOnScreen[0] = '\0';
-                m_lastFrame.flightHash ^= 0x5A5A; // force a redraw so the text fallback appears
-            }
+            strncpy(m_logoOnScreen, m_logoToDraw, 2);
+            m_logoOnScreen[2] = '\0';
+        }
+        else if (!isLogoRetried(m_logoToDraw))
+        {
+            // First failure for this airline: the cached file may be bad.
+            // Drop it and let FlightsService download a fresh copy once.
+            log_w("DialUi: logo %s draw failed, dropping cache and retrying once", m_logoToDraw);
+            markLogoRetried(m_logoToDraw);
+            m_flights.invalidateLogo(m_logoToDraw);
+            m_logoOnScreen[0] = '\0';
+            m_lastFrame.flightHash ^= 0x5A5A;
         }
         else
         {
-            m_lastFrame.flightHash ^= 0x5A5A; // force another frame soon to retry
+            log_w("DialUi: logo %s draw failed again, using text fallback for this session", m_logoToDraw);
+            markLogoDecodeFailed(m_logoToDraw);
+            m_logoOnScreen[0] = '\0';
+            m_lastFrame.flightHash ^= 0x5A5A; // force a redraw so the text fallback appears
         }
     }
 }
@@ -1639,27 +1624,13 @@ void DialUi::drawFlights(LovyanGFX& gfx, uint32_t nowMs)
         // Only (re)decode a logo the net task actually has cached and that
         // hasn't already failed to decode this session (I4).
         const bool wantLogo = ac.airlineIata[0] != '\0' && !isLogoDecodeFailed(ac.airlineIata);
-        const bool ready    = wantLogo && m_flights.logoReady(ac.airlineIata);
-        // Reserve the logo rectangle only when render() will actually be able
-        // to fill it this frame: the logo is already on the display, or the
-        // heap can take the decode right now. Otherwise draw the text
-        // fallback; the 250 ms frame fallback re-evaluates and the logo
-        // appears as soon as the heap allows.
-        const bool onScreen = m_logoOnScreen[0] != '\0' && strncmp(m_logoOnScreen, ac.airlineIata, 2) == 0;
-        uint32_t freeHeap = 0, largest = 0;
-        haveLogo = ready && (onScreen || logoDecodeHeapOk(freeHeap, largest));
+        // The raw-565 logo push needs no heap (spec 4.11 amendment
+        // 2026-09-09), so a cached logo is always drawable this frame.
+        haveLogo = wantLogo && m_flights.logoReady(ac.airlineIata);
         if (haveLogo)
         {
             strncpy(m_logoToDraw, ac.airlineIata, 2);
             m_logoToDraw[2] = '\0';
-            m_logoDeferred[0] = '\0';
-        }
-        else if (ready && strncmp(m_logoDeferred, ac.airlineIata, 2) != 0)
-        {
-            strncpy(m_logoDeferred, ac.airlineIata, 2);
-            m_logoDeferred[2] = '\0';
-            log_w("DialUi: logo %.2s deferred for heap (%u free / %u largest), text fallback meanwhile",
-                  ac.airlineIata, (unsigned)freeHeap, (unsigned)largest);
         }
     }
     const uint8_t radarPhase = (!m_flightsSnap.offline && m_flightsSnap.count == 0)
@@ -1671,13 +1642,6 @@ void DialUi::drawFlights(LovyanGFX& gfx, uint32_t nowMs)
 // I4: see m_logoFailed's comment in DialUi.h. `iata` is compared with
 // strncmp(..., 2) throughout, same as m_logoIata/ac.airlineIata elsewhere in
 // drawFlights() — a 2-letter IATA code, not necessarily NUL-padded past that.
-bool DialUi::logoDecodeHeapOk(uint32_t& freeHeap, uint32_t& largest)
-{
-    largest  = ESP.getMaxAllocHeap();
-    freeHeap = ESP.getFreeHeap();
-    return largest >= kLogoDecodeMinLargest && freeHeap >= kLogoDecodeMinFreeHeap;
-}
-
 bool DialUi::isLogoDecodeFailed(const char* iata) const
 {
     for (uint8_t i = 0; i < m_logoFailedCount; i++)

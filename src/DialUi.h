@@ -454,19 +454,6 @@ private:
     // logo is only re-decoded when this differs from m_logoToDraw; meanwhile
     // frames are pushed with the logo rectangle transparent so it survives.
     char m_logoOnScreen[3] = {0};
-    // The decode needs ~45 KB of pngle workspace plus a 16-bit 120x48 sprite,
-    // which the loop task may not get while the net task has a fetch in
-    // flight. Below these the Flights card draws its text fallback instead
-    // of reserving a logo rectangle it cannot fill (seen on hardware as a
-    // black hole in the white band showing the previous frame's pixels).
-    // 76 KB: steady-state free heap on hardware is ~80.6 KB (2026-09-08 diag), and
-    // decodes at that level succeed; 80 KB left the gate flapping on the margin.
-    static constexpr uint32_t kLogoDecodeMinFreeHeap = 76 * 1024;
-    static constexpr uint32_t kLogoDecodeMinLargest  = 48 * 1024;
-    static bool logoDecodeHeapOk(uint32_t& freeHeap, uint32_t& largest);
-    // IATA whose decode is currently deferred for heap, so the deferral is
-    // logged once per episode rather than every 250 ms frame.
-    char m_logoDeferred[3] = {0};
 
     // I4: small ring of IATA codes whose drawPngFile() decode has already
     // failed once this session (a corrupt/unsupported PNG that

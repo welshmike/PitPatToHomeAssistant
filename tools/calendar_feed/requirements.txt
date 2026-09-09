@@ -2,3 +2,5 @@
 # Pinned to the majors verified on Python 3.9 (Xcode CLT) on 2026-09-07.
 icalendar>=6.0,<7
 recurring-ical-events>=3.0,<4
+# Airline logos for the Flights card (spec 4.11 amendment 2026-09-09).
+Pillow>=10,<12

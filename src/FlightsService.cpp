@@ -41,22 +41,13 @@ void safeCopy(const char *src, char *dst, size_t dstSize)
 }
 
 // Connect deadline, and the deadline for the whole response (status line,
-// headers and body). HA is on the LAN and a logo is a few KB, so 3 s is
+// headers and body). The relay is on the LAN and a logo is 11.5 KB, so 3 s is
 // generous — the point is that the net task also has to keep servicing
 // PubSubClient (MQTT keepalive is 15 s, and NetTask::run() only calls
 // m_net.tick() between tick() calls, never during one), so a stalled logo
 // request must never be able to hold tick() open.
 constexpr uint32_t kLogoTimeoutMs = 3000;
 
-// C2: PNG signature, checked before a downloaded logo is written to
-// LittleFS and again on the cache-hit path (a file that fails this check —
-// truncated, corrupted, or not a PNG at all — is removed and refetched).
-constexpr uint8_t kPngSignature[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
-
-bool isPngSignature(const uint8_t *data, size_t len)
-{
-    return len >= sizeof(kPngSignature) && memcmp(data, kPngSignature, sizeof(kPngSignature)) == 0;
-}
 
 // Splits FLIGHTS_LOGO_BASE_URL ("http://host[:port][/path]") into its host,
 // port (default 80) and path prefix (empty when the URL has none). Returns
@@ -162,6 +153,31 @@ void FlightsService::begin()
     {
         log_w("FlightsService: failed to create /logos directory");
     }
+    // Sweep leftovers: PNGs cached by builds before the raw-565 format
+    // (2026-09-09) and any .tmp a reset interrupted mid-download. Bounded
+    // by the handful of files the cache ever holds.
+    File dir = LittleFS.open("/logos");
+    if (dir && dir.isDirectory())
+    {
+        char stale[16][32];
+        uint8_t n = 0;
+        for (File f = dir.openNextFile(); f && n < 16; f = dir.openNextFile())
+        {
+            const char *name = f.name();
+            const size_t nl  = strlen(name);
+            if (nl >= 4 && (strcmp(name + nl - 4, ".png") == 0 || strcmp(name + nl - 4, ".tmp") == 0))
+            {
+                snprintf(stale[n++], sizeof(stale[0]), "/logos/%s", name);
+            }
+            f.close();
+        }
+        dir.close();
+        for (uint8_t i = 0; i < n; i++)
+        {
+            LittleFS.remove(stale[i]);
+            log_i("FlightsService: removed stale logo cache file %s", stale[i]);
+        }
+    }
 }
 
 void FlightsService::setVisible(bool visible)
@@ -182,7 +198,7 @@ void FlightsService::invalidateLogo(const char *iata)
         if (strncmp(ls.iata, iata, sizeof(ls.iata)) == 0) { ls.ready = false; }
     });
     char path[24];
-    snprintf(path, sizeof(path), "/logos/%.2s.png", iata);
+    snprintf(path, sizeof(path), "/logos/%.2s.565", iata);
     if (LittleFS.exists(path))
     {
         LittleFS.remove(path); // LittleFS is internally locked; safe from the loop task
@@ -341,7 +357,9 @@ void FlightsService::tickLogo(uint32_t nowMs)
     }
 
     char path[24];
-    snprintf(path, sizeof(path), "/logos/%s.png", wanted.v);
+    snprintf(path, sizeof(path), "/logos/%s.565", wanted.v);
+    char tmpPath[24];
+    snprintf(tmpPath, sizeof(tmpPath), "/logos/%s.tmp", wanted.v);
 
     if (LittleFS.exists(path))
     {
@@ -354,7 +372,7 @@ void FlightsService::tickLogo(uint32_t nowMs)
             log_i("FlightsService: logo %s cache valid", wanted.v);
             return;
         }
-        // C2: cache-hit file failed validation (too small / bad signature)
+        // Cache-hit file failed validation (wrong size)
         // — remove it and fall through to a fresh download.
         log_w("FlightsService: logo %s cache file invalid, removing and refetching", wanted.v);
         LittleFS.remove(path);
@@ -381,12 +399,13 @@ void FlightsService::tickLogo(uint32_t nowMs)
     safeCopy(wanted.v, m_lastLogoAttemptIata, sizeof(m_lastLogoAttemptIata));
 
     size_t    len    = 0;
-    const int status = fetchLogo(wanted.v, len);
+    const int status = fetchLogo(wanted.v, tmpPath, len);
 
     if (status == 404)
     {
-        // HA has no www/logos/{IATA}.png for this airline — remembered so
-        // the card doesn't ask again every tick this session.
+        // The relay has no logo for this airline (pics.avs.io 404) —
+        // remembered for kLogoMissingTtlMs so the card doesn't ask again
+        // every tick.
         markLogoMissing(wanted.v, nowMs);
         log_i("FlightsService: logo %s not found (404), remembered for %u ms", wanted.v,
               (unsigned)kLogoMissingTtlMs);
@@ -394,13 +413,12 @@ void FlightsService::tickLogo(uint32_t nowMs)
     }
     if (status == -2)
     {
-        // M2: body exceeded kHttpBufCap. HA's logo PNGs run 3-5 KB; an
-        // outlier this large is treated as missing for the rest of this
-        // session rather than retried every tick (fetchLogo() already
-        // log_w'd the actual length).
+        // Body longer than a raw 120x48 image: not something this build can
+        // show, so treated as missing for kLogoMissingTtlMs rather than
+        // retried every tick (fetchLogo() already log_w'd the length).
         markLogoMissing(wanted.v, nowMs);
-        log_w("FlightsService: logo %s exceeds %u-byte cap, treating as missing for %u ms", wanted.v,
-              (unsigned)kHttpBufCap, (unsigned)kLogoMissingTtlMs);
+        log_w("FlightsService: logo %s oversized, treating as missing for %u ms", wanted.v,
+              (unsigned)kLogoMissingTtlMs);
         return;
     }
     if (status != 200)
@@ -413,37 +431,33 @@ void FlightsService::tickLogo(uint32_t nowMs)
               (unsigned)m_logoRetryMs);
         return;
     }
-    if (strncasecmp(m_lastContentType, "image/png", 9) != 0)
+    if (strncasecmp(m_lastContentType, "application/octet-stream", 24) != 0)
     {
         backOffLogoRetry();
+        LittleFS.remove(tmpPath);
         log_w("FlightsService: logo %s unexpected content-type '%s', discarding", wanted.v, m_lastContentType);
         return;
     }
-    // C2: verify the PNG signature before it ever touches LittleFS.
-    if (len <= sizeof(kPngSignature) || !isPngSignature(m_httpBuf, len))
+    // The only validation a raw image needs: exactly 120 x 48 x 2 bytes.
+    if (len != kLogoBytes)
     {
         backOffLogoRetry();
-        log_w("FlightsService: logo %s failed PNG signature check (%u bytes), discarding", wanted.v, (unsigned)len);
+        LittleFS.remove(tmpPath);
+        log_w("FlightsService: logo %s wrong size (%u bytes, want %u), discarding", wanted.v, (unsigned)len,
+              (unsigned)kLogoBytes);
         return;
     }
-
-    File out = LittleFS.open(path, "w");
-    if (!out)
+    // Complete and the right size: promote the temp file. LittleFS will not
+    // rename over an existing name, so clear any stale copy first.
+    if (LittleFS.exists(path))
     {
-        backOffLogoRetry();
-        log_w("FlightsService: failed to open %s for write", path);
-        return;
-    }
-    const size_t written = out.write(m_httpBuf, len);
-    out.close();
-    if (written != len)
-    {
-        // C2: partial/failed write — remove it rather than leave a
-        // truncated file behind; retried next visible session.
-        backOffLogoRetry();
-        log_w("FlightsService: logo %s write incomplete (%u/%u bytes), removing",
-              wanted.v, (unsigned)written, (unsigned)len);
         LittleFS.remove(path);
+    }
+    if (!LittleFS.rename(tmpPath, path))
+    {
+        backOffLogoRetry();
+        LittleFS.remove(tmpPath);
+        log_w("FlightsService: logo %s rename to %s failed", wanted.v, path);
         return;
     }
 
@@ -482,15 +496,8 @@ bool FlightsService::validateLogoFile(const char *path) const
         return false;
     }
     const size_t fileLen = f.size();
-    if (fileLen <= sizeof(kPngSignature)) // C2: "size > 8"
-    {
-        f.close();
-        return false;
-    }
-    uint8_t sig[sizeof(kPngSignature)];
-    const size_t got = f.read(sig, sizeof(sig));
     f.close();
-    return got == sizeof(sig) && isPngSignature(sig, got);
+    return fileLen == kLogoBytes;
 }
 
 // --- retry back-off --------------------------------------------------------
@@ -562,7 +569,7 @@ void FlightsService::markLogoMissing(const char *iata, uint32_t nowMs)
 
 // --- plain-HTTP logo GET ---------------------------------------------------
 
-int FlightsService::fetchLogo(const char *iata, size_t &len)
+int FlightsService::fetchLogo(const char *iata, const char *path, size_t &len)
 {
     len                  = 0;
     m_lastContentType[0] = '\0';
@@ -594,9 +601,9 @@ int FlightsService::fetchLogo(const char *iata, size_t &len)
     // deal with, and the server closes the socket at the end of the body.
     char request[256];
     const int reqLen = snprintf(request, sizeof(request),
-                                "GET %s/logos/%s.png HTTP/1.0\r\n"
+                                "GET %s/logo/%s.565 HTTP/1.0\r\n"
                                 "Host: %s\r\n"
-                                "Accept: image/png\r\n"
+                                "Accept: application/octet-stream\r\n"
                                 "Connection: close\r\n"
                                 "\r\n",
                                 basePath, iata, host);
@@ -655,18 +662,30 @@ int FlightsService::fetchLogo(const char *iata, size_t &len)
     if (status != 200)
     {
         client.stop();
-        log_i("FlightsService: GET %s:%u%s/logos/%s.png -> status %d", host, (unsigned)port, basePath, iata, status);
+        log_i("FlightsService: GET %s:%u%s/logo/%s.565 -> status %d", host, (unsigned)port, basePath, iata, status);
         return status;
     }
-    if (contentLength > (long)kHttpBufCap)
+    if (contentLength > (long)kLogoBytes)
     {
         client.stop();
-        log_w("FlightsService: logo %s body too large (%ld > %u)", iata, contentLength, (unsigned)kHttpBufCap);
+        log_w("FlightsService: logo %s body too large (%ld > %u)", iata, contentLength, (unsigned)kLogoBytes);
         return -2;
     }
 
-    size_t total = 0;
-    while (total < kHttpBufCap)
+    // Stream the body straight into the temp file, kHttpBufCap bytes at a
+    // time: the raw image is 11.5 KB, which is more heap than the net task
+    // should hold while the card is up, and LittleFS writes are cheap.
+    File out = LittleFS.open(path, "w");
+    if (!out)
+    {
+        client.stop();
+        log_w("FlightsService: failed to open %s for write", path);
+        return -1;
+    }
+
+    size_t total   = 0;
+    int    result  = status;
+    while (true)
     {
         if ((int32_t)(millis() - deadline) >= 0)
         {
@@ -688,13 +707,26 @@ int FlightsService::fetchLogo(const char *iata, size_t &len)
             continue;
         }
         size_t toRead = (size_t)avail;
-        if (toRead > kHttpBufCap - total)
+        if (toRead > kHttpBufCap)
         {
-            toRead = kHttpBufCap - total;
+            toRead = kHttpBufCap;
         }
-        const int got = client.read(m_httpBuf + total, toRead);
+        if (total + toRead > kLogoBytes)
+        {
+            // Longer than a raw 120x48 image can be: not ours to cache.
+            log_w("FlightsService: logo %s body exceeds %u bytes", iata, (unsigned)kLogoBytes);
+            result = -2;
+            break;
+        }
+        const int got = client.read(m_httpBuf, toRead);
         if (got <= 0)
         {
+            break;
+        }
+        if (out.write(m_httpBuf, (size_t)got) != (size_t)got)
+        {
+            log_w("FlightsService: logo %s write to %s failed at %u bytes", iata, path, (unsigned)total);
+            result = -1;
             break;
         }
         total += (size_t)got;
@@ -704,28 +736,24 @@ int FlightsService::fetchLogo(const char *iata, size_t &len)
         }
     }
     client.stop();
+    out.close();
 
-    if (contentLength > 0 && total < (size_t)contentLength)
+    if (result == status && contentLength > 0 && total < (size_t)contentLength)
     {
         // Connection closed early, or the 3 s deadline hit, before the
         // full advertised body arrived: treat as transient (retried by
-        // tickLogo()) rather than caching a partial PNG.
+        // tickLogo()) rather than caching a partial image.
         log_w("FlightsService: logo %s body truncated (%u/%ld bytes)", iata, (unsigned)total, contentLength);
-        return -1;
+        result = -1;
     }
-
-    if (contentLength < 0 && total >= kHttpBufCap)
+    if (result != status)
     {
-        // No Content-Length and we filled the buffer: the body is at least
-        // as big as the cap, so it may well be truncated — treat it as
-        // oversized rather than caching a partial PNG.
-        log_w("FlightsService: logo %s body filled the %u-byte cap with no Content-Length",
-              iata, (unsigned)kHttpBufCap);
-        return -2;
+        LittleFS.remove(path);
+        return result;
     }
 
     len = total;
-    log_i("FlightsService: GET %s:%u%s/logos/%s.png -> status %d, %u bytes, heap=%u", host, (unsigned)port,
+    log_i("FlightsService: GET %s:%u%s/logo/%s.565 -> status %d, %u bytes, heap=%u", host, (unsigned)port,
           basePath, iata, status, (unsigned)len, (unsigned)ESP.getFreeHeap());
     return status;
 }

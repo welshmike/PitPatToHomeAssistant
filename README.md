@@ -247,8 +247,8 @@ only shows scheduled flights. Turn it off in HA to see everything within the rad
 All of the actual flight-tracking work — proximity, distance/bearing, route and operator lookup,
 airline logos — now happens in **Home Assistant**, not on the Dial. The Dial only subscribes to
 one retained MQTT topic and renders whatever Home Assistant last published; the only network call
-it still makes itself is a plain-HTTP `GET` of a cached logo PNG from Home Assistant's own web
-server. This replaced an earlier design (see `docs/superpowers/specs/2026-09-03-m5dial-migration-design.md`
+it still makes itself is a plain-HTTP `GET` of a pre-rendered airline logo from the Mac mini relay
+(the same process that serves the calendar, see below). This replaced an earlier design (see `docs/superpowers/specs/2026-09-03-m5dial-migration-design.md`
 §4.9, kept there for history) where the Dial queried a handful of public flight-data APIs directly
 over HTTPS with TLS certificate checking disabled — each TLS connection on the ESP32-S3 cost around
 45 KB of heap, WiFi and BLE share one antenna so the resulting request bursts could kick the
@@ -261,13 +261,16 @@ per-aircraft HTTP bursts, and a single small retained JSON message instead.
 Setup and the full MQTT/YAML details live in [`doc/HA_FLIGHTS.md`](doc/HA_FLIGHTS.md). In short:
 an HA automation publishes retained JSON on `pacekeeper-dial/flights/state` (nearest first, up to
 6 aircraft) whenever the Flightradar24 sensor changes, at HA start, or when the Dial asks on
-`pacekeeper-dial/flights/refresh` after each MQTT (re)connect; a second automation caches each new
-airline's logo PNG into Home Assistant's `www/logos/` folder, which the Dial fetches over plain
-HTTP as `http://<HA>:8123/local/logos/{IATA}.png` and caches itself under `/logos` in its own
-onboard flash (LittleFS). `config.h`'s `FLIGHTS_LOGO_BASE_URL` points at that HA web server (see
-[Project Compilation](#project-compilation) above); there is nothing left to configure for
-location or radius on the Dial — both now live in the Flightradar24 integration's own options in
-Home Assistant.
+`pacekeeper-dial/flights/refresh` after each MQTT (re)connect. Airline logos come from the Mac
+mini relay ([`doc/CALENDAR_FEED.md`](doc/CALENDAR_FEED.md)): it fetches each airline's PNG once
+from pics.avs.io, composites it on white and serves it as a raw 120×48 RGB565 image at
+`http://macmini.lan:8765/logo/{IATA}.565`, which the Dial streams into its own onboard flash
+(LittleFS, `/logos`) and copies to the screen a row at a time — no PNG decoder on the Dial, so
+logos no longer depend on how much heap is free (they did until 9 Sep 2026: after a day of uptime
+the decoder's ~60 KB was not available and the card fell back to text). `config.h`'s
+`FLIGHTS_LOGO_BASE_URL` points at the relay (see [Project Compilation](#project-compilation)
+above); there is nothing left to configure for location or radius on the Dial — both live in the
+Flightradar24 integration's own options in Home Assistant.
 
 If Home Assistant goes quiet for two minutes with the card already showing a list, a small grey
 dot appears near the top while that list keeps showing; if MQTT itself is down the card shows

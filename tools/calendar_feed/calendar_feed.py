@@ -34,6 +34,7 @@ from zoneinfo import ZoneInfo
 
 import icalendar
 import recurring_ical_events
+from PIL import Image
 
 REFRESH_S = 120
 RETRY_S = 60
@@ -45,6 +46,24 @@ DEFAULT_TZ = "Europe/London"
 FETCH_TIMEOUT_S = 20
 MAX_ICS_BYTES = 32 * 1024 * 1024
 USER_AGENT = "PaceKeeper-Dial-relay"
+
+# Airline logos for the Flights card (spec 4.11, amended 2026-09-09). The Dial
+# has no PSRAM and a PNG decode needs ~60 KB of heap it cannot spare, so the
+# relay does the decoding: each logo is fetched once from pics.avs.io,
+# composited on white at 90 % inside a 120x48 canvas (the same geometry the
+# Dial used to render itself) and served as raw big-endian RGB565 — exactly
+# LOGO_BYTES — which the Dial copies to its panel row by row.
+LOGO_SOURCE = "https://pics.avs.io/120/48/{iata}.png"
+LOGO_W, LOGO_H = 120, 48
+LOGO_ART_W, LOGO_ART_H = 108, 43
+LOGO_ART_X, LOGO_ART_Y = 6, 2
+LOGO_BYTES = LOGO_W * LOGO_H * 2
+LOGO_FETCH_TIMEOUT_S = 10
+LOGO_MISS_TTL_S = 600
+LOGO_ROUTE = re.compile(r"^/logo/([A-Z0-9]{2})\.565$")
+DEFAULT_LOGO_DIR = os.path.expanduser(
+    "~/Library/Application Support/pacekeeper-calendar/logos"
+)
 DEFAULT_ENV = os.path.expanduser("~/.config/pacekeeper/calendar.env")
 
 log = logging.getLogger("calendar_feed")
@@ -239,6 +258,109 @@ def build_payload(
     return {"t": int(now.timestamp()), "ev": out[:MAX_EVENTS]}
 
 
+# --- airline logos ---------------------------------------------------------
+
+
+def png_to_rgb565(png_bytes: bytes) -> bytes:
+    """A 120x48 raw big-endian RGB565 image: the PNG (any size, alpha honoured)
+    scaled to LOGO_ART_W x LOGO_ART_H and composited on white at
+    (LOGO_ART_X, LOGO_ART_Y). Always exactly LOGO_BYTES long."""
+    import io
+
+    with Image.open(io.BytesIO(png_bytes)) as src:
+        art = src.convert("RGBA").resize((LOGO_ART_W, LOGO_ART_H), Image.LANCZOS)
+    canvas = Image.new("RGBA", (LOGO_W, LOGO_H), (255, 255, 255, 255))
+    canvas.alpha_composite(art, (LOGO_ART_X, LOGO_ART_Y))
+    out = bytearray(LOGO_BYTES)
+    i = 0
+    for r, g, b in canvas.convert("RGB").getdata():
+        v = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+        out[i] = v >> 8
+        out[i + 1] = v & 0xFF
+        i += 2
+    return bytes(out)
+
+
+def fetch_logo_png(iata: str, timeout: int = LOGO_FETCH_TIMEOUT_S) -> Optional[bytes]:
+    """The airline's PNG from pics.avs.io, or None when it has none (404).
+    Any other failure raises."""
+    req = urllib.request.Request(
+        LOGO_SOURCE.format(iata=iata), headers={"User-Agent": USER_AGENT}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+
+
+class LogoStore(object):
+    """Converted logos, cached on disk (forever — airline marks rarely change)
+    and in memory; misses remembered for LOGO_MISS_TTL_S. Thread-safe:
+    every request handler thread may call get()."""
+
+    def __init__(self, cache_dir: str, fetcher=fetch_logo_png, clock=time.monotonic):
+        self.cache_dir = cache_dir
+        self.fetcher = fetcher
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._mem: Dict[str, bytes] = {}
+        self._miss: Dict[str, float] = {}
+
+    def _path(self, iata: str) -> str:
+        return os.path.join(self.cache_dir, iata + ".565")
+
+    def get(self, iata: str) -> Tuple[int, Optional[bytes]]:
+        """(200, image) / (404, None) when the airline has no logo /
+        (503, None) when it could not be fetched or converted right now."""
+        with self._lock:
+            data = self._mem.get(iata)
+            if data is not None:
+                return 200, data
+            missed_at = self._miss.get(iata)
+            if missed_at is not None and self.clock() - missed_at < LOGO_MISS_TTL_S:
+                return 404, None
+            path = self._path(iata)
+            try:
+                with open(path, "rb") as fh:
+                    data = fh.read()
+                if len(data) == LOGO_BYTES:
+                    self._mem[iata] = data
+                    return 200, data
+                log.warning("logo %s: cached file is %d bytes, refetching", iata, len(data))
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                log.warning("logo %s: cache read failed: %s", iata, type(exc).__name__)
+            try:
+                png = self.fetcher(iata)
+            except Exception as exc:  # network, DNS, 5xx: transient
+                log.warning("logo %s: fetch failed: %s", iata, type(exc).__name__)
+                return 503, None
+            if png is None:
+                log.info("logo %s: no logo at source (404)", iata)
+                self._miss[iata] = self.clock()
+                return 404, None
+            try:
+                data = png_to_rgb565(png)
+            except Exception as exc:
+                log.warning("logo %s: conversion failed: %s", iata, type(exc).__name__)
+                return 503, None
+            self._mem[iata] = data
+            try:
+                os.makedirs(self.cache_dir, exist_ok=True)
+                tmp = path + ".tmp"
+                with open(tmp, "wb") as fh:
+                    fh.write(data)
+                os.replace(tmp, path)
+            except OSError as exc:
+                log.warning("logo %s: cache write failed: %s", iata, type(exc).__name__)
+            log.info("logo %s: fetched and converted (%d bytes)", iata, len(data))
+            return 200, data
+
+
 def payload_json(payload: Dict[str, Any]) -> bytes:
     """Compact ASCII JSON — the Dial reads at most 2 KB into a static buffer."""
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("ascii")
@@ -385,9 +507,9 @@ def token_ok(token: Optional[str], path: str) -> bool:
     return False
 
 
-def make_handler(feed: Feed, token: Optional[str]):
+def make_handler(feed: Feed, token: Optional[str], logos: Optional[LogoStore] = None):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "PaceKeeperCalendarRelay/1.0"
+        server_version = "PaceKeeperCalendarRelay/1.1"
         protocol_version = "HTTP/1.1"
 
         def _send(self, status, body, content_type="application/json"):
@@ -413,6 +535,17 @@ def make_handler(feed: Feed, token: Optional[str]):
                 self._send(200, body)
             elif route == "/health":
                 self._send(200, payload_json(feed.health()))
+            elif logos is not None and LOGO_ROUTE.match(route):
+                # Public airline marks: no token. The Dial caches the file
+                # itself, so no-store here costs nothing.
+                iata = LOGO_ROUTE.match(route).group(1)
+                status, data = logos.get(iata)
+                if status == 200:
+                    self._send(200, data, "application/octet-stream")
+                elif status == 404:
+                    self._send(404, b'{"error":"no logo"}')
+                else:
+                    self._send(503, b'{"error":"logo unavailable"}')
             else:
                 self._send(404, b'{"error":"not found"}')
 
@@ -433,19 +566,21 @@ def serve(config: Dict[str, str]) -> int:
     token = config.get("TOKEN") or None
     feed = Feed(config)
     feed.start()
+    logos = LogoStore(config.get("LOGO_DIR") or DEFAULT_LOGO_DIR)
     try:
-        httpd = ThreadingHTTPServer((bind, port), make_handler(feed, token))
+        httpd = ThreadingHTTPServer((bind, port), make_handler(feed, token, logos))
     except OSError:
         feed.stop()
         log.error("port %d already in use", port)
         sys.exit(1)
     httpd.daemon_threads = True
     log.info(
-        "serving /calendar.json on %s:%d (token %s, refresh %ds)",
+        "serving /calendar.json and /logo/XX.565 on %s:%d (token %s, refresh %ds, logos in %s)",
         bind,
         port,
         "required" if token else "off",
         REFRESH_S,
+        logos.cache_dir,
     )
     try:
         httpd.serve_forever()

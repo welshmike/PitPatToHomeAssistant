@@ -28,7 +28,9 @@ constexpr int32_t kRingCy  = 120;
 
 // Flights card layout (spec 4.9), centred on the same 240x240 canvas
 // (centre x=120, reusing kRingCx/kRingCy where a row sits on that centre).
-constexpr int32_t kFlightsLogoX         = 60;  // (240 - 120-wide sprite) / 2
+constexpr int32_t kFlightsLogoX         = 60;  // (240 - 120-wide logo) / 2
+constexpr int32_t kFlightsLogoW         = 120;
+constexpr int32_t kFlightsLogoH         = 48;
 // The top of the card is a white band (0..kFlightsBandH) so airline logos —
 // transparent PNGs drawn for light backgrounds — sit on white edge to edge
 // (Mike, 2026-09-06). The logo sprite is white-backed and lands inside it.
@@ -297,41 +299,38 @@ void drawRadarSweep(LovyanGFX& gfx, const DialTheme& theme, uint8_t radarPhase)
 // decoded from memory into a sprite that is freed immediately (2026-09-04).
 bool dialDrawAirlineLogo(const char* iata)
 {
+    // The relay serves each logo as raw big-endian RGB565, 120 x 48, already
+    // composited on white (spec 4.11 amendment 2026-09-09), so this is a
+    // straight copy from LittleFS to the panel one row at a time from a
+    // 240-byte stack buffer: no PNG decoder, no sprite, no heap at all.
+    // The panel's native byte order is big-endian 565 too, so the pixels go
+    // over SPI untouched.
     char path[24];
-    snprintf(path, sizeof(path), "/logos/%s.png", iata);
+    snprintf(path, sizeof(path), "/logos/%s.565", iata);
 
     File f = LittleFS.open(path, "r");
     const size_t fsz = f ? (size_t)f.size() : 0;
-    uint8_t* png = (f && fsz > 8 && fsz <= 8192) ? (uint8_t*)malloc(fsz) : nullptr;
-    size_t got = 0;
-    if (png) { got = f.read(png, fsz); }
-    if (f) f.close();
-
-    bool pngOk = false;
-    int spriteOk = -1;
-    if (png && got == fsz)
+    constexpr size_t kRowBytes = kFlightsLogoW * 2;
+    constexpr size_t kLogoBytes = kRowBytes * kFlightsLogoH;
+    bool ok = (fsz == kLogoBytes);
+    if (ok)
     {
-        M5Canvas tmp;
-        tmp.setColorDepth(16);
-        spriteOk = tmp.createSprite(120, 48) ? 1 : 0;
-        if (spriteOk == 1)
+        lgfx::swap565_t row[kFlightsLogoW];
+        M5Dial.Display.startWrite();
+        for (int32_t y = 0; y < kFlightsLogoH; y++)
         {
-            tmp.fillSprite(TFT_WHITE); // matches the card's white top band
-            // Scale the 120x48 PNG to 90 % (108x43) and centre it so the badge
-            // keeps ~6 px of white either side and ~2 px top/bottom instead of
-            // the artwork touching the edges.
-            pngOk = tmp.drawPng(png, fsz, 6, 2, 108, 43, 0, 0, 0.9f, 0.9f);
-            if (pngOk) { tmp.pushSprite(&M5Dial.Display, kFlightsLogoX, kFlightsLogoY); }
-            // LovyanGFX keeps its ~45 KB pngle workspace allocated for reuse;
-            // release it or every decode leaks it.
-            tmp.releasePngMemory();
-            tmp.deleteSprite();
+            if (f.read(reinterpret_cast<uint8_t*>(row), kRowBytes) != kRowBytes)
+            {
+                ok = false;
+                break;
+            }
+            M5Dial.Display.pushImage(kFlightsLogoX, kFlightsLogoY + y, kFlightsLogoW, 1, row);
         }
+        M5Dial.Display.endWrite();
     }
-    if (png) { free(png); }
-    log_i("DialFlightsView: logo %s ok=%d file=%u read=%u sprite=%d", iata, (int)pngOk,
-          (unsigned)fsz, (unsigned)got, (int)spriteOk);
-    return pngOk;
+    if (f) f.close();
+    log_i("DialFlightsView: logo %s ok=%d file=%u", iata, (int)ok, (unsigned)fsz);
+    return ok;
 }
 
 #endif // HAS_DIAL_UI
