@@ -168,8 +168,13 @@ void FlightsService::begin()
         }
         char    stale[16][32];
         uint8_t n = 0;
-        for (File f = dir.openNextFile(); f && n < 16; f = dir.openNextFile())
+        for (;;)
         {
+            File f = dir.openNextFile();
+            if (!f)
+            {
+                break;
+            }
             // name() is the bare file name on this core's LittleFS wrapper;
             // strip any directory part defensively so the concatenation below
             // is right either way.
@@ -185,6 +190,10 @@ void FlightsService::begin()
                 snprintf(stale[n++], sizeof(stale[0]), "/logos/%s", name);
             }
             f.close();
+            if (n >= 16)
+            {
+                break;
+            }
         }
         dir.close();
         for (uint8_t i = 0; i < n; i++)
@@ -341,8 +350,9 @@ void FlightsService::manageHttpBuf(uint32_t nowMs, bool wantActive)
 }
 
 // M1: the logo itself never comes back to this class any more — it's
-// downloaded (or already cached) straight to /logos/{iata}.png on LittleFS,
-// and DialUi decodes it from there once logoReady() says it's good. This
+// downloaded (or already cached) straight to /logos/{iata}.565 on LittleFS,
+// and DialFlightsView copies it to the panel from there once logoReady()
+// says it's good. This
 // function's only job is to make sure that file exists and is valid, and to
 // record that in m_logoStatus (the small Guarded flag logoReady() reads).
 void FlightsService::tickLogo(uint32_t nowMs)
@@ -466,12 +476,10 @@ void FlightsService::tickLogo(uint32_t nowMs)
               (unsigned)kLogoBytes);
         return;
     }
-    // Complete and the right size: promote the temp file. LittleFS will not
-    // rename over an existing name, so clear any stale copy first.
-    if (LittleFS.exists(path))
-    {
-        LittleFS.remove(path);
-    }
+    // Complete and the right size: promote the temp file. littlefs's rename
+    // replaces an existing destination atomically, so a stale copy is never
+    // removed first — a reset between the two steps would otherwise leave
+    // the airline logo-less until the next download.
     if (!LittleFS.rename(tmpPath, path))
     {
         backOffLogoRetry();
@@ -608,10 +616,14 @@ int FlightsService::fetchLogo(const char *iata, const char *path, size_t &len)
         return -1;
     }
 
+    // One deadline for the whole GET — connect, headers and body — so the
+    // net task is never held for more than kLogoTimeoutMs per attempt.
+    const uint32_t deadline = millis() + kLogoTimeoutMs;
+
     WiFiClient client;
-    if (client.connect(host, port, (int32_t)kLogoTimeoutMs) != 1)
+    if (client.connect(host, port, (int32_t)kLogoTimeoutMs) != 1 || (int32_t)(millis() - deadline) >= 0)
     {
-        log_i("FlightsService: logo connect to %s:%u failed", host, (unsigned)port);
+        log_i("FlightsService: logo connect to %s:%u failed or timed out", host, (unsigned)port);
         client.stop();
         return -1;
     }
@@ -633,8 +645,6 @@ int FlightsService::fetchLogo(const char *iata, const char *path, size_t &len)
         return -1;
     }
     client.write(reinterpret_cast<const uint8_t *>(request), (size_t)reqLen);
-
-    const uint32_t deadline = millis() + kLogoTimeoutMs;
 
     char line[128];
     if (!readLine(client, line, sizeof(line), deadline))
