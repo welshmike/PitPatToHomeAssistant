@@ -213,6 +213,15 @@ private:
     // socket every 5 s indefinitely — and resets to kLogoRetryMs on a
     // success or a change of wanted airline.
     static constexpr uint32_t kLogoRetryMs    = 5000;
+    // A 503 from the relay means "fetching it for you now" (it answers at
+    // once and pulls the airline's PNG from the internet in the background,
+    // typically 1-2 s), so the next attempt comes after this short wait
+    // instead of the back-off — up to kLogoWarmRetryMax times per airline,
+    // then the normal back-off takes over. Mike saw the first United logo
+    // take 3-4 s to appear (2026-09-09); this brings it near the fetch time.
+    static constexpr uint32_t kLogoWarmRetryMs  = 700;
+    static constexpr uint8_t  kLogoWarmRetryMax = 6;
+    uint8_t m_logoWarmRetries = 0;
     static constexpr uint32_t kLogoRetryMaxMs = 60000;
     uint32_t m_lastLogoAttemptMs      = 0;
     uint32_t m_logoRetryMs            = kLogoRetryMs;

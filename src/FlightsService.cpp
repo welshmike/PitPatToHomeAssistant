@@ -421,7 +421,8 @@ void FlightsService::tickLogo(uint32_t nowMs)
         // A different airline: this one's history is its own, so start it
         // at the base window rather than inheriting the previous IATA's
         // back-off (cycling through aircraft still fetches promptly).
-        m_logoRetryMs = kLogoRetryMs;
+        m_logoRetryMs      = kLogoRetryMs;
+        m_logoWarmRetries  = 0;
     }
     m_logoAttempted     = true;
     m_lastLogoAttemptMs = nowMs;
@@ -430,6 +431,16 @@ void FlightsService::tickLogo(uint32_t nowMs)
     size_t    len    = 0;
     const int status = fetchLogo(wanted.v, tmpPath, len);
 
+    if (status == 503 && m_logoWarmRetries < kLogoWarmRetryMax)
+    {
+        // The relay is fetching this airline's logo right now: ask again
+        // shortly rather than backing off.
+        m_logoWarmRetries++;
+        m_logoRetryMs = kLogoWarmRetryMs;
+        log_i("FlightsService: logo %s warming on the relay, retry %u in %u ms", wanted.v,
+              (unsigned)m_logoWarmRetries, (unsigned)kLogoWarmRetryMs);
+        return;
+    }
     if (status == 404)
     {
         // The relay has no logo for this airline (pics.avs.io 404) —
@@ -488,7 +499,8 @@ void FlightsService::tickLogo(uint32_t nowMs)
         return;
     }
 
-    m_logoRetryMs = kLogoRetryMs; // success: back to the base window
+    m_logoRetryMs     = kLogoRetryMs; // success: back to the base window
+    m_logoWarmRetries = 0;
     m_logoStatus.modify([&](LogoStatus &ls) {
         safeCopy(wanted.v, ls.iata, sizeof(ls.iata));
         ls.ready = true;
@@ -534,7 +546,13 @@ bool FlightsService::validateLogoFile(const char *path) const
 // airline (tickLogo()) or invalidateLogo().
 void FlightsService::backOffLogoRetry()
 {
-    if (m_logoRetryMs < kLogoRetryMaxMs)
+    if (m_logoRetryMs < kLogoRetryMs)
+    {
+        // Coming off the short warm-retry window: the back-off ladder
+        // starts at the base, not at double 700 ms.
+        m_logoRetryMs = kLogoRetryMs;
+    }
+    else if (m_logoRetryMs < kLogoRetryMaxMs)
     {
         const uint32_t doubled = m_logoRetryMs * 2;
         m_logoRetryMs = (doubled > kLogoRetryMaxMs) ? kLogoRetryMaxMs : doubled;
