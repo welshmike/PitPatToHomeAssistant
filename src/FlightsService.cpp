@@ -154,17 +154,32 @@ void FlightsService::begin()
         log_w("FlightsService: failed to create /logos directory");
     }
     // Sweep leftovers: PNGs cached by builds before the raw-565 format
-    // (2026-09-09) and any .tmp a reset interrupted mid-download. Bounded
-    // by the handful of files the cache ever holds.
-    File dir = LittleFS.open("/logos");
-    if (dir && dir.isDirectory())
+    // (2026-09-09) and any .tmp a reset interrupted mid-download. Collected
+    // 16 names at a time (removing while iterating a LittleFS directory is
+    // not safe), rescanning until a pass finds nothing — the first boot on
+    // this format found ~40 PNGs; a bounded pass count keeps a pathological
+    // directory from stalling boot.
+    for (uint8_t pass = 0; pass < 8; pass++)
     {
-        char stale[16][32];
+        File dir = LittleFS.open("/logos");
+        if (!dir || !dir.isDirectory())
+        {
+            break;
+        }
+        char    stale[16][32];
         uint8_t n = 0;
         for (File f = dir.openNextFile(); f && n < 16; f = dir.openNextFile())
         {
-            const char *name = f.name();
-            const size_t nl  = strlen(name);
+            // name() is the bare file name on this core's LittleFS wrapper;
+            // strip any directory part defensively so the concatenation below
+            // is right either way.
+            const char *name  = f.name();
+            const char *slash = strrchr(name, '/');
+            if (slash != nullptr)
+            {
+                name = slash + 1;
+            }
+            const size_t nl = strlen(name);
             if (nl >= 4 && (strcmp(name + nl - 4, ".png") == 0 || strcmp(name + nl - 4, ".tmp") == 0))
             {
                 snprintf(stale[n++], sizeof(stale[0]), "/logos/%s", name);
@@ -176,6 +191,10 @@ void FlightsService::begin()
         {
             LittleFS.remove(stale[i]);
             log_i("FlightsService: removed stale logo cache file %s", stale[i]);
+        }
+        if (n < 16)
+        {
+            break;
         }
     }
 }
