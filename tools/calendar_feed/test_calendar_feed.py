@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+import time as time_module
 
 import calendar_feed
 
@@ -753,7 +754,9 @@ def test_logo_store_caches_hits_and_remembers_misses(tmp_path):
         return _red_png()
 
     now = [1000.0]
-    store = calendar_feed.LogoStore(str(tmp_path / "logos"), fetcher=fetcher, clock=lambda: now[0])
+    store = calendar_feed.LogoStore(
+        str(tmp_path / "logos"), fetcher=fetcher, clock=lambda: now[0], sync=True
+    )
 
     status, data = store.get("BA")
     assert status == 200 and len(data) == calendar_feed.LOGO_BYTES
@@ -762,7 +765,9 @@ def test_logo_store_caches_hits_and_remembers_misses(tmp_path):
     assert calls == ["BA"]  # memory hit, no refetch
 
     # A fresh store finds the disk cache without fetching.
-    store2 = calendar_feed.LogoStore(str(tmp_path / "logos"), fetcher=fetcher, clock=lambda: now[0])
+    store2 = calendar_feed.LogoStore(
+        str(tmp_path / "logos"), fetcher=fetcher, clock=lambda: now[0], sync=True
+    )
     assert store2.get("BA") == (200, data)
     assert calls == ["BA"]
 
@@ -785,7 +790,7 @@ def test_logo_store_refetches_a_short_cache_file(tmp_path):
     d = tmp_path / "logos"
     d.mkdir()
     (d / "BA.565").write_bytes(b"\x00" * 100)
-    store = calendar_feed.LogoStore(str(d), fetcher=lambda iata, timeout=10: _red_png())
+    store = calendar_feed.LogoStore(str(d), fetcher=lambda iata, timeout=10: _red_png(), sync=True)
     status, data = store.get("BA")
     assert status == 200 and len(data) == calendar_feed.LOGO_BYTES
     assert (d / "BA.565").read_bytes() == data
@@ -805,7 +810,7 @@ def relay_with_logos(tmp_path):
     def fetcher(iata, timeout=10):
         return None if iata == "ZZ" else _red_png()
 
-    logos = calendar_feed.LogoStore(str(tmp_path / "logos"), fetcher=fetcher)
+    logos = calendar_feed.LogoStore(str(tmp_path / "logos"), fetcher=fetcher, sync=True)
     httpd = ThreadingHTTPServer(
         ("127.0.0.1", 0), calendar_feed.make_handler(feed, "s3cret", logos)
     )
@@ -843,3 +848,29 @@ def test_logo_endpoint_404s_for_unknown_airline_and_bad_paths(relay_with_logos):
 def test_relay_without_a_logo_store_404s_the_logo_route(relay):
     base, _feed = relay
     assert _get(base + "/logo/BA.565")[0] == 404
+
+
+def test_logo_store_answers_503_while_fetching_in_the_background(tmp_path):
+    import threading
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_fetcher(iata, timeout=10):
+        started.set()
+        release.wait(5)
+        return _red_png()
+
+    store = calendar_feed.LogoStore(str(tmp_path / "logos"), fetcher=slow_fetcher)
+    assert store.get("BA") == (503, None)  # kicked off, not waited for
+    assert started.wait(2)
+    assert store.get("BA") == (503, None)  # still pending: no second thread
+    release.set()
+    deadline = time_module.monotonic() + 5
+    while time_module.monotonic() < deadline:
+        status, data = store.get("BA")
+        if status == 200:
+            break
+        time_module.sleep(0.02)
+    assert status == 200 and len(data) == calendar_feed.LOGO_BYTES
+    assert (tmp_path / "logos" / "BA.565").exists()

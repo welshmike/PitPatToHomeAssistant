@@ -299,15 +299,27 @@ def fetch_logo_png(iata: str, timeout: int = LOGO_FETCH_TIMEOUT_S) -> Optional[b
 class LogoStore(object):
     """Converted logos, cached on disk (forever — airline marks rarely change)
     and in memory; misses remembered for LOGO_MISS_TTL_S. Thread-safe:
-    every request handler thread may call get()."""
+    every request handler thread may call get().
 
-    def __init__(self, cache_dir: str, fetcher=fetch_logo_png, clock=time.monotonic):
+    A logo not yet cached is fetched and converted on a background thread and
+    the request answers 503 at once: the Dial's whole GET has a 3 s budget on
+    its network task, and pics.avs.io alone can take 2 s, so making it wait
+    would time out the first request every time. It backs off 5 s and asks
+    again, by which time the logo is here. `sync=True` (tests) fetches
+    inline instead."""
+
+    def __init__(self, cache_dir: str, fetcher=fetch_logo_png, clock=time.monotonic, sync: bool = False):
         self.cache_dir = cache_dir
         self.fetcher = fetcher
         self.clock = clock
-        self._lock = threading.Lock()
+        self.sync = sync
+        # Re-entrant: the sync path calls _fetch_and_store() from inside
+        # get()'s critical section, and _fetch_and_store() takes the lock
+        # itself to update the tables.
+        self._lock = threading.RLock()
         self._mem: Dict[str, bytes] = {}
         self._miss: Dict[str, float] = {}
+        self._pending: set = set()
 
     def _path(self, iata: str) -> str:
         return os.path.join(self.cache_dir, iata + ".565")
@@ -334,6 +346,19 @@ class LogoStore(object):
                 pass
             except OSError as exc:
                 log.warning("logo %s: cache read failed: %s", iata, type(exc).__name__)
+            if self.sync:
+                return self._fetch_and_store(iata)
+            if iata not in self._pending:
+                self._pending.add(iata)
+                threading.Thread(
+                    target=self._fetch_and_store, args=(iata,), name="logo-" + iata, daemon=True
+                ).start()
+            return 503, None
+
+    def _fetch_and_store(self, iata: str) -> Tuple[int, Optional[bytes]]:
+        """Fetch, convert and cache one logo. Holds the lock only while
+        updating the tables, never across the network call."""
+        try:
             try:
                 png = self.fetcher(iata)
             except Exception as exc:  # network, DNS, 5xx: transient
@@ -341,14 +366,17 @@ class LogoStore(object):
                 return 503, None
             if png is None:
                 log.info("logo %s: no logo at source (404)", iata)
-                self._miss[iata] = self.clock()
+                with self._lock:
+                    self._miss[iata] = self.clock()
                 return 404, None
             try:
                 data = png_to_rgb565(png)
             except Exception as exc:
                 log.warning("logo %s: conversion failed: %s", iata, type(exc).__name__)
                 return 503, None
-            self._mem[iata] = data
+            with self._lock:
+                self._mem[iata] = data
+            path = self._path(iata)
             try:
                 os.makedirs(self.cache_dir, exist_ok=True)
                 tmp = path + ".tmp"
@@ -359,6 +387,9 @@ class LogoStore(object):
                 log.warning("logo %s: cache write failed: %s", iata, type(exc).__name__)
             log.info("logo %s: fetched and converted (%d bytes)", iata, len(data))
             return 200, data
+        finally:
+            with self._lock:
+                self._pending.discard(iata)
 
 
 def payload_json(payload: Dict[str, Any]) -> bytes:
